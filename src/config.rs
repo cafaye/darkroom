@@ -81,7 +81,9 @@ impl Config {
     /// a service with no `DATABASE_URL` can never be ready — refusing to start
     /// is honest, where a service that starts and fails every probe is not.
     pub fn database_url(&self) -> Result<&str, ConfigError> {
-        self.database_url.as_deref().ok_or(ConfigError::MissingDatabaseUrl)
+        self.database_url
+            .as_deref()
+            .ok_or(ConfigError::MissingDatabaseUrl)
     }
 }
 
@@ -210,8 +212,12 @@ impl Config {
             other => return Err(ConfigError::InvalidObjectStore(other.to_string())),
         };
 
-        let jwks_url = lookup.get("DARKROOM_JWKS_URL").ok_or(ConfigError::MissingJwksUrl)?;
-        let issuer = lookup.get("DARKROOM_ISSUER").ok_or(ConfigError::MissingIssuer)?;
+        let jwks_url = lookup
+            .get("DARKROOM_JWKS_URL")
+            .ok_or(ConfigError::MissingJwksUrl)?;
+        let issuer = lookup
+            .get("DARKROOM_ISSUER")
+            .ok_or(ConfigError::MissingIssuer)?;
         let audience = lookup
             .get("DARKROOM_AUDIENCE")
             .ok_or(ConfigError::MissingAudience)?;
@@ -269,7 +275,10 @@ mod tests {
             "DARKROOM_JWKS_URL".into(),
             "https://identity.cafaye.com/.well-known/jwks.json".into(),
         );
-        env.insert("DARKROOM_ISSUER".into(), "https://identity.cafaye.com".into());
+        env.insert(
+            "DARKROOM_ISSUER".into(),
+            "https://identity.cafaye.com".into(),
+        );
         env.insert("DARKROOM_AUDIENCE".into(), "darkroom".into());
         env
     }
@@ -292,19 +301,31 @@ mod tests {
         // surprise: `PORT=808O` must not silently become 8080.
         let mut env = base();
         env.insert("PORT".into(), "808O".into());
-        assert_eq!(Config::load(&env).expect_err("typo"), ConfigError::InvalidPort("808O".into()));
+        assert_eq!(
+            Config::load(&env).expect_err("typo"),
+            ConfigError::InvalidPort("808O".into())
+        );
 
         let mut env = base();
         env.insert("PORT".into(), "70000".into());
-        assert!(matches!(Config::load(&env), Err(ConfigError::InvalidPort(_))));
+        assert!(matches!(
+            Config::load(&env),
+            Err(ConfigError::InvalidPort(_))
+        ));
 
         let mut env = base();
         env.insert("DARKROOM_DB_MAX_CONNECTIONS".into(), "0".into());
-        assert!(matches!(Config::load(&env), Err(ConfigError::InvalidMaxConnections(_))));
+        assert!(matches!(
+            Config::load(&env),
+            Err(ConfigError::InvalidMaxConnections(_))
+        ));
 
         let mut env = base();
         env.insert("DARKROOM_LOG_LEVEL".into(), "chatty".into());
-        assert!(matches!(Config::load(&env), Err(ConfigError::Invalid(_, _))));
+        assert!(matches!(
+            Config::load(&env),
+            Err(ConfigError::Invalid(_, _))
+        ));
     }
 
     #[test]

@@ -16,8 +16,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use axum::http::Request;
-use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// What a request carries for its whole lifetime.
@@ -124,8 +124,7 @@ where
 {
     type Response = axum::response::Response;
     type Error = S::Error;
-    type Future =
-        Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
@@ -150,7 +149,7 @@ where
         };
         let fut = self.inner.call(req);
 
-        Box::pin(scope(ctx, async move { fut.await }))
+        Box::pin(scope(ctx, fut))
     }
 }
 
@@ -186,12 +185,12 @@ fn parse_traceparent_trace_id(value: &str) -> Option<String> {
 /// test — a test that installs a global subscriber fights every other test for
 /// the same global.
 pub fn init_tracing(default_level: &str) {
-    use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
     // RUST_LOG wins; the argument is the floor so a container that sets nothing
     // still gets structured output at the configured level.
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
 
     // JSON in production, human-readable locally, chosen by whether stdout is a
     // terminal — a log pipeline wants JSON and a person at a terminal does not.
@@ -249,12 +248,12 @@ mod tests {
         // fresh id is generated rather than being written through.
         for bad in [
             "",
-            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7",       // too few
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7", // too few
             "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-extra", // too many
-            "0-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",        // short version
-            "00-ZZZ92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",      // non-hex
-            "00-00000000000000000000000000000000-00f067aa0ba902b7-01",      // all-zero trace id
-            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902-01",        // short parent id
+            "0-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", // short version
+            "00-ZZZ92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", // non-hex
+            "00-00000000000000000000000000000000-00f067aa0ba902b7-01", // all-zero trace id
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902-01", // short parent id
         ] {
             assert_eq!(
                 parse_traceparent_trace_id(bad),
@@ -281,11 +280,7 @@ mod tests {
 
     #[test]
     fn rfc3339_round_trips_utc() {
-        let at = time::OffsetDateTime::parse(
-            "2026-09-30T04:19:00Z",
-            &Rfc3339,
-        )
-        .expect("parses");
+        let at = time::OffsetDateTime::parse("2026-09-30T04:19:00Z", &Rfc3339).expect("parses");
         assert_eq!(rfc3339(at), "2026-09-30T04:19:00Z");
     }
 }

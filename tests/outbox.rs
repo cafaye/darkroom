@@ -29,7 +29,10 @@ async fn count(store: &darkroom::Store, table: &str) -> i64 {
         .unwrap_or_else(|e| panic!("counting {table}: {e}"))
 }
 
-async fn seed_ready(service: &darkroom::Service, objects: &std::sync::Arc<darkroom::objectstore::InMemoryObjectStore>) -> (Uuid, Uuid, Uuid) {
+async fn seed_ready(
+    service: &darkroom::Service,
+    objects: &std::sync::Arc<darkroom::objectstore::InMemoryObjectStore>,
+) -> (Uuid, Uuid, Uuid) {
     let account = Uuid::new_v4();
     let user = Uuid::new_v4();
     let tenant = darkroom::auth::Tenant::from_principal(&principal(account, user));
@@ -102,14 +105,21 @@ async fn ready_is_emitted_once_at_complete_and_not_at_create() {
         .expect("completes");
 
     assert_eq!(count(&store, "outbox_events").await, 1, "exactly one event");
-    let row = darkroom::outbox::claim_unpublished(&*store.pool(), 10)
+    let row = darkroom::outbox::claim_unpublished(store.pool(), 10)
         .await
         .expect("claims")
         .remove(0);
     assert_eq!(row.event_type, "darkroom.asset.ready");
     assert_eq!(row.source, "darkroom", "source is the publishing service");
-    assert_eq!(row.subject, created.asset.id.to_string(), "subject is the entity");
-    assert_eq!(row.published_at, None, "unpublished until a publisher acks it");
+    assert_eq!(
+        row.subject,
+        created.asset.id.to_string(),
+        "subject is the entity"
+    );
+    assert_eq!(
+        row.published_at, None,
+        "unpublished until a publisher acks it"
+    );
     assert_eq!(row.data["asset_id"], created.asset.id.to_string());
     assert_eq!(row.data["account_id"], account.to_string());
     assert_eq!(row.data["checksum"], checksum);
@@ -121,9 +131,10 @@ async fn ready_is_emitted_once_at_complete_and_not_at_create() {
 #[ignore = "needs TEST_DATABASE_URL; see tests/common/mod.rs"]
 async fn a_rolled_back_transaction_emits_nothing() {
     let store = test_store().await;
-    let _service = darkroom::Service::new(std::sync::Arc::new(store.clone()), std::sync::Arc::new(
-        darkroom::objectstore::InMemoryObjectStore::new(),
-    ));
+    let _service = darkroom::Service::new(
+        std::sync::Arc::new(store.clone()),
+        std::sync::Arc::new(darkroom::objectstore::InMemoryObjectStore::new()),
+    );
     let account = Uuid::new_v4();
     let asset_id = Uuid::new_v4();
     let checksum = "b".repeat(64);
@@ -168,7 +179,11 @@ async fn a_rolled_back_transaction_emits_nothing() {
     // Neither table has the row. Asserted on BOTH, because "the domain row is
     // gone" alone would still pass if the event were written outside the
     // transaction.
-    assert_eq!(count(&store, "assets").await, 0, "the domain row must be gone");
+    assert_eq!(
+        count(&store, "assets").await,
+        0,
+        "the domain row must be gone"
+    );
     assert_eq!(
         count(&store, "outbox_events").await,
         0,
@@ -196,13 +211,16 @@ async fn the_event_and_the_state_change_are_both_present_after_a_commit() {
         _account_of(&store, asset_id).await,
         Uuid::new_v4(),
     ));
-    service.delete_asset(&tenant, asset_id).await.expect("deletes");
+    service
+        .delete_asset(&tenant, asset_id)
+        .await
+        .expect("deletes");
 
     assert_eq!(count(&store, "assets").await, 0, "the row is gone");
     assert_eq!(count(&store, "outbox_events").await, 2, "ready and deleted");
     assert!(objects.is_empty(), "the storage object is gone too");
 
-    let types: Vec<String> = darkroom::outbox::claim_unpublished(&*store.pool(), 10)
+    let types: Vec<String> = darkroom::outbox::claim_unpublished(store.pool(), 10)
         .await
         .expect("claims")
         .into_iter()
@@ -253,13 +271,17 @@ async fn variant_created_is_emitted_and_the_original_is_untouched() {
     assert_eq!(original_before.status, AssetStatus::Ready);
 
     assert_eq!(count(&store, "outbox_events").await, 2);
-    let row = darkroom::outbox::claim_unpublished(&*store.pool(), 10)
+    let row = darkroom::outbox::claim_unpublished(store.pool(), 10)
         .await
         .expect("claims")
         .into_iter()
         .find(|r| r.event_type == "darkroom.variant.created")
         .expect("the variant event");
-    assert_eq!(row.subject, variant.id.to_string(), "subject is the VARIANT, not the asset");
+    assert_eq!(
+        row.subject,
+        variant.id.to_string(),
+        "subject is the VARIANT, not the asset"
+    );
     assert_eq!(row.data["asset_id"], asset_id.to_string());
     assert_eq!(row.data["kind"], "thumbnail");
     assert_eq!(row.data["width"], 50);
@@ -293,5 +315,9 @@ async fn a_failed_upload_emits_nothing() {
         .complete_upload(&tenant, created.asset.id, &"c".repeat(64))
         .await;
 
-    assert_eq!(count(&store, "outbox_events").await, 0, "a failure is not an event");
+    assert_eq!(
+        count(&store, "outbox_events").await,
+        0,
+        "a failure is not an event"
+    );
 }

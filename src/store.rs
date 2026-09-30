@@ -128,14 +128,15 @@ impl Store {
         // a decision in the diff rather than an assumption. `read_committed` +
         // `for update` on the duplicate path is what makes two concurrent
         // uploads of the same bytes serialise.
-        let _ = tx.execute("set transaction isolation level read committed").await;
+        let _ = tx
+            .execute("set transaction isolation level read committed")
+            .await;
         Ok(tx)
     }
 
     // ---------------------------------------------------------------- assets
 
     // -------------------------------------------------------------- variants
-
 }
 
 // ------------------------------------------------ repository functions
@@ -280,14 +281,13 @@ pub async fn find_storage_key<'e, E>(
 where
     E: PgExecutor<'e>,
 {
-    let key: Option<(String,)> = sqlx::query_as(
-        "select storage_key from assets where id = $1 and account_id = $2",
-    )
-    .bind(asset_id)
-    .bind(tenant.account_id())
-    .fetch_optional(executor)
-    .await
-    .map_err(classify)?;
+    let key: Option<(String,)> =
+        sqlx::query_as("select storage_key from assets where id = $1 and account_id = $2")
+            .bind(asset_id)
+            .bind(tenant.account_id())
+            .fetch_optional(executor)
+            .await
+            .map_err(classify)?;
     Ok(key.map(|(k,)| k))
 }
 
@@ -597,8 +597,6 @@ where
     Ok(rows.into_iter().map(|r| r.into_variant()).collect())
 }
 
-
-
 // ------------------------------------------------------------- idempotency
 
 /// The recorded outcome of a request that carried an `Idempotency-Key`.
@@ -705,7 +703,7 @@ pub async fn complete_idempotency_key<'e, E>(
 ) -> Result<(), StoreError>
 where
     E: PgExecutor<'e>,
-    {
+{
     sqlx::query(
         r#"
         update idempotency_keys
@@ -762,7 +760,10 @@ pub enum IdempotencyOutcome {
     Reserved,
     /// A completed record for the same key and the same body. Return the stored
     /// response with `Idempotency-Replayed: true`.
-    Replay { status_code: i32, response_body: Value },
+    Replay {
+        status_code: i32,
+        response_body: Value,
+    },
     /// The same key with a different body. 409 `idempotency_key_reused`.
     BodyMismatch,
     /// Another request holds the reservation right now. 409 `conflict`.
@@ -800,7 +801,10 @@ impl AssetRow {
             // A value the SQL check constraint already restricted. A failure
             // here means the database and this code disagree, which is a deploy
             // error, and the 500 it produces is the correct response.
-            kind: self.kind.parse().unwrap_or(crate::domain::AssetKind::Document),
+            kind: self
+                .kind
+                .parse()
+                .unwrap_or(crate::domain::AssetKind::Document),
             original_filename: self.original_filename,
             content_type: self.content_type,
             byte_size: self.byte_size,

@@ -104,10 +104,9 @@ impl AssetKind {
                 }
             },
             "application" => match base.as_str() {
-                "application/pdf"
-                | "application/rtf"
-                | "application/json"
-                | "application/zip" => AssetKind::Document,
+                "application/pdf" | "application/rtf" | "application/json" | "application/zip" => {
+                    AssetKind::Document
+                }
                 _ => {
                     return Err(Error::invalid_fields(
                         "unsupported document type",
@@ -367,13 +366,12 @@ mod tests {
             "text/html",
             "text/x-shellscript",
             "application/x-executable",
-            "image/x-psd",       // right top-level, format we cannot decode
+            "image/x-psd", // right top-level, format we cannot decode
             "application/x-msdownload",
             "",
             "not-a-media-type",
         ] {
-            let err = AssetKind::from_content_type(bad)
-                .expect_err("must be rejected");
+            let err = AssetKind::from_content_type(bad).expect_err("must be rejected");
             assert_eq!(err.status().as_u16(), 422, "{bad} should be 422");
             let problem = err.to_problem("/v1/uploads", "t");
             let fields = problem.errors.expect("a field error");
@@ -392,13 +390,30 @@ mod tests {
             AssetKind::Video,
             AssetKind::Document,
         ] {
-            assert_eq!(kind.as_str().parse::<AssetKind>().expect("round trip"), kind);
+            assert_eq!(
+                kind.as_str().parse::<AssetKind>().expect("round trip"),
+                kind
+            );
         }
-        for status in [AssetStatus::Pending, AssetStatus::Ready, AssetStatus::Failed] {
-            assert_eq!(status.as_str().parse::<AssetStatus>().expect("round trip"), status);
+        for status in [
+            AssetStatus::Pending,
+            AssetStatus::Ready,
+            AssetStatus::Failed,
+        ] {
+            assert_eq!(
+                status.as_str().parse::<AssetStatus>().expect("round trip"),
+                status
+            );
         }
-        for kind in [VariantKind::Thumbnail, VariantKind::Preview, VariantKind::Web] {
-            assert_eq!(kind.as_str().parse::<VariantKind>().expect("round trip"), kind);
+        for kind in [
+            VariantKind::Thumbnail,
+            VariantKind::Preview,
+            VariantKind::Web,
+        ] {
+            assert_eq!(
+                kind.as_str().parse::<VariantKind>().expect("round trip"),
+                kind
+            );
         }
     }
 
@@ -421,8 +436,17 @@ mod tests {
     fn enums_serialise_as_their_snake_case_strings() {
         // The wire form and the database form are the same string, asserted
         // rather than assumed, because a rename here is a breaking API change.
-        assert_eq!(serde_json::to_string(&AssetKind::Image).unwrap(), "\"image\"");
-        assert_eq!(serde_json::to_string(&AssetStatus::Pending).unwrap(), "\"pending\"");
-        assert_eq!(serde_json::to_string(&VariantKind::Thumbnail).unwrap(), "\"thumbnail\"");
+        assert_eq!(
+            serde_json::to_string(&AssetKind::Image).unwrap(),
+            "\"image\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AssetStatus::Pending).unwrap(),
+            "\"pending\""
+        );
+        assert_eq!(
+            serde_json::to_string(&VariantKind::Thumbnail).unwrap(),
+            "\"thumbnail\""
+        );
     }
 }

@@ -35,7 +35,11 @@ async fn a_replayed_create_returns_the_original_and_creates_no_second_asset() {
     let (app, _v) = test_app(service, verifier_for(&accounts));
 
     let checksum = "d".repeat(64);
-    async fn send(app: axum::Router, key: &'static str, checksum: String) -> (StatusCode, Option<String>, serde_json::Value) {
+    async fn send(
+        app: axum::Router,
+        key: &'static str,
+        checksum: String,
+    ) -> (StatusCode, Option<String>, serde_json::Value) {
         let request = Request::builder()
             .method(http::Method::POST)
             .uri("/v1/uploads")
@@ -54,15 +58,25 @@ async fn a_replayed_create_returns_the_original_and_creates_no_second_asset() {
         let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
             .expect("body");
-        (status, replayed, serde_json::from_slice::<serde_json::Value>(&body).expect("json"))
+        (
+            status,
+            replayed,
+            serde_json::from_slice::<serde_json::Value>(&body).expect("json"),
+        )
     }
 
-    let (first_status, first_replayed, first_body) = send(app.clone(), "key-1", checksum.clone()).await;
+    let (first_status, first_replayed, first_body) =
+        send(app.clone(), "key-1", checksum.clone()).await;
     assert_eq!(first_status, StatusCode::CREATED);
     assert_eq!(first_replayed, None, "a first response is not a replay");
 
-    let (replay_status, replay_replayed, replay_body) = send(app.clone(), "key-1", checksum.clone()).await;
-    assert_eq!(replay_status, StatusCode::CREATED, "a replay returns the original status");
+    let (replay_status, replay_replayed, replay_body) =
+        send(app.clone(), "key-1", checksum.clone()).await;
+    assert_eq!(
+        replay_status,
+        StatusCode::CREATED,
+        "a replay returns the original status"
+    );
     assert_eq!(
         replay_replayed.as_deref(),
         Some("true"),
@@ -110,7 +124,10 @@ async fn the_same_key_with_a_different_body_is_idempotency_key_reused() {
         let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
             .expect("body");
-        (status, serde_json::from_slice::<serde_json::Value>(&body).expect("json"))
+        (
+            status,
+            serde_json::from_slice::<serde_json::Value>(&body).expect("json"),
+        )
     }
 
     let (first_status, _) = send(app.clone(), "e".repeat(64)).await;
@@ -153,7 +170,10 @@ async fn the_key_is_scoped_to_the_principal() {
         let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
             .expect("body");
-        (status, serde_json::from_slice::<serde_json::Value>(&body).expect("json"))
+        (
+            status,
+            serde_json::from_slice::<serde_json::Value>(&body).expect("json"),
+        )
     }
 
     let (a_status, a_body) = send(app.clone(), "token-a", "1".repeat(64)).await;
@@ -168,7 +188,10 @@ async fn the_key_is_scoped_to_the_principal() {
         b_body["asset"]["id"], a_body["asset"]["id"],
         "B must not have received A's asset from a shared key"
     );
-    assert_eq!(b_body["asset"]["account_id"], accounts.b_account.to_string());
+    assert_eq!(
+        b_body["asset"]["account_id"],
+        accounts.b_account.to_string()
+    );
 
     let count: i64 = sqlx::query_scalar("select count(*) from assets")
         .fetch_one(store.pool())
@@ -188,7 +211,8 @@ async fn a_replayed_complete_returns_the_original_and_emits_one_event() {
     let accounts = two_accounts();
     let (app, _v) = test_app(service.clone(), verifier_for(&accounts));
 
-    let tenant = darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user));
+    let tenant =
+        darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user));
     let payload = png(28, 28);
     let checksum = checksum_of(&payload);
     let created = service
@@ -208,28 +232,30 @@ async fn a_replayed_complete_returns_the_original_and_emits_one_event() {
         .await
         .expect("puts");
 
-    let send = |app: axum::Router, checksum: String| {
-        async move {
-            let request = Request::builder()
-                .method(http::Method::POST)
-                .uri(format!("/v1/uploads/{}/complete", created.asset.id))
-                .header("authorization", "Bearer token-a")
-                .header("idempotency-key", "complete-1")
-                .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"checksum":"{checksum}"}}"#)))
-                .expect("builds");
-            let response = app.oneshot(request).await.expect("responds");
-            let status = response.status();
-            let replayed = response
-                .headers()
-                .get("idempotency-replayed")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
-            let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
-                .await
-                .expect("body");
-            (status, replayed, serde_json::from_slice::<serde_json::Value>(&body).expect("json"))
-        }
+    let send = |app: axum::Router, checksum: String| async move {
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri(format!("/v1/uploads/{}/complete", created.asset.id))
+            .header("authorization", "Bearer token-a")
+            .header("idempotency-key", "complete-1")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(r#"{{"checksum":"{checksum}"}}"#)))
+            .expect("builds");
+        let response = app.oneshot(request).await.expect("responds");
+        let status = response.status();
+        let replayed = response
+            .headers()
+            .get("idempotency-replayed")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("body");
+        (
+            status,
+            replayed,
+            serde_json::from_slice::<serde_json::Value>(&body).expect("json"),
+        )
     };
 
     let (first_status, first_replayed, first_body) = send(app.clone(), checksum.clone()).await;
@@ -250,7 +276,10 @@ async fn a_replayed_complete_returns_the_original_and_emits_one_event() {
     .fetch_one(store.pool())
     .await
     .expect("counts");
-    assert_eq!(events, 1, "a replayed complete must not emit a second event");
+    assert_eq!(
+        events, 1,
+        "a replayed complete must not emit a second event"
+    );
 }
 
 /// A request with no key is processed normally — that is a supported state, not

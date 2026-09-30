@@ -37,8 +37,7 @@ use crate::checksum;
 use crate::domain::{Asset, AssetKind, AssetStatus, AssetVariant, VariantKind};
 use crate::error::{Error, FieldError};
 use crate::objectstore::{
-    InMemoryObjectStore, PresignedPut, SharedObjectStore, MAX_UPLOAD_BYTES,
-    PRESIGN_TTL,
+    InMemoryObjectStore, PresignedPut, SharedObjectStore, MAX_UPLOAD_BYTES, PRESIGN_TTL,
 };
 use crate::outbox::{EventType, NewEvent, Outbox};
 use crate::storage_key::StorageKey;
@@ -66,10 +65,7 @@ impl Service {
         }
     }
 
-    pub fn with_in_memory_objects(
-        store: SharedStore,
-        objects: Arc<InMemoryObjectStore>,
-    ) -> Self {
+    pub fn with_in_memory_objects(store: SharedStore, objects: Arc<InMemoryObjectStore>) -> Self {
         Self {
             store,
             objects: objects.clone() as SharedObjectStore,
@@ -185,10 +181,12 @@ impl Service {
         // transaction. The insert is still the authority: two concurrent
         // duplicates both miss here, and one of them gets the constraint
         // violation and falls through to the same resolution.
-        if let Some(existing) = store::find_asset_by_checksum(&*self.store.pool(), tenant, &request.checksum)
-            .await?
+        if let Some(existing) =
+            store::find_asset_by_checksum(self.store.pool(), tenant, &request.checksum).await?
         {
-            return self.resolve_duplicate(tenant, existing, &content_type).await;
+            return self
+                .resolve_duplicate(tenant, existing, &content_type)
+                .await;
         }
 
         // --- create -------------------------------------------------------
@@ -213,17 +211,20 @@ impl Service {
             Ok(row) => row,
             Err(StoreError::Conflict(_)) => {
                 // Lost the race. The winner's row is the answer.
-                let existing = store::find_asset_by_checksum(&*self.store.pool(), tenant, &request.checksum)
-                    .await?
-                    .ok_or_else(|| {
-                        // The winner's transaction rolled back between our
-                        // conflict and this read. Unreachable in practice, and
-                        // if it happens a 409 is the honest answer rather than
-                        // inventing an asset that does not exist.
-                        tracing::warn!("checksum conflict but the row is gone");
-                        Error::conflict("a concurrent upload of the same bytes is in progress")
-                    })?;
-                return self.resolve_duplicate(tenant, existing, &content_type).await;
+                let existing =
+                    store::find_asset_by_checksum(self.store.pool(), tenant, &request.checksum)
+                        .await?
+                        .ok_or_else(|| {
+                            // The winner's transaction rolled back between our
+                            // conflict and this read. Unreachable in practice, and
+                            // if it happens a 409 is the honest answer rather than
+                            // inventing an asset that does not exist.
+                            tracing::warn!("checksum conflict but the row is gone");
+                            Error::conflict("a concurrent upload of the same bytes is in progress")
+                        })?;
+                return self
+                    .resolve_duplicate(tenant, existing, &content_type)
+                    .await;
             }
             Err(e) => return Err(e.into()),
         };
@@ -234,12 +235,7 @@ impl Service {
         // is emitted at complete time, which is the moment the bytes exist.
         let presigned = self
             .objects
-            .presign_put(
-                key.as_str(),
-                &content_type,
-                request.byte_size,
-                PRESIGN_TTL,
-            )
+            .presign_put(key.as_str(), &content_type, request.byte_size, PRESIGN_TTL)
             .await?;
 
         Ok(CreatedUpload {
@@ -253,19 +249,10 @@ impl Service {
     /// `Asset` already carries `account_id`, and passing both would be two
     /// sources of truth for the same value — the kind of thing that disagrees
     /// the first time someone forgets to update one.
-    async fn insert_with_key(
-        &self,
-        asset: &Asset,
-        key: &StorageKey,
-    ) -> Result<Asset, StoreError> {
+    async fn insert_with_key(&self, asset: &Asset, key: &StorageKey) -> Result<Asset, StoreError> {
         let mut tx = self.store.begin().await?;
-        let row = store::insert_asset_keyed(
-            &mut *tx,
-            asset,
-            key.as_str(),
-        )
-        .await?;
-        tx.commit().await.map_err(|e| StoreError::Query(e))?;
+        let row = store::insert_asset_keyed(&mut *tx, asset, key.as_str()).await?;
+        tx.commit().await.map_err(StoreError::Query)?;
         Ok(row)
     }
 
@@ -346,8 +333,8 @@ impl Service {
         // handler turns both into 404. Reading it before touching storage is
         // also what stops a caller from using this endpoint to probe whether an
         // object key exists in a bucket they have no claim to.
-        let Some((asset, storage_key)) = store::find_asset(&*self.store.pool(), tenant, asset_id)
-            .await?
+        let Some((asset, storage_key)) =
+            store::find_asset(self.store.pool(), tenant, asset_id).await?
         else {
             return Err(Error::not_found("asset not found"));
         };
@@ -371,7 +358,8 @@ impl Service {
             Err(crate::objectstore::ObjectStoreError::NotFound) => {
                 // The presigned URL was issued and never used, or the bytes were
                 // removed. Either way the upload did not happen.
-                self.fail_asset(tenant, asset_id, "object_absent_at_complete").await?;
+                self.fail_asset(tenant, asset_id, "object_absent_at_complete")
+                    .await?;
                 return Err(Error::conflict(
                     "no object was found in storage for this upload; it may have expired before the bytes were sent",
                 ));
@@ -380,6 +368,23 @@ impl Service {
         };
 
         // --- 2/3. the checksum the client claimed vs what storage holds ----
+        // The measured size is checked against what the client declared. On
+        // the in-memory path the presigned PUT already refused an oversized
+        // object, so this never fires; on the S3 path the signature does not
+        // carry a length ceiling, so this is where a client that uploaded more
+        // than it declared is caught. It is a 422, not a 409: the object IS
+        // there, it is just the wrong size.
+        if meta.byte_size != asset.byte_size {
+            self.fail_asset(tenant, asset_id, "size_mismatch").await?;
+            return Err(Error::invalid_fields(
+                format!(
+                    "the object in storage is {} bytes but {} were declared",
+                    meta.byte_size, asset.byte_size
+                ),
+                vec![FieldError::new("byte_size", "mismatch")],
+            ));
+        }
+
         let actual = match &meta.checksum {
             Some(recorded) if !recorded.is_empty() => recorded.clone(),
             _ => {
@@ -398,7 +403,8 @@ impl Service {
             // upload. That is a corrupted upload, a wrong client, or a client
             // trying to register a checksum for content it never sent — and the
             // last one is why this is a hard failure rather than a warning.
-            self.fail_asset(tenant, asset_id, "checksum_mismatch").await?;
+            self.fail_asset(tenant, asset_id, "checksum_mismatch")
+                .await?;
             return Err(Error::invalid_fields(
                 "the checksum does not match the bytes in storage",
                 vec![FieldError::new("checksum", "mismatch")],
@@ -412,7 +418,7 @@ impl Service {
             // Another complete won the compare-and-set. Roll back and let the
             // idempotency layer serve the stored response.
             tx.rollback().await.ok();
-            let (current, _) = store::find_asset(&*self.store.pool(), tenant, asset_id)
+            let (current, _) = store::find_asset(self.store.pool(), tenant, asset_id)
                 .await?
                 .ok_or(Error::not_found("asset not found"))?;
             return Ok(current);
@@ -436,7 +442,7 @@ impl Service {
         // Commit. If this fails, the asset stays `pending` and no event exists
         // — which is the outbox rule, and the reason the test suite has a
         // rollback case.
-        tx.commit().await.map_err(|e| StoreError::Query(e))?;
+        tx.commit().await.map_err(StoreError::Query)?;
 
         tracing::info!(asset_id = %ready.id, account_id = %ready.account_id, "asset ready");
         Ok(ready)
@@ -446,15 +452,10 @@ impl Service {
     /// nothing. A failure is not an event: no consumer can act on "this upload
     /// did not complete" in a way that is not better served by the client
     /// knowing through the 4xx it is receiving.
-    async fn fail_asset(
-        &self,
-        tenant: &Tenant,
-        asset_id: Uuid,
-        reason: &str,
-    ) -> Result<(), Error> {
+    async fn fail_asset(&self, tenant: &Tenant, asset_id: Uuid, reason: &str) -> Result<(), Error> {
         let mut tx = self.store.begin().await?;
         store::mark_failed(&mut *tx, tenant, asset_id, reason).await?;
-        tx.commit().await.map_err(|e| StoreError::Query(e))?;
+        tx.commit().await.map_err(StoreError::Query)?;
         Ok(())
     }
 
@@ -467,8 +468,7 @@ impl Service {
     ) -> Result<(Vec<Asset>, Option<time::OffsetDateTime>, Option<Uuid>, bool), Error> {
         // One extra row to find out whether there is a next page, without a
         // second count query.
-        let rows = store::list_assets(&*self.store.pool(), tenant, limit + 1, cursor)
-            .await?;
+        let rows = store::list_assets(self.store.pool(), tenant, limit + 1, cursor).await?;
         let has_more = rows.len() as i64 > limit;
         let page: Vec<Asset> = rows
             .into_iter()
@@ -485,7 +485,7 @@ impl Service {
 
     /// `GET /v1/assets/:id` — tenant-scoped, 404 for another account's asset.
     pub async fn get_asset(&self, tenant: &Tenant, asset_id: Uuid) -> Result<Asset, Error> {
-        store::find_asset(&*self.store.pool(), tenant, asset_id)
+        store::find_asset(self.store.pool(), tenant, asset_id)
             .await?
             .map(|(a, _)| a)
             // The single 404 path. A cross-tenant read and a genuinely missing
@@ -506,8 +506,7 @@ impl Service {
     /// Every variant's object goes too: deleting an asset whose thumbnail
     /// remains is not a delete.
     pub async fn delete_asset(&self, tenant: &Tenant, asset_id: Uuid) -> Result<(), Error> {
-        let keys = store::list_storage_keys(&*self.store.pool(), tenant, asset_id)
-            .await?;
+        let keys = store::list_storage_keys(self.store.pool(), tenant, asset_id).await?;
         if keys.is_empty() {
             return Err(Error::not_found("asset not found"));
         }
@@ -540,7 +539,7 @@ impl Service {
             }),
         );
         Outbox::new(&mut tx).enqueue(&event).await?;
-        tx.commit().await.map_err(|e| StoreError::Query(e))?;
+        tx.commit().await.map_err(StoreError::Query)?;
 
         tracing::info!(%asset_id, account_id = %tenant.account_id(), "asset deleted");
         Ok(())
@@ -557,8 +556,8 @@ impl Service {
         asset_id: Uuid,
         kind: VariantKind,
     ) -> Result<AssetVariant, Error> {
-        let Some((asset, source_key)) = store::find_asset(&*self.store.pool(), tenant, asset_id)
-            .await?
+        let Some((asset, source_key)) =
+            store::find_asset(self.store.pool(), tenant, asset_id).await?
         else {
             return Err(Error::not_found("asset not found"));
         };
@@ -571,7 +570,10 @@ impl Service {
         }
         if asset.kind != AssetKind::Image {
             return Err(Error::invalid_fields(
-                format!("variants are only supported for images, and this asset is a {}", asset.kind),
+                format!(
+                    "variants are only supported for images, and this asset is a {}",
+                    asset.kind
+                ),
                 vec![FieldError::new("kind", "unsupported_kind")],
             ));
         }
@@ -582,7 +584,11 @@ impl Service {
 
         let variant_key = StorageKey::generate_variant(tenant.account_id(), kind.as_str());
         self.objects
-            .put(variant_key.as_str(), encoded.bytes.clone(), &kind.content_type())
+            .put(
+                variant_key.as_str(),
+                encoded.bytes.clone(),
+                kind.content_type(),
+            )
             .await?;
 
         let now = crate::observability::now();
@@ -622,7 +628,7 @@ impl Service {
             }),
         );
         Outbox::new(&mut tx).enqueue(&event).await?;
-        tx.commit().await.map_err(|e| StoreError::Query(e))?;
+        tx.commit().await.map_err(StoreError::Query)?;
 
         Ok(stored)
     }
@@ -639,13 +645,13 @@ impl Service {
         tenant: &Tenant,
         asset_id: Uuid,
     ) -> Result<Vec<AssetVariant>, Error> {
-        if store::find_asset(&*self.store.pool(), tenant, asset_id)
+        if store::find_asset(self.store.pool(), tenant, asset_id)
             .await?
             .is_none()
         {
             return Err(Error::not_found("asset not found"));
         }
-        Ok(store::list_variants(&*self.store.pool(), tenant, asset_id).await?)
+        Ok(store::list_variants(self.store.pool(), tenant, asset_id).await?)
     }
 }
 
@@ -703,7 +709,10 @@ mod tests {
         assert_eq!(validate_filename("photo.png").expect("valid"), "photo.png");
         // Trimmed, not rejected — a stray space from a copy-paste is not a
         // security event.
-        assert_eq!(validate_filename("  photo.png ").expect("valid"), "photo.png");
+        assert_eq!(
+            validate_filename("  photo.png ").expect("valid"),
+            "photo.png"
+        );
 
         for bad in [
             "",
@@ -743,6 +752,6 @@ mod tests {
         // PUT becomes presigned multipart, which is a second flow with a second
         // set of URLs and a second thing to get wrong. Staying under it is a
         // design decision, not a limit.
-        assert!(MAX_UPLOAD_BYTES < 5 * 1024 * 1024 * 1024);
+        const { assert!(MAX_UPLOAD_BYTES < 5 * 1024 * 1024 * 1024) };
     }
 }

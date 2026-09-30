@@ -233,7 +233,10 @@ impl InMemoryObjectStore {
     /// How many objects are stored. The delete test asserts this goes to zero,
     /// which is stronger than asserting a key is gone.
     pub fn len(&self) -> usize {
-        self.objects.lock().expect("objects mutex is not poisoned").len()
+        self.objects
+            .lock()
+            .expect("objects mutex is not poisoned")
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -256,7 +259,7 @@ impl InMemoryObjectStore {
         let now = unix_now();
         let mut guard = self.objects.lock().expect("objects mutex is not poisoned");
 
-        let Some(grant) = grant_for_url(&url, &self.signing_secret) else {
+        let Some(grant) = grant_for_url(url, &self.signing_secret) else {
             return Err(ObjectStoreError::Other("signature is not valid".into()));
         };
 
@@ -275,7 +278,9 @@ impl InMemoryObjectStore {
             return Err(ObjectStoreError::Other("presigned url has expired".into()));
         }
         if signed.content_type != content_type {
-            return Err(ObjectStoreError::Other("content type is outside the signed scope".into()));
+            return Err(ObjectStoreError::Other(
+                "content type is outside the signed scope".into(),
+            ));
         }
         if bytes.len() as i64 > signed.max_bytes {
             return Err(ObjectStoreError::TooLarge);
@@ -343,7 +348,10 @@ impl ObjectStore for InMemoryObjectStore {
     }
 
     async fn head(&self, key: &str) -> Result<ObjectMeta, ObjectStoreError> {
-        self.stats.lock().expect("stats mutex is not poisoned").heads += 1;
+        self.stats
+            .lock()
+            .expect("stats mutex is not poisoned")
+            .heads += 1;
         let guard = self.objects.lock().expect("objects mutex is not poisoned");
         let object = guard.get(key).ok_or(ObjectStoreError::NotFound)?;
 
@@ -393,7 +401,10 @@ impl ObjectStore for InMemoryObjectStore {
     }
 
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
-        self.stats.lock().expect("stats mutex is not poisoned").deletes += 1;
+        self.stats
+            .lock()
+            .expect("stats mutex is not poisoned")
+            .deletes += 1;
         let mut guard = self.objects.lock().expect("objects mutex is not poisoned");
         // Idempotent: deleting a key that is not there is a success, because
         // `DELETE /v1/assets/:id` is retryable and a 500 on the second attempt
@@ -463,8 +474,26 @@ fn unix_now() -> u64 {
 /// Percent-encode the two characters that would break the URL. Keys are server
 /// generated and contain neither, but a URL builder that breaks on a `/` is a
 /// trap for the next person to change the key format.
-fn encode_key(key: &str) -> String {
-    key.replace('%', "%25").replace('/', "%2F").replace('?', "%3F")
+pub(crate) fn encode_key(key: &str) -> String {
+    key.replace('%', "%25")
+        .replace('/', "%2F")
+        .replace('?', "%3F")
+}
+
+/// S3 records a checksum as base64; the rest of this service speaks lowercase
+/// hex. The conversion lives at the boundary so a hex/base64 mix-up cannot
+/// happen anywhere above the trait — a silent one would turn every checksum
+/// comparison into a mismatch.
+#[cfg_attr(not(feature = "s3"), allow(dead_code))]
+pub(crate) fn base64_to_hex(base64: &str) -> String {
+    use base64::Engine as _;
+    match base64::engine::general_purpose::STANDARD.decode(base64) {
+        Ok(bytes) => hex::encode(bytes),
+        // A value the service cannot interpret is not a checksum at all. The
+        // empty string is the "no recorded checksum" sentinel that `head`
+        // consumers already treat as "compute it yourself".
+        Err(_) => String::new(),
+    }
 }
 
 fn decode_key(encoded: &str) -> Option<String> {
@@ -484,8 +513,16 @@ fn decode_key(encoded: &str) -> Option<String> {
     Some(out)
 }
 
+/// The real S3 implementation. Compiled only with `--features s3`.
+///
+/// Public so `main` can construct it when `DARKROOM_OBJECT_STORE=s3`, and so
+/// an operator reading the code finds the S3 details here rather than guessing
+/// where they went.
 #[cfg(feature = "s3")]
-mod s3_impl;
+pub mod s3_impl;
+
+#[cfg(feature = "s3")]
+pub use s3_impl::S3ObjectStore;
 
 #[cfg(test)]
 mod tests {
@@ -499,7 +536,12 @@ mod tests {
     async fn presigned_put_is_scoped_to_one_key_and_one_length() {
         let s = store();
         let url = s
-            .presign_put("accounts/a1/assets/abc/original", "image/png", 1024, PRESIGN_TTL)
+            .presign_put(
+                "accounts/a1/assets/abc/original",
+                "image/png",
+                1024,
+                PRESIGN_TTL,
+            )
             .await
             .expect("presigns");
 
@@ -508,7 +550,8 @@ mod tests {
 
         // Over the cap: refused.
         assert!(matches!(
-            s.apply_presigned_put(&url.url, Bytes::from(vec![0u8; 2048]), "image/png").await,
+            s.apply_presigned_put(&url.url, Bytes::from(vec![0u8; 2048]), "image/png")
+                .await,
             Err(ObjectStoreError::TooLarge)
         ));
         // Under the cap, right content type: accepted.
@@ -517,18 +560,22 @@ mod tests {
             .expect("accepts");
         // Right length, wrong content type: refused. A URL signed for image/png
         // must not authorise storing an HTML document at that key.
-        assert!(
-            s.apply_presigned_put(&url.url, Bytes::from(vec![1u8; 512]), "text/html")
-                .await
-                .is_err()
-        );
+        assert!(s
+            .apply_presigned_put(&url.url, Bytes::from(vec![1u8; 512]), "text/html")
+            .await
+            .is_err());
     }
 
     #[tokio::test]
     async fn a_tampered_url_is_refused() {
         let s = store();
         let url = s
-            .presign_put("accounts/a1/assets/abc/original", "image/png", 1024, PRESIGN_TTL)
+            .presign_put(
+                "accounts/a1/assets/abc/original",
+                "image/png",
+                1024,
+                PRESIGN_TTL,
+            )
             .await
             .expect("presigns");
 
@@ -566,7 +613,9 @@ mod tests {
         // key, and an object that was never PUT to it must still read as
         // missing.
         let s = store();
-        s.presign_put("k", "image/png", 1024, PRESIGN_TTL).await.expect("presigns");
+        s.presign_put("k", "image/png", 1024, PRESIGN_TTL)
+            .await
+            .expect("presigns");
         assert!(matches!(s.head("k").await, Err(ObjectStoreError::NotFound)));
     }
 
@@ -586,7 +635,9 @@ mod tests {
     #[tokio::test]
     async fn delete_is_idempotent() {
         let s = store();
-        s.put("k", Bytes::from_static(b"x"), "text/plain").await.expect("puts");
+        s.put("k", Bytes::from_static(b"x"), "text/plain")
+            .await
+            .expect("puts");
         s.delete("k").await.expect("first delete");
         assert!(s.is_empty());
         // Second delete must not fail: DELETE is retryable, and a 500 here would

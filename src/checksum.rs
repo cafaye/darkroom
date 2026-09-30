@@ -107,7 +107,14 @@ mod tests {
         // they disagreed, an upload could verify against one and fail against
         // the other, which is exactly the kind of bug that only shows up in
         // production.
-        for size in [0usize, 1, 1023, 1024, HASH_CHUNK_BYTES, HASH_CHUNK_BYTES + 7] {
+        for size in [
+            0usize,
+            1,
+            1023,
+            1024,
+            HASH_CHUNK_BYTES,
+            HASH_CHUNK_BYTES + 7,
+        ] {
             let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
             assert_eq!(
                 sha256_hex(&data),
@@ -120,8 +127,18 @@ mod tests {
     #[test]
     fn checksum_format_is_64_hex_and_nothing_else() {
         assert!(is_valid_checksum_format(&sha256_hex(b"x")));
-        assert!(is_valid_checksum_format(&"A".repeat(64)), "uppercase hex is well-formed");
-        for bad in ["", "abc", &"a".repeat(63), &"a".repeat(65), &"g".repeat(64), "  ".trim()] {
+        assert!(
+            is_valid_checksum_format(&"A".repeat(64)),
+            "uppercase hex is well-formed"
+        );
+        for bad in [
+            "",
+            "abc",
+            &"a".repeat(63),
+            &"a".repeat(65),
+            &"g".repeat(64),
+            "  ".trim(),
+        ] {
             assert!(
                 !is_valid_checksum_format(bad),
                 "accepted a malformed checksum: {bad:?}"

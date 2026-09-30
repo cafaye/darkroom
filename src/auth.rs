@@ -306,7 +306,11 @@ impl JwksVerifier {
     /// `cache_ttl` defaults to five minutes. Bounded because an unbounded cache
     /// of keys from a compromised issuer is a memory leak with a remote
     /// trigger; short enough that a revoked key stops working quickly.
-    pub fn new(jwks_url: impl Into<String>, issuer: impl Into<String>, audience: impl Into<String>) -> Self {
+    pub fn new(
+        jwks_url: impl Into<String>,
+        issuer: impl Into<String>,
+        audience: impl Into<String>,
+    ) -> Self {
         Self {
             http: reqwest::Client::new(),
             jwks_url: jwks_url.into(),
@@ -473,7 +477,11 @@ pub struct HmacVerifier {
 
 #[cfg(feature = "dev-auth")]
 impl HmacVerifier {
-    pub fn new(secret: impl Into<String>, issuer: impl Into<String>, audience: impl Into<String>) -> Self {
+    pub fn new(
+        secret: impl Into<String>,
+        issuer: impl Into<String>,
+        audience: impl Into<String>,
+    ) -> Self {
         Self {
             secret: secret.into(),
             issuer: issuer.into(),
@@ -484,7 +492,7 @@ impl HmacVerifier {
     /// Mint a token. Dev-only, and deliberately obvious about it: a function
     /// that can sign a token belongs in a dev binary and nowhere else.
     pub fn mint(&self, user_id: Uuid, account_id: Uuid, scopes: &[&str], ttl: Duration) -> String {
-        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
         #[derive(Serialize)]
         struct DevClaims {
@@ -523,7 +531,7 @@ impl HmacVerifier {
 #[cfg(feature = "dev-auth")]
 impl TokenVerifier for HmacVerifier {
     async fn verify(&self, token: &str) -> Result<Principal, Error> {
-        use jsonwebtoken::{DecodingKey, Validation};
+        use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 
         let mut validation = Validation::new(Algorithm::HS256);
         validation.set_issuer(&[self.issuer.as_str()]);
@@ -603,7 +611,10 @@ mod tests {
             scope: Some(serde_json::json!("assets:read assets:write")),
             roles: None,
         };
-        assert_eq!(string_form.scope_list(), vec!["assets:read", "assets:write"]);
+        assert_eq!(
+            string_form.scope_list(),
+            vec!["assets:read", "assets:write"]
+        );
 
         let array_form = Claims {
             scope: Some(serde_json::json!(["assets:read"])),
@@ -642,7 +653,10 @@ mod tests {
     async fn the_static_verifier_rejects_an_unknown_token_without_distinguishing() {
         let v = StaticTokenVerifier::new();
         let known = Uuid::new_v4();
-        v.insert("good", principal(known, Uuid::new_v4(), &[SCOPE_ASSETS_READ]));
+        v.insert(
+            "good",
+            principal(known, Uuid::new_v4(), &[SCOPE_ASSETS_READ]),
+        );
 
         assert!(v.verify("good").await.is_ok());
         let err = v.verify("bad").await.expect_err("unknown token");
@@ -670,7 +684,11 @@ mod tests {
         };
         assert!(decoding_key(&hs).is_err());
 
-        let ps = Jwk { alg: "PS256".into(), kty: "RSA".into(), ..hs.clone() };
+        let ps = Jwk {
+            alg: "PS256".into(),
+            kty: "RSA".into(),
+            ..hs.clone()
+        };
         assert!(decoding_key(&ps).is_err());
 
         // A real RSA key loads.

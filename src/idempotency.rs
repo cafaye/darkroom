@@ -57,10 +57,7 @@ pub fn parse_key(headers: &HeaderMap) -> Result<Option<String>, Error> {
     let Some(raw) = headers.get("idempotency-key") else {
         return Ok(None);
     };
-    let value = raw
-        .to_str()
-        .map_err(|_| invalid_key())?
-        .trim();
+    let value = raw.to_str().map_err(|_| invalid_key())?.trim();
 
     if value.is_empty() {
         return Err(invalid_key());
@@ -247,7 +244,8 @@ where
             .into_response(true))
         }
         IdempotencyOutcome::BodyMismatch => Err(Error::IdempotencyKeyReused {
-            detail: "this Idempotency-Key was already used with a different request body".to_string(),
+            detail: "this Idempotency-Key was already used with a different request body"
+                .to_string(),
         }),
         IdempotencyOutcome::InFlight => Err(Error::conflict(
             "a request with this Idempotency-Key is still in flight",
@@ -398,10 +396,7 @@ mod tests {
 
     #[test]
     fn a_replay_carries_the_marker_and_a_fresh_response_does_not() {
-        let recorded = Recorded::new(
-            StatusCode::CREATED,
-            serde_json::json!({"id": "ast_1"}),
-        );
+        let recorded = Recorded::new(StatusCode::CREATED, serde_json::json!({"id": "ast_1"}));
         let replayed = recorded.clone().into_response(true);
         assert_eq!(replayed.headers()[REPLAYED_HEADER_NAME], "true");
 

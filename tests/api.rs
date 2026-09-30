@@ -78,7 +78,10 @@ async fn a_duplicate_upload_returns_the_existing_asset_with_a_usable_url() {
         second.presigned.key, first.presigned.key,
         "and to the existing storage key, so there is one object"
     );
-    assert_eq!(second.presigned.expires_in_secs, first.presigned.expires_in_secs);
+    assert_eq!(
+        second.presigned.expires_in_secs,
+        first.presigned.expires_in_secs
+    );
     assert_eq!(
         second.asset.status,
         AssetStatus::Ready,
@@ -91,7 +94,11 @@ async fn a_duplicate_upload_returns_the_existing_asset_with_a_usable_url() {
         .await
         .expect("counts");
     assert_eq!(rows, 1, "a duplicate must not create a second asset");
-    assert_eq!(objects.len(), 1, "a duplicate must not create a second object");
+    assert_eq!(
+        objects.len(),
+        1,
+        "a duplicate must not create a second object"
+    );
 }
 
 /// The duplicate is a 201 with a marker header, not a 409 — asserted over the
@@ -129,7 +136,11 @@ async fn a_duplicate_upload_is_201_with_a_marker_header() {
         let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
             .expect("body");
-        (status, duplicate, serde_json::from_slice::<serde_json::Value>(&body).expect("json"))
+        (
+            status,
+            duplicate,
+            serde_json::from_slice::<serde_json::Value>(&body).expect("json"),
+        )
     }
 
     let (first_status, first_marker, first_body) = send(app.clone()).await;
@@ -150,7 +161,10 @@ async fn a_duplicate_upload_is_201_with_a_marker_header() {
     );
     assert_eq!(second_body["duplicate"], true);
     assert_eq!(second_body["asset"]["id"], first_body["asset"]["id"]);
-    assert!(second_body["upload_url"].is_string(), "and the URL is usable");
+    assert!(
+        second_body["upload_url"].is_string(),
+        "and the URL is usable"
+    );
 }
 
 /// The same bytes in a DIFFERENT account are two assets. The constraint is
@@ -181,7 +195,10 @@ async fn the_same_bytes_in_two_accounts_are_two_assets() {
             )
             .await
             .expect("creates");
-        assert!(!created.duplicate, "a first upload in any account is not a duplicate");
+        assert!(
+            !created.duplicate,
+            "a first upload in any account is not a duplicate"
+        );
         ids.push(created.asset.id);
     }
 
@@ -218,9 +235,15 @@ async fn a_duplicate_of_a_failed_upload_is_409() {
         .expect("creates");
 
     // Fail it: no object was ever uploaded.
-    let _ = service.complete_upload(&tenant, created.asset.id, &checksum).await;
+    let _ = service
+        .complete_upload(&tenant, created.asset.id, &checksum)
+        .await;
     assert_eq!(
-        service.get_asset(&tenant, created.asset.id).await.expect("reads").status,
+        service
+            .get_asset(&tenant, created.asset.id)
+            .await
+            .expect("reads")
+            .status,
         AssetStatus::Failed
     );
 
@@ -301,7 +324,7 @@ async fn delete_removes_the_row_the_storage_object_and_emits_an_event() {
         "BOTH storage objects are removed — a delete that leaves a thumbnail behind is not a delete"
     );
 
-    let event = darkroom::outbox::claim_unpublished(&*store.pool(), 10)
+    let event = darkroom::outbox::claim_unpublished(store.pool(), 10)
         .await
         .expect("claims")
         .into_iter()
@@ -326,7 +349,8 @@ async fn delete_is_204_and_a_second_delete_is_404() {
     let accounts = two_accounts();
     let (app, _v) = test_app(service.clone(), verifier_for(&accounts));
 
-    let tenant = darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user));
+    let tenant =
+        darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user));
     let payload = png(20, 20);
     let checksum = darkroom::checksum::sha256_hex(&payload);
     let created = service
@@ -352,7 +376,10 @@ async fn delete_is_204_and_a_second_delete_is_404() {
         app.oneshot(request).await.expect("responds").status()
     };
 
-    assert_eq!(del(app.clone(), created.asset.id).await, StatusCode::NO_CONTENT);
+    assert_eq!(
+        del(app.clone(), created.asset.id).await,
+        StatusCode::NO_CONTENT
+    );
     assert_eq!(
         del(app.clone(), created.asset.id).await,
         StatusCode::NOT_FOUND,
@@ -378,10 +405,17 @@ async fn healthz_is_unconditional_and_readyz_actually_checks_the_database() {
         .body(Body::empty())
         .expect("builds");
     let response = app.clone().oneshot(health).await.expect("responds");
-    assert_eq!(response.status(), StatusCode::OK, "liveness needs no credential");
-    let body: serde_json::Value =
-        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 4096).await.unwrap())
-            .expect("json");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "liveness needs no credential"
+    );
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap(),
+    )
+    .expect("json");
     assert_eq!(body["status"], "ok");
 
     // `/readyz` really queries. Point the pool at a closed port and it must
@@ -401,7 +435,11 @@ async fn healthz_is_unconditional_and_readyz_actually_checks_the_database() {
         .body(Body::empty())
         .expect("builds");
     let response = app.oneshot(ready).await.expect("responds");
-    assert_eq!(response.status(), StatusCode::OK, "readiness passes against a live database");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "readiness passes against a live database"
+    );
 }
 
 // ---------------------------------------------------------- error envelope
@@ -448,9 +486,12 @@ async fn every_error_is_problem_json_with_a_matching_trace_id() {
             .to_str()
             .expect("ascii")
             .to_string();
-        let body: serde_json::Value =
-            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 64 * 1024).await.unwrap())
-                .expect("json");
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .unwrap(),
+        )
+        .expect("json");
         assert_eq!(body["code"], expected_code);
         assert_eq!(body["status"], expected_status.as_u16());
         assert_eq!(
@@ -503,7 +544,8 @@ async fn the_listing_pages_by_cursor_without_gaps_or_repeats() {
     let (app, _v) = test_app(service.clone(), verifier_for(&accounts));
 
     // Seven assets, so three pages at limit=3.
-    let tenant = darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user));
+    let tenant =
+        darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user));
     let mut created = Vec::new();
     for n in 0..7u8 {
         // A distinct, well-formed checksum per asset, derived from the index so
@@ -543,9 +585,12 @@ async fn the_listing_pages_by_cursor_without_gaps_or_repeats() {
             .expect("builds");
         let response = app.clone().oneshot(request).await.expect("responds");
         assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value =
-            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
-                .expect("json");
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .expect("json");
 
         let data = body["data"].as_array().expect("data is always an array");
         for item in data {

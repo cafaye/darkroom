@@ -1,0 +1,192 @@
+# AGENTS.md
+
+Conventions for `darkroom`, the cafaye media service. Read this before changing
+anything; the house rules in `moon/PLAN.md` §1 and §3 apply on top of it.
+
+## What this repository is
+
+`github.com/cafaye/darkroom`, Rust 1.95, one static binary. It owns uploaded
+media: signed uploads, a tenant-scoped asset registry, derived variants. The
+contracts are owned by `cafaye/core`; CI and lint config come from `cafaye/kit`.
+Neither lives here.
+
+## Layout
+
+```
+src/http.rs         routes, handlers, probes, auth middleware    (the wire)
+src/service.rs      the upload state machine, every decision      (the rules)
+src/domain.rs       assets, variants, enums                       (the vocabulary)
+src/auth.rs         token verification, Principal, Tenant         (who is calling)
+src/objectstore/    the storage trait, in-memory + s3             (where bytes live)
+src/store.rs        sqlx, the outbox, the idempotency ledger      (persistence)
+src/outbox.rs       the event envelope                            (the contract)
+src/checksum.rs     sha256, and the rules about trusting it
+src/variants.rs     resize + re-encode
+src/storage_key.rs  opaque key generation
+migrations/         plain SQL, applied by a deploy step
+openapi/v1.yaml     what exposes.api points at
+bin/prime           the gate
+tests/              the database suites, all #[ignore]d
+```
+
+Dependencies point downward only. `service.rs` knows nothing about axum;
+`domain.rs` knows nothing about SQL; `objectstore` knows nothing about assets.
+That is what lets the state machine be tested without a socket and the storage
+scope without a database. **Do not add an `upward` import** — the moment
+`service.rs` imports axum, the HTTP layer stops being a translation and the
+test for a decision needs a request.
+
+## Rules
+
+**Tests first.** Write the table, watch it fail, then implement until green
+(PLAN.md §3). Every handler change needs a case asserting the status code
+*and* the JSON shape.
+
+**`Tenant` is the only way to scope a query.** `auth::Tenant` has exactly one
+constructor and it takes a `Principal`. If you find yourself wanting
+`Tenant::from_request`, you are about to build a cross-tenant vulnerability.
+A repository method that does not take a `Tenant` will not typecheck, which is
+the point.
+
+**Cross-tenant is 404, not 403.** And the body must be byte-identical to the
+one for an id that never existed. A 403 leaks existence; a different body is
+just as much of an oracle as a different status. `a_cross_tenant_404_is_
+indistinguishable_from_a_missing_one` is the regression guard.
+
+**The checksum is computed, never trusted.** The client's claim is written at
+create and compared against at complete; the row ends up carrying the computed
+value. Do not add a path that stores the claimed one. If the backend recorded
+no checksum, read the object and hash it — do not fall back to the claim.
+
+**One way to emit an event.** `Outbox::enqueue` takes a `&mut Transaction`, and
+that is the entire design. A function without a transaction has no way to
+publish. If you find yourself wanting an `enqueue_after_commit`, you have
+described the bug `core/docs/event-outbox.md` is about.
+
+**No event for a `pending` asset.** Nothing is in storage, so every consumer
+would fail. `darkroom.asset.ready` is at complete, and that is the moment the
+bytes exist.
+
+**No event for a failure.** A consumer cannot act on "this upload did not
+complete" in a way that is better served by the client receiving its 4xx.
+
+**Liveness never touches a dependency.** `/healthz` is unconditional. A
+database outage must not get the process restarted out from under in-flight
+uploads; that is `/readyz`'s job, and it really does `select 1`.
+
+**The probes are exempt from auth by an explicit allow-list**, not by route
+order. `Router::layer` in axum applies to every route the router holds, so
+registering a route "before" the layer does not exempt it. There is a test.
+
+**Probe failures are logged, never returned in detail.** The body names the
+dependency; the underlying error goes to the log. An unauthenticated caller
+must not learn that a database host is `10.0.0.5`.
+
+**Migrations are a deploy step, not a boot step.** Nothing in `main` applies
+one. Never edit an applied migration; write a new one. Every migration needs a
+`Down` or a comment saying why it cannot be reversed.
+
+**No foreign keys across services.** `account_id` and `owner_user_id` are
+opaque UUIDs with no `references` clause. A cross-service FK is a release-order
+coupling and a shared outage wearing a constraint's clothes, and Postgres cannot
+enforce it across two connections anyway. The one real FK is
+`asset_variants.asset_id` → `assets.id`, because both are ours.
+
+**Storage keys are never client-supplied.** A client-chosen key collides across
+tenants, traverses, and is guessable. `StorageKey::generate_*` is the only
+constructor. If you need a key shape change, change the generator and the
+migration together.
+
+**`Asset` has no `storage_key` field.** It is a server-side detail and a client
+that can read it will try to build a URL from it.
+
+**Deps need a cause stated in review.** The full list with reasoning is in
+README.md. No dependency without one, and no feature flag that a test can reach
+the network through.
+
+**No `unsafe`.** There is none in this repository. Do not add any without a
+written justification next to it.
+
+**No secrets in the repo.** Object-storage credentials are the AWS SDK's own
+chain. `DARKROOM_DEV_JWT_SECRET` is read at runtime, never baked in with
+`option_env!` — a secret in the binary is a secret in the image, in the build
+cache, and in `docker history`.
+
+**Comments say why.** Explain the decision and the constraint, not the
+mechanism. A comment restating the line below it is noise.
+
+**Stubs stay honest.** Something not written is absent, not a `not implemented`
+fake that looks finished. README's "Not done" is the source of truth.
+
+## Tests that need a database
+
+`cargo test` is green on a bare machine with no Postgres and no Docker. The
+integration suites are `#[ignore]`d and need `TEST_DATABASE_URL`:
+
+```sh
+docker compose up -d postgres
+TEST_DATABASE_URL="postgres://darkroom:darkroom@localhost:5432/darkroom_test?sslmode=disable" \
+  cargo test -- --ignored --test-threads=1
+```
+
+`--test-threads=1` is a fixture-isolation requirement, not a race workaround:
+each test truncates the tables it touches, and two tests truncating
+concurrently would delete each other's fixtures mid-assert.
+
+A skip is honest; a test that silently passes without proving anything is not.
+**If you add a `#[ignore]`, add the job that runs it** — CI's
+`test-with-database` is the only reason the tenant-isolation suite is real
+rather than decoration.
+
+## No network in tests
+
+No test opens a socket to anything but the database named by the environment.
+Two structural reasons, not two promises:
+
+- The AWS SDK is not a default dependency, so the default build **cannot
+  construct a real object-storage client**.
+- HTTP tests drive the router with `tower::ServiceExt::oneshot` — a function
+  call, not a round trip.
+
+The in-memory store's presigned URLs are really signed and really scoped, so a
+bug in the scope or the TTL fails a test instead of shipping.
+
+## No sleeps, no raised retries, no loosened assertions
+
+PLAN.md §3. A test that needs an expired URL uses a zero-second TTL. A test
+that needs a port that is closed connects to port 1. A test that needs a
+duplicate uses a real second request. None of them waits.
+
+## Gates
+
+```sh
+./bin/prime          # fmt, build, clippy, test
+./bin/prime --db     # + the ignored tests
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo build --all-targets --all-features   # the feature-gated paths
+```
+
+All green before a commit lands. The `--all-features` build matters: `s3` and
+`dev-auth` are behind features, so a default build compiling clean says nothing
+about them.
+
+## Adding an endpoint
+
+1. `service.rs` — the rule, in a method that takes a `Tenant`. Tests first.
+2. `http.rs` — the handler, extracting and translating, with nothing decided.
+3. `openapi/v1.yaml` — the path, the errors, and `info.version` if anything
+   else in the document moved.
+4. A test asserting the status code, the JSON shape, and the anonymous case.
+5. A row in README's endpoint table.
+6. `./bin/prime`.
+
+## Adding an event
+
+1. A variant on `outbox::EventType`, and the test asserting three segments and
+   the publisher prefix.
+2. `cafaye.yml` `exposes.events` — and the test that counts both directions.
+3. The catalog row in `core/docs/event-naming.md` **and** a payload schema in
+   `core/schemas/events/`, which is a core change, not this repository's.
+4. Enqueue it in the same transaction as the domain write.
+5. A test that a rolled-back transaction emits nothing.

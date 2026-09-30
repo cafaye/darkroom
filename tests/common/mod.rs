@@ -86,7 +86,10 @@ pub fn test_service(store: Store) -> (Service, Arc<InMemoryObjectStore>) {
 }
 
 /// A router with a verifier that knows exactly these tokens.
-pub fn test_app(service: Service, verifier: StaticTokenVerifier) -> (axum::Router, Arc<StaticTokenVerifier>) {
+pub fn test_app(
+    service: Service,
+    verifier: StaticTokenVerifier,
+) -> (axum::Router, Arc<StaticTokenVerifier>) {
     let shared = Arc::new(verifier);
     let state = AppState {
         service,

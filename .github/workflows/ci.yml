@@ -1,0 +1,97 @@
+# The gate, as a GitHub Actions workflow. Shared workflow conventions come from
+# cafaye/kit; this repository's copy is small enough to inline rather than
+# depend on a repo that has not published a reusable Rust template yet.
+#
+# The important part of this file is the `test-with-database` job. The database
+# tests are `#[ignore]`d so that `cargo test` is green on a bare machine, and a
+# skipped test proves nothing — so CI has to run them explicitly or the
+# tenant-isolation suite is decoration. This is the job that makes them real.
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# PLAN.md §1: the gate runs under `set -o pipefail`, and a gate whose exit code
+# was not observed is treated as unrun, not as green.
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  build:
+    name: build, test, clippy, fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        # From rust-toolchain.toml, so CI and a worktree cannot disagree about
+        # which rustc produced a green result.
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --check
+
+      - name: build
+        run: cargo build --all-targets
+
+      - name: clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: test
+        run: cargo test
+
+      - name: build with every feature
+        # The `s3` and `dev-auth` code paths are behind features, so a default
+        # build compiling clean says nothing about them. This is the job that
+        # catches a feature-gated file that no longer compiles.
+        run: cargo build --all-targets --all-features
+
+  test-with-database:
+    name: integration tests (postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: darkroom
+          POSTGRES_PASSWORD: darkroom
+          POSTGRES_DB: darkroom_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U darkroom"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://darkroom:darkroom@localhost:5432/darkroom_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: run the ignored tests
+        # The tests truncate the tables they touch, so they run one at a time.
+        # That is a fixture-isolation requirement, not a race workaround.
+        run: cargo test -- --ignored --test-threads=1
+
+  contract:
+    name: cafaye manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: cafaye/caf
+          path: caf
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: lint cafaye.yml against core's schema
+        # The manifest is not this repository's to define. core owns the schema
+        # and `caf` owns the validator, so the check is "run their tool" rather
+        # than a copy of their rules that drifts.
+        run: cd caf && go run ./cmd/caf contract lint ../cafaye.yml

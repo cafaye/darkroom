@@ -45,10 +45,17 @@ async fn the_full_signed_upload_flow() {
         .expect("creates");
 
     assert_eq!(created.asset.status, AssetStatus::Pending, "starts pending");
-    assert_eq!(created.asset.kind, AssetKind::Image, "kind is derived from content_type");
-    assert_eq!(created.duplicate, false);
+    assert_eq!(
+        created.asset.kind,
+        AssetKind::Image,
+        "kind is derived from content_type"
+    );
+    assert!(!created.duplicate);
     assert!(
-        created.presigned.url.contains(&created.presigned.key.replace('/', "%2F")),
+        created
+            .presigned
+            .url
+            .contains(&created.presigned.key.replace('/', "%2F")),
         "the URL must address exactly the key the response names"
     );
     assert_eq!(created.presigned.expires_in_secs, PRESIGN_TTL.as_secs());
@@ -56,11 +63,7 @@ async fn the_full_signed_upload_flow() {
     // 2. the client PUTs. Nothing goes through the service.
     let puts_before = objects.stats().puts;
     objects
-        .apply_presigned_put(
-            &created.presigned.url,
-            payload.clone(),
-            "image/png",
-        )
+        .apply_presigned_put(&created.presigned.url, payload.clone(), "image/png")
         .await
         .expect("the presigned PUT succeeds");
     assert_eq!(
@@ -76,7 +79,10 @@ async fn the_full_signed_upload_flow() {
         .expect("completes");
 
     assert_eq!(ready.status, AssetStatus::Ready);
-    assert_eq!(ready.id, created.asset.id, "the same asset is completed, not a new one");
+    assert_eq!(
+        ready.id, created.asset.id,
+        "the same asset is completed, not a new one"
+    );
     assert_eq!(
         ready.checksum, checksum,
         "the stored checksum is the one computed from the bytes, which happen to equal the claim here"
@@ -109,9 +115,21 @@ async fn the_bytes_never_pass_through_the_service() {
 
     // Before the client's PUT: zero gets and zero puts. A proxying service
     // would have a `get` on the complete path; this one only ever `head`s.
-    assert_eq!(objects.stats().heads, 0, "create must not probe the object store");
-    assert_eq!(objects.stats().gets, 0, "create must not read the object store");
-    assert_eq!(objects.stats().puts, 0, "create must not write to the object store");
+    assert_eq!(
+        objects.stats().heads,
+        0,
+        "create must not probe the object store"
+    );
+    assert_eq!(
+        objects.stats().gets,
+        0,
+        "create must not read the object store"
+    );
+    assert_eq!(
+        objects.stats().puts,
+        0,
+        "create must not write to the object store"
+    );
 
     objects
         .apply_presigned_put(&created.presigned.url, payload.clone(), "image/png")
@@ -124,7 +142,11 @@ async fn the_bytes_never_pass_through_the_service() {
     // verified from a checksum, not by streaming it back through the service.
     let before = objects.stats();
     service
-        .complete_upload(&tenant, created.asset.id, &darkroom::checksum::sha256_hex(&payload))
+        .complete_upload(
+            &tenant,
+            created.asset.id,
+            &darkroom::checksum::sha256_hex(&payload),
+        )
         .await
         .expect("completes");
     let after = objects.stats();
@@ -188,11 +210,13 @@ async fn complete_with_a_wrong_checksum_is_422_and_fails_the_asset() {
     );
 
     // And the asset is terminal-failed, not left pending forever.
-    let after = service.get_asset(&tenant, created.asset.id).await.expect("still readable");
+    let after = service
+        .get_asset(&tenant, created.asset.id)
+        .await
+        .expect("still readable");
     assert_eq!(after.status, AssetStatus::Failed);
     assert_eq!(
-        after.metadata["failure_reason"],
-        "checksum_mismatch",
+        after.metadata["failure_reason"], "checksum_mismatch",
         "the reason is recorded for whoever looks at this asset later"
     );
 }
@@ -230,15 +254,25 @@ async fn complete_with_a_missing_object_is_409() {
     );
 
     let err = service
-        .complete_upload(&tenant, created.asset.id, &darkroom::checksum::sha256_hex(&payload))
+        .complete_upload(
+            &tenant,
+            created.asset.id,
+            &darkroom::checksum::sha256_hex(&payload),
+        )
         .await
         .expect_err("an upload that never landed must not complete");
     assert_eq!(err.status().as_u16(), 409, "an absent object is a conflict");
     assert_eq!(err.code(), "conflict");
 
-    let after = service.get_asset(&tenant, created.asset.id).await.expect("still readable");
+    let after = service
+        .get_asset(&tenant, created.asset.id)
+        .await
+        .expect("still readable");
     assert_eq!(after.status, AssetStatus::Failed);
-    assert_eq!(after.metadata["failure_reason"], "object_absent_at_complete");
+    assert_eq!(
+        after.metadata["failure_reason"],
+        "object_absent_at_complete"
+    );
 }
 
 /// A malformed checksum is 422 at CREATE time, not at complete time twenty
@@ -263,7 +297,11 @@ async fn a_malformed_checksum_is_rejected_at_create_with_nothing_written() {
             )
             .await
             .expect_err("must be rejected");
-        assert_eq!(err.status().as_u16(), 422, "accepted a malformed checksum: {bad:?}");
+        assert_eq!(
+            err.status().as_u16(),
+            422,
+            "accepted a malformed checksum: {bad:?}"
+        );
         let problem = err.to_problem("/v1/uploads", "t");
         assert_eq!(problem.errors.expect("names a field")[0].field, "checksum");
     }
@@ -310,7 +348,10 @@ async fn a_presigned_url_only_writes_to_its_own_key() {
         .await
         .expect("creates b");
 
-    assert_ne!(first.presigned.key, second.presigned.key, "two uploads, two keys");
+    assert_ne!(
+        first.presigned.key, second.presigned.key,
+        "two uploads, two keys"
+    );
 
     // The scope that matters is the KEY, not the content. A presigned URL says
     // "these bytes may be written at this key" and deliberately says nothing
@@ -318,10 +359,7 @@ async fn a_presigned_url_only_writes_to_its_own_key() {
     // for. So the property under test is: asset A's URL writes to asset A's
     // key, and asset A's key still holds nothing until A's URL is used.
     assert!(
-        objects
-            .head(first.presigned.key.as_str())
-            .await
-            .is_err(),
+        objects.head(first.presigned.key.as_str()).await.is_err(),
         "asset a's key must still be empty"
     );
 
@@ -348,7 +386,11 @@ async fn a_presigned_url_only_writes_to_its_own_key() {
         .expect("a completes with a's checksum");
     assert!(
         service
-            .complete_upload(&tenant, second.asset.id, &darkroom::checksum::sha256_hex(&a))
+            .complete_upload(
+                &tenant,
+                second.asset.id,
+                &darkroom::checksum::sha256_hex(&a)
+            )
             .await
             .is_err(),
         "b's key is empty, so b cannot complete no matter what checksum is claimed"

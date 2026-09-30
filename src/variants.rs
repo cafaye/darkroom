@@ -24,7 +24,7 @@
 
 use bytes::Bytes;
 use image::codecs::jpeg::JpegEncoder;
-use image::{ImageEncoder, ImageReader, ImageFormat};
+use image::{ImageEncoder, ImageFormat, ImageReader};
 use std::io::Cursor;
 
 use crate::domain::VariantKind;
@@ -96,11 +96,7 @@ pub fn encode(
         let scale = max_edge as f32 / longest as f32;
         let width = ((source_width as f32 * scale).round() as u32).max(1);
         let height = ((source_height as f32 * scale).round() as u32).max(1);
-        Some(decoded.resize_exact(
-            width,
-            height,
-            image::imageops::FilterType::Lanczos3,
-        ))
+        Some(decoded.resize_exact(width, height, image::imageops::FilterType::Lanczos3))
     };
 
     let image = resized.as_ref().unwrap_or(&decoded);
@@ -240,12 +236,20 @@ mod tests {
     fn preview_is_bounded_at_1024_and_web_is_not_resized_at_all() {
         let source = png(3000, 3000);
         assert_eq!(
-            dimensions(&encode(&source, VariantKind::Preview, "image/png").expect("encodes").bytes),
+            dimensions(
+                &encode(&source, VariantKind::Preview, "image/png")
+                    .expect("encodes")
+                    .bytes
+            ),
             (1024, 1024)
         );
         // `web` re-encodes without resizing, which is its whole point.
         assert_eq!(
-            dimensions(&encode(&source, VariantKind::Web, "image/png").expect("encodes").bytes),
+            dimensions(
+                &encode(&source, VariantKind::Web, "image/png")
+                    .expect("encodes")
+                    .bytes
+            ),
             (3000, 3000)
         );
     }
@@ -253,14 +257,22 @@ mod tests {
     #[test]
     fn every_variant_is_jpeg_and_the_declared_type_agrees_with_the_bytes() {
         let source = png(1200, 800);
-        for kind in [VariantKind::Thumbnail, VariantKind::Preview, VariantKind::Web] {
+        for kind in [
+            VariantKind::Thumbnail,
+            VariantKind::Preview,
+            VariantKind::Web,
+        ] {
             let encoded = encode(&source, kind, "image/png").expect("encodes");
 
             // The bytes really are JPEG, as sniffed from the container magic.
             let reader = ImageReader::new(Cursor::new(encoded.bytes.as_ref()))
                 .with_guessed_format()
                 .expect("reads");
-            assert_eq!(reader.format(), Some(ImageFormat::Jpeg), "{kind} must be JPEG");
+            assert_eq!(
+                reader.format(),
+                Some(ImageFormat::Jpeg),
+                "{kind} must be JPEG"
+            );
 
             // And the declared content type agrees with the container, so a
             // client that trusts the `content_type` field gets the bytes it was
@@ -274,16 +286,16 @@ mod tests {
         // JPEG has no alpha channel. `to_rgb8` would DROP the alpha, leaving a
         // transparent red pixel red and a transparent black pixel black — both
         // visible in the served image. So the matte is done explicitly.
-        let transparent_red = encode(&solid_rgba_png(255, 0, 0, 0), VariantKind::Web, "image/png")
-            .expect("encodes");
+        let transparent_red =
+            encode(&solid_rgba_png(255, 0, 0, 0), VariantKind::Web, "image/png").expect("encodes");
         let pixel = middle_pixel(&transparent_red.bytes);
         assert!(
             pixel.iter().all(|c| *c > 200),
             "a fully transparent pixel must matte to white, got {pixel:?}"
         );
 
-        let transparent_black = encode(&solid_rgba_png(0, 0, 0, 0), VariantKind::Web, "image/png")
-            .expect("encodes");
+        let transparent_black =
+            encode(&solid_rgba_png(0, 0, 0, 0), VariantKind::Web, "image/png").expect("encodes");
         let pixel = middle_pixel(&transparent_black.bytes);
         assert!(
             pixel.iter().all(|c| *c > 200),
@@ -295,10 +307,17 @@ mod tests {
         // is the source colour, and green and blue land halfway to the white
         // matte. A matte that ignored the source colour, or that used a
         // different alpha, would pass the two assertions above and fail this.
-        let half = encode(&solid_rgba_png(255, 0, 0, 128), VariantKind::Web, "image/png")
-            .expect("encodes");
+        let half = encode(
+            &solid_rgba_png(255, 0, 0, 128),
+            VariantKind::Web,
+            "image/png",
+        )
+        .expect("encodes");
         let [r, g, b] = middle_pixel(&half.bytes);
-        assert!(r.abs_diff(255) < 12, "red must survive the matte, got r={r}");
+        assert!(
+            r.abs_diff(255) < 12,
+            "red must survive the matte, got r={r}"
+        );
         assert!(
             g.abs_diff(127) < 12 && b.abs_diff(127) < 12,
             "green and blue must land halfway to white (127), got {g},{b}"
@@ -312,19 +331,19 @@ mod tests {
         // black. This is the test that would catch that regression, and it is
         // why the assertion is on an OPAQUE pixel rather than only on
         // transparent ones.
-        for (r, g, b) in [(255u8, 0u8, 0u8), (0, 255, 0), (0, 0, 255), (255, 255, 255), (0, 0, 0)] {
-            let encoded = encode(
-                &solid_rgba_png(r, g, b, 255),
-                VariantKind::Web,
-                "image/png",
-            )
-            .expect("encodes");
+        for (r, g, b) in [
+            (255u8, 0u8, 0u8),
+            (0, 255, 0),
+            (0, 0, 255),
+            (255, 255, 255),
+            (0, 0, 0),
+        ] {
+            let encoded = encode(&solid_rgba_png(r, g, b, 255), VariantKind::Web, "image/png")
+                .expect("encodes");
             let pixel = middle_pixel(&encoded.bytes);
             // JPEG is lossy, so this is a tolerance rather than an equality.
             assert!(
-                pixel[0].abs_diff(r) < 12
-                    && pixel[1].abs_diff(g) < 12
-                    && pixel[2].abs_diff(b) < 12,
+                pixel[0].abs_diff(r) < 12 && pixel[1].abs_diff(g) < 12 && pixel[2].abs_diff(b) < 12,
                 "opaque ({r},{g},{b}) came out as {pixel:?}"
             );
         }

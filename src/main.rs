@@ -81,7 +81,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn build_object_store(config: &Config) -> Result<SharedObjectStore, Box<dyn std::error::Error>> {
+async fn build_object_store(
+    config: &Config,
+) -> Result<SharedObjectStore, Box<dyn std::error::Error>> {
     match &config.object_store {
         ObjectStoreConfig::Memory => {
             // Development and the whole test suite. Named in the startup log so
@@ -96,17 +98,19 @@ async fn build_object_store(config: &Config) -> Result<SharedObjectStore, Box<dy
             endpoint,
             path_style,
         } => {
-            let store =
-                darkroom::objectstore::s3_impl::S3ObjectStore::connect(bucket, region, endpoint.clone(), *path_style)
-                    .await?;
+            let store = darkroom::objectstore::S3ObjectStore::connect(
+                bucket,
+                region,
+                endpoint.clone(),
+                *path_style,
+            )
+            .await?;
             Ok(Arc::new(store))
         }
     }
 }
 
-fn build_verifier(
-    config: &Config,
-) -> Result<Box<dyn TokenVerifier>, Box<dyn std::error::Error>> {
+fn build_verifier(config: &Config) -> Result<Box<dyn TokenVerifier>, Box<dyn std::error::Error>> {
     // A dev-only HMAC verifier, compiled in behind a feature but gated at
     // runtime on the environment. The runtime gate is the one that matters: a
     // feature flag is a build-time switch, and the environment is the only
@@ -119,7 +123,9 @@ fn build_verifier(
             // and in every layer of a `docker history`.
             if let Ok(secret) = std::env::var("DARKROOM_DEV_JWT_SECRET") {
                 if !secret.is_empty() {
-                    tracing::warn!("using the DEVELOPMENT HMAC token verifier; tokens are forgeable");
+                    tracing::warn!(
+                        "using the DEVELOPMENT HMAC token verifier; tokens are forgeable"
+                    );
                     return Ok(Box::new(darkroom::auth::HmacVerifier::new(
                         secret,
                         &config.issuer,

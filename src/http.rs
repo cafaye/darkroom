@@ -152,7 +152,10 @@ async fn authenticate(
     let Some(header) = header else {
         return Err(Error::unauthorized("a bearer token is required"));
     };
-    let Some(token) = header.strip_prefix("Bearer ").or_else(|| header.strip_prefix("bearer ")) else {
+    let Some(token) = header
+        .strip_prefix("Bearer ")
+        .or_else(|| header.strip_prefix("bearer "))
+    else {
         return Err(Error::unauthorized("a bearer token is required"));
     };
     let token = token.trim();
@@ -527,10 +530,7 @@ pub struct BindAddr(pub SocketAddr);
 pub const READINESS_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// A convenience for `main` and for the integration tests: bind and serve.
-pub async fn serve(
-    listener: tokio::net::TcpListener,
-    state: AppState,
-) -> std::io::Result<()> {
+pub async fn serve(listener: tokio::net::TcpListener, state: AppState) -> std::io::Result<()> {
     axum::serve(
         listener,
         router(state).into_make_service_with_connect_info::<SocketAddr>(),
@@ -577,7 +577,11 @@ mod tests {
             let err = decode_cursor(bad).expect_err("must be rejected");
             // 400 is core's answer for a malformed cursor; 422 is for a
             // semantically wrong body. A cursor is part of the request syntax.
-            assert_eq!(err.status().as_u16(), 422, "rejected {bad:?} with the wrong status");
+            assert_eq!(
+                err.status().as_u16(),
+                422,
+                "rejected {bad:?} with the wrong status"
+            );
             let problem = err.to_problem("/v1/assets", "t");
             assert_eq!(problem.errors.expect("names a field")[0].field, "cursor");
         }
@@ -648,7 +652,11 @@ mod tests {
 
         let health = app
             .clone()
-            .oneshot(Request::get("/healthz").body(Body::empty()).expect("builds"))
+            .oneshot(
+                Request::get("/healthz")
+                    .body(Body::empty())
+                    .expect("builds"),
+            )
             .await
             .expect("responds");
         assert_eq!(
@@ -658,7 +666,11 @@ mod tests {
         );
 
         let api = app
-            .oneshot(Request::get("/v1/assets").body(Body::empty()).expect("builds"))
+            .oneshot(
+                Request::get("/v1/assets")
+                    .body(Body::empty())
+                    .expect("builds"),
+            )
             .await
             .expect("responds");
         assert_eq!(api.status(), StatusCode::UNAUTHORIZED);

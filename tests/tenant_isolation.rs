@@ -70,10 +70,14 @@ async fn cross_tenant_access_is_404_on_every_endpoint() {
     // An asset that belongs to A.
     let a_asset = seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user).await;
     // A thumbnail on it, so the variant endpoints have something to protect.
-    let b_tenant = darkroom::auth::Tenant::from_principal(&principal(accounts.b_account, accounts.b_user));
+    let b_tenant =
+        darkroom::auth::Tenant::from_principal(&principal(accounts.b_account, accounts.b_user));
     let variant = service
         .create_variant(
-            &darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user)),
+            &darkroom::auth::Tenant::from_principal(&principal(
+                accounts.a_account,
+                accounts.a_user,
+            )),
             a_asset,
             darkroom::VariantKind::Thumbnail,
         )
@@ -82,8 +86,18 @@ async fn cross_tenant_access_is_404_on_every_endpoint() {
 
     // Every endpoint B can reach, aimed at A's asset.
     let cases: Vec<(&str, http::Method, String, Option<Body>)> = vec![
-        ("GET asset", http::Method::GET, format!("/v1/assets/{a_asset}"), None),
-        ("DELETE asset", http::Method::DELETE, format!("/v1/assets/{a_asset}"), None),
+        (
+            "GET asset",
+            http::Method::GET,
+            format!("/v1/assets/{a_asset}"),
+            None,
+        ),
+        (
+            "DELETE asset",
+            http::Method::DELETE,
+            format!("/v1/assets/{a_asset}"),
+            None,
+        ),
         (
             "GET variants",
             http::Method::GET,
@@ -112,7 +126,7 @@ async fn cross_tenant_access_is_404_on_every_endpoint() {
             .uri(&path)
             .header("authorization", "Bearer token-b")
             .header("content-type", "application/json")
-            .body(body.unwrap_or_else(|| Body::empty()))
+            .body(body.unwrap_or_else(Body::empty))
             .expect("builds");
 
         let response = app.clone().oneshot(request).await.expect("responds");
@@ -125,13 +139,22 @@ async fn cross_tenant_access_is_404_on_every_endpoint() {
     }
 
     // And A's asset and its variant are untouched by all of that.
-    let a_tenant = darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user));
+    let a_tenant =
+        darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user));
     assert_eq!(
-        service.get_asset(&a_tenant, a_asset).await.expect("still there").status,
+        service
+            .get_asset(&a_tenant, a_asset)
+            .await
+            .expect("still there")
+            .status,
         AssetStatus::Ready
     );
     assert_eq!(
-        service.list_variants(&a_tenant, a_asset).await.expect("still there").len(),
+        service
+            .list_variants(&a_tenant, a_asset)
+            .await
+            .expect("still there")
+            .len(),
         1,
         "B's attempts must not have created or removed a variant"
     );
@@ -154,11 +177,7 @@ async fn a_cross_tenant_404_is_indistinguishable_from_a_missing_one() {
     // An id that was never issued to anyone.
     let never_existed = Uuid::new_v4();
 
-    async fn get(
-        app: axum::Router,
-        id: Uuid,
-        token: &'static str,
-    ) -> (StatusCode, bytes::Bytes) {
+    async fn get(app: axum::Router, id: Uuid, token: &'static str) -> (StatusCode, bytes::Bytes) {
         let request = Request::builder()
             .uri(format!("/v1/assets/{id}"))
             .header("authorization", format!("Bearer {token}"))
@@ -215,9 +234,12 @@ async fn a_listing_returns_only_the_callers_own_assets() {
     let response = app.clone().oneshot(request).await.expect("responds");
     assert_eq!(response.status(), StatusCode::OK);
 
-    let body: serde_json::Value =
-        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
-            .expect("json");
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .expect("json");
     let ids: Vec<&str> = body["data"]
         .as_array()
         .expect("data is an array")
@@ -225,12 +247,19 @@ async fn a_listing_returns_only_the_callers_own_assets() {
         .map(|a| a["id"].as_str().expect("an id"))
         .collect();
 
-    assert!(ids.contains(&a_asset.to_string().as_str()), "A sees its own asset");
+    assert!(
+        ids.contains(&a_asset.to_string().as_str()),
+        "A sees its own asset"
+    );
     assert!(
         !ids.contains(&b_asset.to_string().as_str()),
         "A must never see B's asset in a listing: {ids:?}"
     );
-    assert_eq!(ids.len(), 1, "A has exactly one asset, so the page must have one row");
+    assert_eq!(
+        ids.len(),
+        1,
+        "A has exactly one asset, so the page must have one row"
+    );
 }
 
 /// A `member` with the read scope sees their account's assets. The positive
@@ -258,9 +287,12 @@ async fn a_member_sees_their_own_accounts_assets() {
         "a member must be able to read their own account's asset"
     );
 
-    let body: serde_json::Value =
-        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
-            .expect("json");
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .expect("json");
     assert_eq!(body["asset"]["id"], a_asset.to_string());
     assert_eq!(body["asset"]["status"], "ready");
 }
@@ -339,7 +371,8 @@ async fn a_cross_tenant_delete_is_404_and_the_asset_survives() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     // A's asset is still there AND its bytes are still there.
-    let a_tenant = darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user));
+    let a_tenant =
+        darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user));
     assert!(
         service.get_asset(&a_tenant, a_asset).await.is_ok(),
         "B's delete must not remove A's row"
@@ -381,9 +414,12 @@ async fn a_create_body_cannot_name_an_account() {
     let response = app.clone().oneshot(request).await.expect("responds");
     assert_eq!(response.status(), StatusCode::CREATED);
 
-    let body: serde_json::Value =
-        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
-            .expect("json");
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .expect("json");
     assert_eq!(
         body["asset"]["account_id"],
         accounts.b_account.to_string(),

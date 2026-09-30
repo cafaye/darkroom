@@ -34,28 +34,28 @@ const ERROR_BASE: &str = "https://errors.cafaye.com";
 /// fixed `title`.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// 401. No credential, or a credential that did not verify. Never says
-    /// *which* part failed.
+    /// HTTP 401. No credential, or a credential that did not verify. Never says
+    /// which part of it failed.
     #[error("{detail}")]
     Unauthorized { detail: &'static str },
 
-    /// 403. The caller authenticated and holds the scope, but the account in
+    /// HTTP 403. The caller authenticated and holds the scope, but the account in
     /// the token is not theirs. Used for scope failures, never for a resource
-    /// that exists under another account — that is [`Error::NotFound`].
+    /// that exists under another account — that is `NotFound`.
     #[error("{detail}")]
     Forbidden { detail: &'static str },
 
-    /// 404. Also the answer to "this asset belongs to another account", so
+    /// HTTP 404. Also the answer to "this asset belongs to another account", so
     /// existence is never confirmed across a tenant boundary.
     #[error("{detail}")]
     NotFound { detail: &'static str },
 
-    /// 409. State conflict: completing an upload whose object never arrived,
+    /// HTTP 409. State conflict: completing an upload whose object never arrived,
     /// or a duplicate that is not allowed to resolve to the existing asset.
     #[error("{detail}")]
     Conflict { detail: String },
 
-    /// 422. The request parsed and was well-formed but is semantically wrong:
+    /// HTTP 422. The request parsed and was well-formed but is semantically wrong:
     /// a checksum that does not match the stored bytes, an out-of-range
     /// dimension, a `kind` that does not match the content type.
     #[error("{detail}")]
@@ -64,7 +64,7 @@ pub enum Error {
         errors: Vec<FieldError>,
     },
 
-    /// 409. Same `Idempotency-Key`, different body. Distinct from `conflict`
+    /// HTTP 409. Same `Idempotency-Key`, different body. Distinct from `conflict`
     /// because a client can act on it: it means "pick a new key", not "the
     /// world changed".
     #[error("{detail}")]
@@ -74,8 +74,8 @@ pub enum Error {
     #[error("{detail}")]
     Internal { detail: &'static str },
 
-    /// 503. A dependency this request needs is not answering — the database,
-    /// or object storage.
+    /// HTTP 503. A dependency this request needs is not answering — the
+    /// database, or object storage.
     #[error("{detail}")]
     Unavailable { detail: &'static str },
 }
@@ -171,9 +171,7 @@ impl Error {
             // `errors[]` appears only on 422. Emitting an empty array elsewhere
             // is the kind of thing a client starts branching on.
             errors: match self {
-                Error::Validation { errors, .. } if !errors.is_empty() => {
-                    Some(errors.clone())
-                }
+                Error::Validation { errors, .. } if !errors.is_empty() => Some(errors.clone()),
                 _ => None,
             },
         }
@@ -278,7 +276,9 @@ impl From<crate::store::StoreError> for Error {
             // A pool that cannot hand out a connection within its timeout is a
             // dependency failure, not a bug: 503 tells an orchestrator the
             // instance is alive but not ready, and `/readyz` will agree.
-            crate::store::StoreError::Unavailable(_) => Error::unavailable("database is unavailable"),
+            crate::store::StoreError::Unavailable(_) => {
+                Error::unavailable("database is unavailable")
+            }
             // Everything else reaching this arm is a query or a constraint we
             // did not expect. 500 with a fixed detail; the cause is logged
             // under the trace id and nowhere else.
@@ -322,9 +322,7 @@ mod tests {
             Error::not_found("x"),
             Error::conflict("x"),
             Error::invalid("x"),
-            Error::IdempotencyKeyReused {
-                detail: "x".into(),
-            },
+            Error::IdempotencyKeyReused { detail: "x".into() },
             Error::internal("x"),
             Error::unavailable("x"),
         ] {
@@ -349,12 +347,7 @@ mod tests {
             (Error::not_found("x"), 404),
             (Error::conflict("x"), 409),
             (Error::invalid("x"), 422),
-            (
-                Error::IdempotencyKeyReused {
-                    detail: "x".into(),
-                },
-                409,
-            ),
+            (Error::IdempotencyKeyReused { detail: "x".into() }, 409),
             (Error::internal("x"), 500),
             (Error::unavailable("x"), 503),
         ];
@@ -386,7 +379,11 @@ mod tests {
         // the parsed OBJECT's keys, not on the serialised string: the `type` URI
         // is `https://errors.cafaye.com/...`, so a substring test would match
         // every response and prove nothing.
-        for err in [Error::not_found("x"), Error::conflict("x"), Error::internal("x")] {
+        for err in [
+            Error::not_found("x"),
+            Error::conflict("x"),
+            Error::internal("x"),
+        ] {
             let value = serde_json::to_value(err.to_problem("/v1/x", "t")).expect("serialises");
             let keys: Vec<&str> = value
                 .as_object()
@@ -399,8 +396,13 @@ mod tests {
                 "non-422 leaked an errors key: {keys:?}"
             );
             // And the required seven are all present.
-            for required in ["type", "title", "status", "detail", "instance", "code", "trace_id"] {
-                assert!(keys.contains(&required), "{required} is missing from {keys:?}");
+            for required in [
+                "type", "title", "status", "detail", "instance", "code", "trace_id",
+            ] {
+                assert!(
+                    keys.contains(&required),
+                    "{required} is missing from {keys:?}"
+                );
             }
         }
     }
@@ -430,7 +432,11 @@ mod tests {
         });
 
         let response = app
-            .oneshot(axum::http::Request::get("/v1/assets").body(axum::body::Body::empty()).unwrap())
+            .oneshot(
+                axum::http::Request::get("/v1/assets")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
             .await
             .expect("router responds");
 
@@ -444,9 +450,12 @@ mod tests {
             .to_str()
             .expect("header is ascii")
             .to_string();
-        let body: serde_json::Value =
-            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 64 * 1024).await.unwrap())
-                .expect("body is json");
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .unwrap(),
+        )
+        .expect("body is json");
         assert_eq!(
             body["trace_id"].as_str(),
             Some(header_trace.as_str()),

@@ -202,7 +202,10 @@ mod tests {
             let name = event_type.as_str();
             let segments: Vec<&str> = name.split('.').collect();
             assert_eq!(segments.len(), 3, "{name} is not three segments");
-            assert_eq!(segments[0], SOURCE, "{name} is not prefixed by its publisher");
+            assert_eq!(
+                segments[0], SOURCE,
+                "{name} is not prefixed by its publisher"
+            );
             for segment in &segments[1..] {
                 assert!(
                     segment
@@ -222,8 +225,16 @@ mod tests {
     fn actions_are_past_tense_and_in_core_s_action_vocabulary() {
         // core's list: created, updated, deleted, ..., completed. `ready` is
         // core's "state, never command" form and `created` is the past tense.
-        for event_type in [EventType::AssetReady, EventType::AssetDeleted, EventType::VariantCreated] {
-            let action = event_type.as_str().rsplit('.').next().expect("has an action");
+        for event_type in [
+            EventType::AssetReady,
+            EventType::AssetDeleted,
+            EventType::VariantCreated,
+        ] {
+            let action = event_type
+                .as_str()
+                .rsplit('.')
+                .next()
+                .expect("has an action");
             assert!(
                 ["ready", "deleted", "created"].contains(&action),
                 "{action} is not in the v0 action vocabulary"
@@ -248,7 +259,15 @@ mod tests {
         keys.sort_unstable();
         assert_eq!(
             keys,
-            ["data", "id", "source", "specversion", "subject", "time", "type"]
+            [
+                "data",
+                "id",
+                "source",
+                "specversion",
+                "subject",
+                "time",
+                "type"
+            ]
         );
         assert_eq!(object["specversion"], "1.0");
         assert_eq!(object["source"], SOURCE);
