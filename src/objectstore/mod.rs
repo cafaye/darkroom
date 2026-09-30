@@ -2,7 +2,9 @@
 //!
 //! One trait, [`ObjectStore`], and two implementations: [`InMemoryObjectStore`]
 //! (always compiled, used by every test and by `DARKROOM_OBJECT_STORE=memory`
-//! in development) and [`S3ObjectStore`] (compiled only with `--features s3`).
+//! in development) and [`S3ObjectStore`] (compiled only with `--features s3`,
+//! and the same implementation whether the bucket is AWS S3, MinIO, or
+//! Cloudflare R2).
 //!
 //! ## The boundary, stated
 //!
@@ -12,6 +14,32 @@
 //! tenant scoping, checksum verification, status transitions, outbox — and
 //! everything below is transport. There is no "if s3 then" above the line, and
 //! no policy below it.
+//!
+//! ## One implementation, several S3-compatible services
+//!
+//! AWS S3, MinIO and Cloudflare R2 differ in ways that each bit somebody once.
+//! They are handled in `config.rs` and in [`S3ObjectStore`], never in a second
+//! implementation and never in a branch on a backend name:
+//!
+//! - **R2's region is `auto`.** `us-east-1` and the empty string alias to it,
+//!   but SigV4 has to be signed with `auto` or the request is rejected. An R2
+//!   endpoint is normalised to `auto` at startup, and an R2 endpoint paired with
+//!   a real region is refused there rather than failing on the first upload.
+//! - **R2's endpoint is account-scoped** (`https://<ACCOUNT_ID>.r2
+//!   .cloudflarestorage.com`) and there is no global one, so it is configuration
+//!   and never a constant in this file.
+//! - **R2 has no `FULL_OBJECT` SHA-256.** Its compatibility table offers
+//!   `COMPOSITE` for SHA-256 and `FULL_OBJECT` for CRC-64/NVME only, so a
+//!   checksum read back from a header is not the object's sha256. This is why
+//!   [`ObjectMeta`] has no checksum field and why `complete` reads the object
+//!   back: a correctness property may not depend on which backend answered.
+//! - **R2 rejects ACL, grant, object-lock and expected-bucket-owner headers.**
+//!   darkroom never sets them and has no configuration that could, so there is
+//!   nothing to get wrong.
+//!
+//! The trait is why those are four lines of configuration rather than a second
+//! store: each difference is a *request-shaping* fact, and request shaping is
+//! entirely below this line.
 //!
 //! ## Why the trait is async and not generic
 //!
@@ -50,20 +78,26 @@ pub const PRESIGN_TTL: Duration = Duration::from_secs(900); // 15 minutes
 /// wrong. A request above this is a 422 before any URL is issued.
 pub const MAX_UPLOAD_BYTES: i64 = 1024 * 1024 * 1024; // 1 GiB
 
-/// What the store says about an object. `checksum` is the sha256 **hex the
-/// backend itself recorded** — for S3, a checksum the client sent in an
-/// `x-amz-checksum-sha256` header and S3 verified and stored; for the in-memory
-/// store, the hash of the bytes. It is never the same thing as a value the
-/// client asserts in a JSON body.
+/// What the store says about an object: its size, its type, and nothing else.
+///
+/// **There is deliberately no checksum field.** It was there, and it was the
+/// defect this file was changed for. `complete` used to ask the backend what
+/// checksum it had recorded and compare the client's claim against that answer,
+/// which is a correctness property that exists on AWS S3 and does not exist on
+/// Cloudflare R2: R2's S3 compatibility table offers `FULL_OBJECT` for CRC-64/NVME
+/// only, so for SHA-256 the answer is either absent or a `COMPOSITE` value that
+/// is not the object's sha256. A field that is `Some` on one backend and `None`
+/// on another is a field whose absence silently disables a check.
+///
+/// Size and content type stayed because they are measurements every
+/// S3-compatible service reports honestly. A checksum is not a measurement: it
+/// is a backend's *claim* about bytes, and this service makes its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectMeta {
     pub key: String,
+    /// The measured length, not the length the client declared.
     pub byte_size: i64,
     pub content_type: String,
-    /// Lowercase hex sha256, or `None` when the backend did not record one. The
-    /// complete path treats `None` as "compute it by reading the object" rather
-    /// than as "trust the client".
-    pub checksum: Option<String>,
 }
 
 /// A finished, ready-to-use presigned URL.
@@ -130,11 +164,23 @@ pub trait ObjectStore: Send + Sync + 'static {
         ttl: Duration,
     ) -> Result<PresignedPut, ObjectStoreError>;
 
-    /// What is at `key`, or [`ObjectStoreError::NotFound`].
+    /// What is at `key`, or [`ObjectStoreError::NotFound`]. The measured size
+    /// and content type, and nothing about the bytes themselves.
+    ///
+    /// `head` is how "the upload never landed" is answered without downloading a
+    /// gigabyte to discover the gigabyte is not there. It is not, and cannot be,
+    /// evidence about content: a backend that reports the right size, the right
+    /// type and a wrong checksum is a real backend on a real day.
     async fn head(&self, key: &str) -> Result<ObjectMeta, ObjectStoreError>;
 
-    /// The bytes at `key`. Used at complete time to verify a checksum the
-    /// backend did not record, and by variant generation to read the original.
+    /// The bytes at `key`. The only way this service learns what storage
+    /// actually holds, and therefore the only basis for a checksum decision.
+    ///
+    /// Used at complete time to verify the client's claim against the bytes, and
+    /// by variant generation to read the original. That complete-time read is
+    /// not an optimisation left over from a fallback path: it is the whole
+    /// verification. See [`ObjectMeta`] for why nothing above this line may ask
+    /// the backend for a checksum instead.
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError>;
 
     /// Write `bytes` at `key`. Used by variant generation to store a derived
@@ -213,7 +259,6 @@ pub struct StoreStats {
 struct StoredObject {
     bytes: Bytes,
     content_type: String,
-    checksum: String,
     signed_puts: HashMap<String, SignedPut>,
 }
 
@@ -286,10 +331,8 @@ impl InMemoryObjectStore {
             return Err(ObjectStoreError::TooLarge);
         }
 
-        let checksum = crate::checksum::sha256_hex(&bytes);
         object.bytes = bytes;
         object.content_type = content_type.to_string();
-        object.checksum = checksum;
         Ok(())
     }
 }
@@ -315,7 +358,6 @@ impl ObjectStore for InMemoryObjectStore {
                 // it must read as absent to `complete` — hence head checks size.
                 bytes: Bytes::new(),
                 content_type: content_type.to_string(),
-                checksum: String::new(),
                 signed_puts: HashMap::new(),
             });
         object.signed_puts.insert(
@@ -365,7 +407,6 @@ impl ObjectStore for InMemoryObjectStore {
             key: key.to_string(),
             byte_size: object.bytes.len() as i64,
             content_type: object.content_type.clone(),
-            checksum: Some(object.checksum.clone()),
         })
     }
 
@@ -386,14 +427,12 @@ impl ObjectStore for InMemoryObjectStore {
         content_type: &str,
     ) -> Result<(), ObjectStoreError> {
         self.stats.lock().expect("stats mutex is not poisoned").puts += 1;
-        let checksum = crate::checksum::sha256_hex(&bytes);
         let mut guard = self.objects.lock().expect("objects mutex is not poisoned");
         guard.insert(
             key.to_string(),
             StoredObject {
                 bytes,
                 content_type: content_type.to_string(),
-                checksum,
                 signed_puts: HashMap::new(),
             },
         );
@@ -478,22 +517,6 @@ pub(crate) fn encode_key(key: &str) -> String {
     key.replace('%', "%25")
         .replace('/', "%2F")
         .replace('?', "%3F")
-}
-
-/// S3 records a checksum as base64; the rest of this service speaks lowercase
-/// hex. The conversion lives at the boundary so a hex/base64 mix-up cannot
-/// happen anywhere above the trait — a silent one would turn every checksum
-/// comparison into a mismatch.
-#[cfg_attr(not(feature = "s3"), allow(dead_code))]
-pub(crate) fn base64_to_hex(base64: &str) -> String {
-    use base64::Engine as _;
-    match base64::engine::general_purpose::STANDARD.decode(base64) {
-        Ok(bytes) => hex::encode(bytes),
-        // A value the service cannot interpret is not a checksum at all. The
-        // empty string is the "no recorded checksum" sentinel that `head`
-        // consumers already treat as "compute it yourself".
-        Err(_) => String::new(),
-    }
 }
 
 fn decode_key(encoded: &str) -> Option<String> {
@@ -620,16 +643,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn head_and_get_agree_and_report_the_stored_checksum() {
+    async fn head_and_get_agree_about_what_is_stored() {
+        // `head` reports the measurement and `get` reports the bytes, and the
+        // two cannot disagree: a size in `head` that is not the length of what
+        // `get` returned would mean the service verified one object and told a
+        // client about another. `ObjectMeta` carries no checksum, so there is
+        // nothing here to compare against except the bytes themselves.
         let s = store();
         let bytes = Bytes::from_static(b"hello darkroom");
-        let expected = crate::checksum::sha256_hex(&bytes);
         s.put("k", bytes.clone(), "text/plain").await.expect("puts");
 
         let meta = s.head("k").await.expect("head");
         assert_eq!(meta.byte_size, bytes.len() as i64);
-        assert_eq!(meta.checksum.as_deref(), Some(expected.as_str()));
-        assert_eq!(s.get("k").await.expect("get"), bytes);
+        assert_eq!(meta.content_type, "text/plain");
+        let read_back = s.get("k").await.expect("get");
+        assert_eq!(read_back.len() as i64, meta.byte_size);
+        assert_eq!(read_back, bytes);
     }
 
     #[tokio::test]
