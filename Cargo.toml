@@ -1,0 +1,110 @@
+[package]
+name = "darkroom"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+description = "cafaye darkroom — media service: signed uploads, tenant-scoped asset registry, variant generation"
+license = "MIT"
+repository = "https://github.com/cafaye/darkroom"
+publish = false
+
+[lib]
+name = "darkroom"
+path = "src/lib.rs"
+
+[[bin]]
+name = "darkroom"
+path = "src/main.rs"
+
+[features]
+# The real object storage. Off by default so `cargo test` can never reach the
+# network: the default build wires InMemoryObjectStore, and only the deployment
+# image turns this on. See AGENTS.md "The storage boundary".
+default = []
+s3 = ["dep:aws-sdk-s3", "dep:aws-config", "dep:aws-credential-types"]
+# A development-only HMAC token verifier. Refuses to start outside
+# DARKROOM_ENV=development. See src/auth/mod.rs.
+dev-auth = ["dep:hmac", "dep:sha2"]
+
+[dependencies]
+# --- HTTP ---
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "request-id", "limit"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+http = "1"
+
+# --- errors ---
+thiserror = "2"
+anyhow = "1"
+
+# --- serialization ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# --- platform substrate ---
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# --- ids and time ---
+uuid = { version = "1", features = ["v4", "serde"] }
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+time-fmt = { version = "0.3", features = ["formatting", "macros"] }
+
+# --- database ---
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+    "uuid",
+    "json",
+    "time",
+    "macros",
+    "migrate",
+] }
+
+# --- storage ---
+async-trait = "0.1"
+bytes = "1"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.9"
+base64 = "0.22"
+
+# --- auth ---
+jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# --- image variants ---
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "webp",
+    "gif",
+] }
+
+# --- s3 (feature = "s3") ---
+aws-config = { version = "1", optional = true, default-features = false, features = [
+    "behavior-version-latest",
+    "rt-tokio",
+    "rustls",
+] }
+aws-sdk-s3 = { version = "1", optional = true, default-features = false, features = [
+    "rt-tokio",
+    "rustls",
+    "sigv4a",
+    "presigning",
+] }
+aws-credential-types = { version = "1", optional = true, features = ["http"] }
+
+# --- dev-auth feature ---
+hmac = { version = "0.12", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "test-util"] }
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
