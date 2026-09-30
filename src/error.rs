@@ -39,9 +39,21 @@ pub enum Error {
     #[error("{detail}")]
     Unauthorized { detail: &'static str },
 
-    /// HTTP 403. The caller authenticated and holds the scope, but the account in
-    /// the token is not theirs. Used for scope failures, never for a resource
-    /// that exists under another account — that is `NotFound`.
+    /// HTTP 403. The token verified and does not carry the scope this operation
+    /// needs — a capability failure, and only ever that one.
+    ///
+    /// **Never** for a resource that belongs to another account: that is
+    /// [`Error::NotFound`], and the distinction is not cosmetic. A caller who
+    /// gets 403 for "that exists but is not yours" and 404 for "that does not
+    /// exist" has been handed a directory of every asset on the platform
+    /// without reading a single row. The two cases are different in kind here,
+    /// not in degree: a missing scope is a fact about the *caller*, which they
+    /// already know, so it leaks nothing by being reported; a foreign resource is
+    /// a fact about *somebody else*, and reporting it is the leak.
+    ///
+    /// The only constructor is [`Error::forbidden`], called from exactly one
+    /// place — `http::require_scope` — so a 403 cannot become a tenancy
+    /// response by accident.
     #[error("{detail}")]
     Forbidden { detail: &'static str },
 

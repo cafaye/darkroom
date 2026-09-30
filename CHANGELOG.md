@@ -13,6 +13,88 @@ and only `info.version` moves otherwise
 
 ### Added
 
+**Tenant isolation, made load-bearing.** The implementation was already correct:
+`assets` and `asset_variants` carry `account_id uuid not null`, there is a
+`unique (account_id, checksum)`, and all ten account-scoped queries constrain on
+the column. What was missing was anything that would notice if a future edit
+dropped `and account_id = $2` from one of them — every existing test exercised
+the queries *through* a `Tenant`, so all of them stayed green and a private asset
+store became a shared one. Correct by construction is not a property if the
+construction is never checked.
+
+**`tests/tenant_scoping.rs` — the structural half, in the default tier.** It reads
+`src/store.rs` with `include_str!`, so the check is a fact about the source that
+built the binary rather than a grep somebody has to remember to run, and it
+derives its expectations from the code rather than from a maintained list. Five
+properties: every function taking a `&Tenant` constrains `account_id = $N`;
+that set is exactly the ten named in the file; every mutating scoped query names
+a **row** as well as an account, because `where account_id = $2` alone is scoped
+and still a defect; exactly one query reads across accounts, and no request-path
+module can reach it; and `principal_scope` carries the account, because the
+idempotency ledger stores whole response *bodies* and an unscoped replay hands
+one account another's response. It needs no database, so the structural half of
+the isolation guarantee is now checked on a bare machine.
+
+**`tests/query_scoping.rs` — the behavioural half, against Postgres.** A
+two-account fixture covering read, list, update and delete, which is the shape a
+service is usually broken in: it scopes its reads and forgets its delete. Both
+accounts deliberately share a **checksum** — `unique (account_id, checksum)`
+makes that two legitimate rows — because that is where a scoping bug hides: an
+unscoped lookup by checksum does not error and does not return nothing, it
+returns a row and the wrong one, while every id-keyed test stays green. Also
+covers a cross-tenant `mark_failed` (the failure path is a bare `where` clause,
+so it is the easiest of the three writes to get wrong), a cross-tenant
+`list_storage_keys` (two `select`s in a `union all`, so the query most able to be
+half-scoped), and a cursor replayed from one account into another.
+
+**Every tenant-scoped route now has a negative case, and the enumeration is
+derived rather than trusted.** `tests/tenant_isolation.rs` grew from 7 to 12
+cases; the coverage is not taken on faith, because `tests/tenant_scoping.rs`
+builds the route list from `http::OPERATIONS` — the table the router is built
+from — and fails if a route has no case, if a case has no route, or if a case
+names a test that is not there. The byte-identical-404 guard now covers all five
+id-scoped routes rather than only `GET /v1/assets/{id}`: a rule checked on the
+oldest route is a rule checked on one route, and the route somebody added most
+recently is where it would be dropped. New cases: a cross-tenant `complete`
+proving A's upload is still `pending` afterwards (a 404 on its own is compatible
+with "did the work, then reported 404"), a cross-tenant variant write proving
+nothing moved including the outbox, a variant listing that is 404 rather than an
+empty array, a cursor replayed across accounts, and the same bytes in two
+accounts never yielding a presigned URL scoped to the other one's storage key.
+
+**One account's `Idempotency-Key` cannot replay another account's response**
+(`tests/idempotency.rs`). The ledger is the only table here that stores a whole
+HTTP response body, and `reserve_idempotency_key` hands it back on a replay, so
+an unscoped replay is not a status-code leak — it is another account's asset id
+and presigned upload URL. Previously covered only by a unit test on the scope
+string.
+
+**Fixed: the `Forbidden` variant's doc comment described the anti-pattern.**
+`src/error.rs` documented 403 as "the caller authenticated and holds the scope,
+but the account in the token is not theirs" — stating, as the variant's purpose,
+exactly the thing this packet exists to prevent, and contradicting itself two
+clauses later. No behaviour was wrong: `Error::forbidden` has one constructor
+called from one place, `http::require_scope`, so a 403 cannot become a tenancy
+response by accident. But a comment is what a future author reads before writing
+`if caller.account != asset.account { return forbidden() }`, and this one invited
+it. It now states the capability case positively, names the tenancy case as
+`NotFound`, and explains why the two differ in kind rather than in degree — a
+missing scope is a fact about the caller, which they already know, while a
+foreign resource is a fact about somebody else, and reporting it is the leak.
+
+**The rule, stated once in the module docs for the platform to copy:**
+`src/store.rs` and `AGENTS.md` now carry *absence, not refusal* — a resource the
+caller cannot see does not exist, and every layer below the wire says so the same
+way. A 403 is a confirmation; it tells a caller the row is real and somebody else
+owns it, which is a smaller leak than the row and a perfectly good way to
+enumerate the platform. This includes below the wire: `store::find_asset` returns
+`Ok(None)`, never a `StoreError`, because a distinguishable error is the same
+oracle one layer down.
+
+`bin/tier-counts` gains `TENANT_SCOPE_TESTS=10` and `QUERY_SCOPING_TESTS=7`, and
+`DB_TESTS` moves 41 → 54 for the 13 new `#[ignore]`d cases. The skipped-equals-run
+identity is now 54 == 54.
+
 **`gate.yml`: the gate is declared, so it no longer has to be guessed.** What
 "run the gate" means in this repository was discoverable only by getting it
 wrong: `mise run prime` runs `bin/prime`, CI runs `bin/prime --db`, and the

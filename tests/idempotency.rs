@@ -302,3 +302,126 @@ async fn a_request_without_a_key_is_processed_normally() {
     let response = app.oneshot(request).await.expect("responds");
     assert_eq!(response.status(), StatusCode::CREATED);
 }
+
+/// The ledger is tenant data, and it is the only table in this service that
+/// stores a whole HTTP **response body**. A replay hands that body back, so a
+/// replay that ignored the account would not leak a status code — it would hand
+/// account B account A's asset id and A's presigned upload URL.
+///
+/// ## What is being defended
+///
+/// The scope is `(endpoint, principal, key)` and `principal` is
+/// `user_id:account_id`. The primary key in `0003_idempotency_keys.sql` is what
+/// enforces it, so a cross-tenant replay cannot even collide with A's row — it
+/// reserves its own and runs the handler. This test drives it over HTTP because
+/// the header is part of the wire contract, and because the interesting failure
+/// is not "the query is wrong" but "the whole request is answered from a row
+/// that is not yours".
+#[tokio::test]
+#[ignore = "needs TEST_DATABASE_URL; see tests/common/mod.rs"]
+async fn one_accounts_key_cannot_replay_another_accounts_response() {
+    let store = test_store().await;
+    let (service, _objects) = test_service(store.clone());
+    let accounts = two_accounts();
+    let (app, _v) = test_app(service, verifier_for(&accounts));
+
+    // The identical body for both accounts, deliberately. Same bytes, two
+    // accounts, is two assets — `unique (account_id, checksum)` — so the two
+    // responses *should* differ, and the only honest way for B's to differ is
+    // that B's was not A's.
+    let checksum = "c".repeat(64);
+    let body = create_body(&checksum);
+
+    async fn send(
+        app: axum::Router,
+        token: &'static str,
+        key: &'static str,
+        body: &str,
+    ) -> (StatusCode, Option<String>, serde_json::Value) {
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/v1/uploads")
+            .header("authorization", format!("Bearer {token}"))
+            .header("idempotency-key", key)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("builds");
+        let response = app.oneshot(request).await.expect("responds");
+        let status = response.status();
+        let replayed = response
+            .headers()
+            .get("idempotency-replayed")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("body");
+        (
+            status,
+            replayed,
+            serde_json::from_slice::<serde_json::Value>(&bytes).expect("json"),
+        )
+    }
+
+    let (a_status, a_replayed, a_body) = send(app.clone(), "token-a", "shared-key", &body).await;
+    assert_eq!(a_status, StatusCode::CREATED);
+    assert_eq!(a_replayed, None, "a first response is not a replay");
+    assert_eq!(a_body["asset"]["account_id"], accounts.a_account.to_string());
+
+    // B sends the same key and the same body. Not a replay, and emphatically not
+    // A's response.
+    let (b_status, b_replayed, b_body) = send(app.clone(), "token-b", "shared-key", &body).await;
+    assert_eq!(
+        b_status,
+        StatusCode::CREATED,
+        "B's request is a fresh one, not a replay of A's"
+    );
+    assert_eq!(
+        b_replayed, None,
+        "B must not be told this is a replay: that header would confirm the key \
+         exists in the ledger"
+    );
+    assert_ne!(
+        b_body["asset"]["id"], a_body["asset"]["id"],
+        "B received A's asset id"
+    );
+    assert_ne!(
+        b_body["upload_url"], a_body["upload_url"],
+        "B received A's presigned URL — a credential for A's storage key"
+    );
+    assert_eq!(b_body["asset"]["account_id"], accounts.b_account.to_string());
+
+    // A's own replay still works, so the guard is the account and not a
+    // regression that broke replaying for everyone.
+    let (again_status, again_replayed, again_body) =
+        send(app.clone(), "token-a", "shared-key", &body).await;
+    assert_eq!(again_status, StatusCode::CREATED);
+    assert_eq!(again_replayed.as_deref(), Some("true"));
+    assert_eq!(again_body["asset"]["id"], a_body["asset"]["id"]);
+
+    // Two rows in the ledger, not one shared row and not one overwritten. A
+    // single row would mean the scope dropped the account and B's write had
+    // clobbered A's.
+    let rows: i64 = sqlx::query_scalar("select count(*) from idempotency_keys")
+        .fetch_one(store.pool())
+        .await
+        .expect("counts");
+    assert_eq!(rows, 2, "one ledger row per (endpoint, principal, key)");
+
+    // And two assets, one per account.
+    let accounts_seen: Vec<String> = sqlx::query_scalar(
+        "select account_id::text from assets order by account_id",
+    )
+    .fetch_all(store.pool())
+    .await
+    .expect("counts");
+    assert_eq!(
+        accounts_seen,
+        vec![
+            accounts.a_account.to_string(),
+            accounts.b_account.to_string()
+        ],
+        "the same bytes are one asset per account, and neither account can see \
+         the other's"
+    );
+}

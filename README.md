@@ -178,6 +178,8 @@ places by hand:
   `where` clause) and puts it in the query. A repository method that forgot
   would not typecheck against `Tenant`.
 
+### Absence, not refusal
+
 **A cross-tenant read is 404, never 403**, and the body is byte-identical to the
 one for an id that never existed. A 403 would be a free asset-id oracle: a
 caller enumerates ids, gets 403 for the ones that exist and 404 for the ones
@@ -186,7 +188,43 @@ for `GET /v1/assets/{id}/variants`, which returns 404 rather than an empty list
 — an empty list is indistinguishable from "no variants yet", which is an
 existence oracle with one bit.
 
-`tests/tenant_isolation.rs` is the matrix; the exact statuses are in the report.
+This is the rule the rest of the platform should copy. Every service that holds
+another service's data has to answer "what do I say when the caller is
+authenticated and the row is not theirs?", and there is one correct answer: the
+same thing you say when the row does not exist. It holds below the wire too —
+`store::find_asset` returns `Ok(None)` for another account's row, never a
+`StoreError`, because a distinguishable error is the same oracle one layer down.
+
+### What holds the predicates in place
+
+`store.rs` was correct by construction and **held in place by nothing**. Every
+existing test exercised the queries *through* a `Tenant`, so all of them stayed
+green if a future edit dropped `and account_id = $2` from one of the eleven
+lines. Three files now make the correctness load-bearing:
+
+| file | tier | what it proves |
+|---|---|---|
+| `tests/tenant_scoping.rs` | default, **no database** | the `account_id` predicate is still written down, for every query that takes a `&Tenant` |
+| `tests/query_scoping.rs` | database | read, list, update and delete return only the caller's own rows, against a two-account fixture |
+| `tests/tenant_isolation.rs` | database | the same, over the wire: every tenant-scoped route, and the exact status and body |
+
+`tests/tenant_scoping.rs` reads `src/store.rs` with `include_str!` and fails
+when a `&Tenant` query stops constraining the column, when the set of such
+queries changes, when a mutation names an account without naming a row, when a
+second query starts reading across accounts, and when a route in
+`http::OPERATIONS` has no negative case. It is in the default tier on purpose:
+the structural half of the isolation guarantee should be checked on a machine
+with no Postgres and no Docker, because that is where it will be run most often
+and it is the half that catches the edit before a fixture is built.
+
+`tests/query_scoping.rs` seeds both accounts with **the same checksum** —
+`unique (account_id, checksum)` makes that two legitimate rows — because that is
+the case a scoping bug hides in: an unscoped lookup by checksum does not error
+and does not return nothing, it returns a row and the wrong one, while every
+id-keyed test stays green.
+
+The full enumeration, the counts per operation kind, and the four tripwires
+proven able to fire are in `REPORT-darkroom-09-isolation.md`.
 
 ## The storage boundary
 

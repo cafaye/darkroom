@@ -50,8 +50,20 @@ the point.
 
 **Cross-tenant is 404, not 403.** And the body must be byte-identical to the
 one for an id that never existed. A 403 leaks existence; a different body is
-just as much of an oracle as a different status. `a_cross_tenant_404_is_
-indistinguishable_from_a_missing_one` is the regression guard.
+just as much of an oracle as a different status.
+`a_cross_tenant_404_is_indistinguishable_from_a_missing_one` is the regression
+guard, and it covers **all five** id-scoped routes, not just `GET /v1/assets/{id}`
+— a rule checked on the oldest route is a rule checked on one route.
+
+**The rule is absence, not refusal, and the rest of the platform should copy it.**
+Every service that holds another service's data has to answer "what do I say when
+the caller is authenticated and the row is not theirs?" and there is only one
+correct answer: the same thing you say when the row does not exist. A refusal
+distinguishes the two cases, so a caller enumerating ids gets a directory of
+every asset on the platform without reading a single row. This includes the
+layers below the wire: `store::find_asset` returns `Ok(None)` for another
+account's row, never a `StoreError`, because a distinguishable error is the same
+oracle one layer down.
 
 **The checksum is computed, never trusted.** The client's claim is written at
 create and compared against at complete; the row ends up carrying the computed
@@ -165,12 +177,27 @@ counts instead, with `bin/tier-counts`:
 ./bin/tier-counts /tmp/prime.log
 ```
 
-It asserts 77 unit / 89 with s3 / 9 behaviour-table rows / 41 database twice,
-**and** one identity: the count the default run skips equals the count the
-database run passes, because they are the same tests. **Adding a test means
-raising the number in `bin/tier-counts` in the same commit** — that is the
-point of the constant, and a CI red that says `expected 41, got 44` is the
-mechanism working, not failing.
+It asserts 77 unit / 89 with s3 / 9 behaviour-table rows / 54 database twice /
+10 tenant-scoping twice / 7 query-scoping, **and** one identity: the count the
+default run skips equals the count the database run passes, because they are the
+same tests. **Adding a test means raising the number in `bin/tier-counts` in the
+same commit** — that is the point of the constant, and a CI red that says
+`expected 54, got 57` is the mechanism working, not failing.
+
+**A query's tenant predicate is checked as a property of the source, not by
+convention.** `tests/tenant_scoping.rs` reads `src/store.rs` with
+`include_str!` and fails if any function taking a `&Tenant` stops constraining
+`account_id = $N`, if that set of functions changes, if a mutation names an
+account without naming a row, or if a second query starts reading across
+accounts. It is in the **default tier on purpose** — it needs no database, so
+the structural half of the isolation guarantee is checked on a bare machine. The
+behavioural half, a two-account fixture against real Postgres covering read,
+list, update and delete, is `tests/query_scoping.rs`.
+
+Neither file is decoration and both are pinned in `bin/tier-counts`
+(`TENANT_SCOPE_TESTS`, `QUERY_SCOPING_TESTS`). A check nobody's gate runs is a
+check that proves nothing, and a security check that reports zero is worse than
+one that is absent: it looks like coverage.
 
 ## No object-storage credentials in CI, and none needed
 

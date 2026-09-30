@@ -14,6 +14,38 @@
 //! "not found" and a "not yours" become two different responses, and 403 on the
 //! second one leaks existence.
 //!
+//! ## Absence, not refusal — the rule the platform copies
+//!
+//! **A resource the caller cannot see does not exist, and every layer below the
+//! wire says so the same way.** A `403` is a confirmation: it tells the caller
+//! the row is real and somebody else owns it, which is a smaller leak than the
+//! row and a perfectly good way to enumerate the platform. So:
+//!
+//! - A cross-tenant read is `Ok(None)`. Not a `StoreError` — a distinguishable
+//!   error is the same oracle one layer below the wire.
+//! - A cross-tenant update or delete affects zero rows and says so (`None`,
+//!   `false`).
+//! - A cross-tenant listing is empty, **except** where emptiness would itself
+//!   answer the question: `service::list_variants` checks the parent first and
+//!   returns 404, because an empty list is indistinguishable from "no variants
+//!   yet" and that is an existence oracle with one bit.
+//!
+//! Every service in this platform that reads another service's data has to
+//! answer "what do I say when the caller is authenticated and the row is not
+//! theirs?" There is one correct answer and it is the one above.
+//!
+//! ## What holds the `account_id` predicates in place
+//!
+//! Correct by construction is not a property if the construction is never
+//! checked, and these `where` clauses were held in place by nothing at all:
+//! every test exercised them *through* a `Tenant`, so dropping
+//! `and account_id = $2` from any one of them left the whole suite green.
+//! `tests/tenant_scoping.rs` reads this file with `include_str!` and fails when
+//! a function taking a `&Tenant` stops constraining the column, when that set of
+//! functions changes, when a mutation names an account without naming a row, and
+//! when a second query starts reading across accounts.
+//! `tests/query_scoping.rs` is the other half: a two-account fixture against
+//! real Postgres, covering read, list, update and delete.
 //! ## Why `sqlx` and not an ORM
 //!
 //! darkroom's correctness arguments are all about transactions — the outbox
