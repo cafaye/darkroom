@@ -154,6 +154,32 @@ sqlx = { version = "0.8", default-features = false, features = [
     "macros",
     "migrate",
 ] }
+# The OpenAPI drift check in tests/openapi_document.rs has to read
+# `openapi/v1.yaml`, and reading YAML by indentation is a second parser with its
+# own ways of under-reading — which is the one failure mode that check exists to
+# rule out, since a reader that finds nothing agrees with a router that finds
+# nothing. courier's equivalent reader says the same thing about itself: "a
+# service that needs a real parser should add one and delete this."
+#
+# Four properties make this the right dependency, and each was checked rather
+# than assumed:
+#
+#   dev-only, so it cannot reach the binary, the image, or a running service.
+#     A dependency that is only ever linked into `cargo test` is the cheapest
+#     kind of dependency there is, and it is why this does not need the README
+#     entry a runtime dependency would.
+#   pure Rust. `serde_yaml` is the usual answer and it is a transpiled C
+#     library; AGENTS.md says this repository has no `unsafe` and does not want
+#     any, and a dependency that brings a C-derived unsafe parser in behind the
+#     back of a dev-dependency is the same decision wearing a smaller hat.
+#     saphyr has zero `unsafe` in its tree.
+#   `default-features = false` drops `encoding`, because the only YAML this
+#     reads is a UTF-8 file this repository wrote. Four fewer crates in the tree
+#     for a code path that can never be reached.
+#   the document is a repository file, not input. There is no untrusted YAML
+#     anywhere in darkroom, so this parser is not on any request path and has
+#     nothing to be hardened against.
+saphyr = { version = "0.1.0", default-features = false }
 
 [profile.release]
 lto = "thin"

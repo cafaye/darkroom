@@ -247,12 +247,16 @@ build, not the database tier — and README says so where a reader will look.
 ## Adding an endpoint
 
 1. `service.rs` — the rule, in a method that takes a `Tenant`. Tests first.
-2. `http.rs` — the handler, extracting and translating, with nothing decided.
+2. `http.rs` — the handler, extracting and translating, with nothing decided,
+   **and a row in `http::OPERATIONS`**, which is the table `router()` is built
+   from. There is no other way to register a route.
 3. `openapi/v1.yaml` — the path, the errors, and `info.version` if anything
    else in the document moved.
 4. A test asserting the status code, the JSON shape, and the anonymous case.
 5. A row in README's endpoint table.
-6. `./bin/prime`.
+6. A new constant in `bin/tier-counts` if the new test lives in its own file, so
+   a file that stops running fails the gate instead of reporting zero.
+7. `./bin/prime`.
 
 ## Adding an event
 

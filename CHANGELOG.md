@@ -13,6 +13,53 @@ and only `info.version` moves otherwise
 
 ### Added
 
+**`openapi/v1.yaml` and the router are now held to each other by a test, in
+both directions.** `tests/openapi_document.rs` compares the published document
+with the routes the service actually serves. An operation the document describes
+and the router does not serve is a generated client that 404s in production; a
+route the router serves that the document does not describe is a method the
+generated client does not have. It follows courier's
+`test/courier_web/openapi_document_test.exs`, which is the same tripwire shape
+pantry's has fired three times against.
+
+It compares **paths, never counts** — a count comparison passes on a rename and
+fails on a pure addition, which is backwards — and both of its readers raise
+rather than under-read, because a green check over nothing is worse than no
+check.
+
+**The router's side is a route table the router is built from, not a list in a
+test.** axum cannot be asked what it routes: there is no `Router::routes()` and
+nothing to reflect over, so the set of operations has to be written down
+somewhere. It is `http::OPERATIONS` in `src/http.rs` — a table of
+`(method, path, handler)` — and `router()` is a fold over it, so the HTTP
+surface and the thing the test reads are one declaration.
+
+The one field the table cannot state is the method, because the method a
+`MethodRouter` answers is baked into the value `get(handler)` returns with no
+accessor for it. That is closed by asking the router: a request with an
+undeclared verb is answered `405` with an `Allow` header enumerating the truth,
+and a path the router does not know is `404`.
+
+Proven able to fire, not assumed to. Four divergences planted and reverted:
+an operation added to the document, a row added to the route table, a `put`
+registered on a known path outside the table (caught by the `Allow` probe while
+both document tests stayed green), and a `get` on a brand-new path outside the
+table (**not** caught — all nine tests stayed green, which is the gap below,
+measured rather than argued). `tests/contract.rs` is 8/8 green under a planted
+document divergence, so this check is the only thing in the repository that
+notices.
+
+`/healthz` and `/readyz` are in the document under a `probes` tag with
+`security: []`, so the omission list is empty — courier excludes them, and
+excluding them here would mean deleting correct documentation to satisfy a
+carve-out. The list is still a closed list keyed by method *and* path rather than
+a prefix match, and two tests hold it: one fails if a first omission appears, one
+fails if an omission stops naming something the router serves.
+
+Needs neither a database nor a socket, so it is in the default tier and runs on
+a bare machine. It reads its subject out of `exposes.api` in `cafaye.yml` rather
+than hardcoding a filename.
+
 **`bin/tier-counts` — the gate's own accounting.** `bin/prime --db` exits zero
 in three situations where it has verified nothing: tier 6 never ran, tier 6 ran
 and touched nothing, and tier 5 never compiled the `s3` feature. None of those
@@ -27,6 +74,14 @@ breaks it in one direction; a test added and never ignored breaks it in the
 other. Neither reaches master as a green badge. Adding a test means raising the
 number in the same commit, which is the point of the constant.
 
+A new file under `tests/` is a separate test binary, so it is in none of those
+four constants — the first two count `unittests src/lib.rs`, the third counts
+`#[ignore]`d tests, and the fourth is scoped to `storage_backends.rs` — and
+raising `UNIT_TESTS` for one would have made that number a lie. Each default-tier
+file is now pinned in its own right instead: `OPENAPI_DRIFT_TESTS=9`, asserted in
+tiers 4 and 5. Without that pin, a file whose tests were deleted one at a time
+would report `0 passed` while every other number still read correctly.
+
 Proven able to fail, not assumed to: six mutations of a real green log, each
 producing a specific message and a non-zero exit.
 
@@ -40,6 +95,23 @@ that month. Now pinned to `1.95.0` — the same release as `mise.toml`,
 target CI compiles on.
 
 ### Changed
+
+**`router()` is a fold over `http::OPERATIONS` instead of a chain of
+`.route()` calls.** The chain it replaced registered the same nine routes in the
+same order, so the served surface is unchanged — the table is the old chain as
+data. What changed is that there is now one declaration of the route table which
+both the router and `tests/openapi_document.rs` read, instead of a chain in one
+file and a route list in a test. There is exactly one line in `src/http.rs` where
+a route can be registered by hand, and it is the fold.
+
+**`saphyr` is a dev-dependency**, for reading `openapi/v1.yaml` in that check.
+Dev-only, so it cannot reach the binary, the image or a running service. Pure
+Rust with no `unsafe` in its tree, where `serde_yaml` is a transpiled C library
+and this repository has no `unsafe` and wants none — a C-derived parser arriving
+behind a dev-dependency would be the same decision wearing a smaller hat.
+`default-features = false` drops `encoding`, because the only YAML this reads is
+a UTF-8 file this repository wrote. No runtime dependency was added, so no
+README dependency-table entry is owed.
 
 **CI calls `cafaye/kit/.github/workflows/ci.reusable.yml@master`** for the
 shared half (`language: rust`, coverage floor 50 against 53.73% measured line
