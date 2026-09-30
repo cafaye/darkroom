@@ -1,0 +1,191 @@
+# gate.yml — how darkroom is gated, declared rather than guessed.
+#
+# WHY THIS FILE IS HERE. `cafaye/core` owns the format
+# (`schemas/gate.schema.json`), the checker (`harness/gate_check.py`) and the
+# reasoning (`docs/gate.md`). Across the fifteen repositories in the cafaye
+# workspace "run the gate" had five different spellings, and every one of them
+# was found by a person getting it wrong. This file is darkroom's, and it is
+# true of darkroom — the numbers in it were read out of darkroom's own gate
+# output, not copied from core's.
+#
+# WHAT THE CHECKER PROVES ABOUT THIS FILE, AND WHAT IT DOES NOT. It proves the
+# command runs, the entrypoint exists and is executable, `mise run prime`
+# resolves to that same file, the CI workflow really invokes the declared argv,
+# and — the part that matters — that running the declared command makes every
+# proof below appear, with the countable one at or above its floor. It does NOT
+# prove the tests touched the database they claim to. That is
+# `bin/tier-counts`, which is a separate accounting script over the same log,
+# and the boundary between the two is drawn on purpose: this format is a
+# declaration of what runs, and `bin/tier-counts` is a claim about what it
+# found.
+version: 1
+name: darkroom
+
+gate:
+  # An argv, never a shell string, so the exit code is the gate's own. This
+  # fleet's one recorded false green was `… | tail -45; echo "PRIME EXIT=$?"`
+  # under zsh, where `$?` is `tail`'s and `tail` is always 0.
+  #
+  # `--db` is the load-bearing argument in this file, and it is here because
+  # `bin/prime` without it is not a gate.
+  #
+  # `bin/prime` has three tiers — 4, 5 and 6 in `bin/tier-counts`'s numbering,
+  # after fmt, build and clippy — and tier 6 is the one behind the flag. Its
+  # tests are `#[ignore]`d, so `./bin/prime` reports all 41 of them as `ignored`,
+  # runs everything else, prints `==> ok` and exits 0 — a green badge over 41
+  # tests that never executed. That is the `cafaye-rb` defect wearing a Rust
+  # hat, and declaring `[bin/prime]` here would write it down.
+  #
+  # darkroom is a service whose entire job is putting bytes in a database. The
+  # gate that does that is `bin/prime --db`, and it is the same command CI runs
+  # (see `ci.invokes` below), so this is the one gate in this repository rather
+  # than the second one.
+  command: [bin/prime, --db]
+  # The fleet's spelling, and it is cross-checked against `entrypoint` so the
+  # two cannot drift onto different files.
+  #
+  # **The task runs `bin/prime` WITHOUT `--db`, and that difference is real and
+  # is not fixed by this file.** `mise run prime` is the fast local loop; the
+  # declared gate is the fast loop plus the database tiers. It is recorded here
+  # rather than reconciled because reconciling it means either changing
+  # `mise.toml` — which would add a *third* spelling of "run the gate" in the
+  # very repository this file exists to stop guessing at — or running a
+  # database from a mise task, which is the thing mise is not for. If you are
+  # landing a change to this service, `./bin/prime --db` is the gate and
+  # `mise run prime` is a subset of it.
+  miseTask: prime
+  # The file behind the command, and the file the mise task must resolve to.
+  entrypoint: bin/prime
+  # Generous on purpose. A cold `bin/prime --db` compiles the crate twice —
+  # once for `cargo build --all-targets`, once more for
+  # `cargo clippy --all-targets --all-features` — and the `s3` feature pulls in
+  # the AWS SDK. Warm it is a couple of minutes; from an empty cargo cache on a
+  # CI runner it is the better part of ten. A budget tight enough to be a bug
+  # detector is tight enough to be a flake generator on a first run, and this
+  # number exists to stop a hung gate, not to measure one.
+  timeoutSeconds: 3600
+  proof:
+    # Four of these are the step headers `bin/prime` prints, and they carry no
+    # `minimum` because they report nothing countable. They are here for one
+    # reason: **they are the only thing in the output that distinguishes a
+    # `--db` run from a fast one.** Run the declared gate without the flag, or
+    # delete the `--db` branch, and two of them are absent — which is
+    # `gate.proof-missing`, a failure. That is the drift between this
+    # repository's local gate and its CI gate, recorded in a file instead of
+    # living in a comment in `.github/workflows/ci.yml` where nobody reads it.
+    #
+    # Read as one assertion: "all four cargo tiers ran". A run that stops after
+    # the fast tiers, or a run where the `s3` build silently stopped compiling,
+    # is red rather than green.
+    - id: tier-4-default-unit
+      match: '==> cargo test \(no database\)'
+    - id: tier-5-s3-unit
+      match: '==> cargo test --features s3 \(no database\)'
+    - id: tier-6-database-default-build
+      match: '==> cargo test --ignored \(against TEST_DATABASE_URL\)'
+    - id: tier-6-database-s3-build
+      match: '==> cargo test --features s3 --ignored \(against TEST_DATABASE_URL\)'
+    # And one that counts. Two things about it were measured, not guessed, and
+    # both are worth writing down because the obvious version of each is wrong.
+    #
+    # `cargo test` prints **one `test result:` line per test binary**, not one
+    # per suite, and the checker reads the *last* match. Measured on a real
+    # `bin/prime --db` log: 36 such lines, and the last one is always
+    # `Doc-tests darkroom` reporting `0 passed` — because this crate is
+    # `publish = false` and has no doctests, and cargo runs the doc-test block
+    # last in every one of the four tiers. A floor written the obvious way,
+    # `([0-9]+)`, therefore reads **0 in this repository, always**, and any
+    # positive floor under it is a gate that can never go green. The leading
+    # `[1-9]` is not a weakening, it is the correction: a binary that reported
+    # zero tests is not a suite, and requiring the last reported result to be a
+    # non-zero count is exactly "the last thing that ran actually ran
+    # something".
+    #
+    # With that, 19 lines match and the last is
+    # `test result: ok. 7 passed; 0 failed; 0 ignored;` — `tests/tenant_isolation.rs`
+    # in the s3 database tier, all seven of its tests, against Postgres. That is
+    # the suite AGENTS.md calls "the reason the tenant-isolation suite is real
+    # rather than decoration", so the floor lands on the right number by
+    # accident and by arithmetic. **Read it as a decrease-detector for that
+    # file, and re-derive it if a test binary is added that sorts later.**
+    #
+    # It is NOT the suite total — 41 database tests, 77 lib unit tests — because
+    # the gate does not print a total. The suite-wide counts are
+    # `bin/tier-counts`'s constants, pinned in the same repository, and the two
+    # must not be confused: this one is a line the gate prints, that one is an
+    # accounting script over the same log. And note the division of labour with
+    # the four headers above: a fast `./bin/prime` still ends on a non-zero
+    # result, so **the floor does not notice a missing `--db` and the headers
+    # do.** Neither alone would do this declaration's job.
+    #
+    # Deliberately unanchored. `ci.yml` sets `CARGO_TERM_COLOR: always`, and a
+    # `^` anchor would make this proof depend on whether colour was forced, so a
+    # green `--prove` run in CI and a green one on a laptop could disagree for
+    # no reason a reader could see. The trailing `finished in …` is likewise not
+    # part of the pattern: libtest has changed that field before, and a proof
+    # that breaks on an unrelated formatting change is a proof that gets deleted.
+    - id: suite
+      match: 'test result: ok\. ([1-9][0-9]*) passed; 0 failed; 0 ignored;'
+      minimum: 7
+
+external:
+  # Not self-contained, and saying so is the point. `bin/prime --db` needs a Rust
+  # toolchain, a crates.io cache and a Postgres. A declaration that called this
+  # self-contained would be describing a gate nobody has ever run on a clean
+  # machine, which is the same defect as identity's gate being green over a
+  # database nobody had migrated, told the other way round.
+  selfContained: false
+  requirements:
+    - kind: toolchain
+      name: rustc 1.95 with cargo, rustfmt and clippy — the pin in rust-toolchain.toml, the same release as mise.toml, Cargo.toml's rust-version and the Dockerfile's RUST_VERSION
+      satisfy:
+        command: [mise, install]
+        # Quoted, and that is not decoration. A plain YAML scalar may not contain
+        # ": ", so the unquoted spelling of this sentence is a document that
+        # core's restricted reader accepts and every other YAML parser in the
+        # fleet refuses. See the report.
+        unmet: 'bin/prime exits 127 at its first step, "cargo fmt --check", with "cargo: command not found"'
+    - kind: network
+      name: crates.io, ONCE, on a cold checkout only — the ~200 crates Cargo.lock pins, and nothing after the first fetch
+      satisfy:
+        command: [cargo, fetch]
+        unmet: cargo build --all-targets fails naming a crate in Cargo.lock, with a network or download error
+    - kind: database
+      name: Postgres 17 reachable at $TEST_DATABASE_URL, and it may be EMPTY
+      satisfy:
+        command: [docker, compose, up, -d, postgres]
+        unmet: bin/prime --db exits 1 at "cargo test --ignored" with a panic that names TEST_DATABASE_URL
+      # "and it may be EMPTY" is the sharp part of this requirement, and it is
+      # not a hope — it is what `tests/common/mod.rs:63` does. `test_store()`
+      # calls `sqlx::migrate!("./migrations")` and runs it against the pool it
+      # just opened, with the migration files embedded at compile time. So the
+      # 41 database tests cannot pass against a schema nobody applied, and this
+      # repository is not identity: a green database tier here is a green
+      # database tier against a migrated schema.
+      #
+      # That is worth stating because it is the one requirement in this file
+      # that was *not* true of the last repository core measured it on, and it
+      # is why the requirement is "a database" and not "a database and a
+      # migration step nobody wrote down".
+      #
+      # What is NOT a requirement, and is named so nobody goes looking for it:
+      # no object-storage bucket, and no credential of any kind. The `s3` tier
+      # presigns with the real AWS SDK and static dummy credentials, which
+      # builds a signature locally and transmits nothing, so the R2/MinIO/S3
+      # behaviour table runs offline. darkroom's own CI takes no `secrets:` at
+      # all, and nothing in this file introduces one.
+
+ci:
+  workflow: .github/workflows/ci.yml
+  invokes: [bin/prime, --db]
+  # The `gate` job, which is the half of this repository's CI kit cannot own, and
+  # the argv CI actually runs at `ci.yml:164` — the same entrypoint with the flag.
+  # The flag is *in the declaration* rather than implied by it, and the checker
+  # verifies both elements appear in a `run:` body, so a future edit that drops
+  # `--db` from the workflow is `gate.ci-disagrees` rather than a repository
+  # where the local gate and the CI gate are quietly different.
+  #
+  # These three lines are kept contiguous on purpose: `bin/gate-self-test`
+  # deletes exactly this block to prove `gate.ci-undeclared` fires, and a comment
+  # wedged between them would silently retire that proof. `edit` fails loudly
+  # when a recipe stops matching, which is how I found it — see the report.

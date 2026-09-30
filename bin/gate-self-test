@@ -1,0 +1,548 @@
+#!/usr/bin/env bash
+#
+# bin/gate-self-test — darkroom's proof that `gate.yml` is able to be wrong.
+#
+#   ./bin/gate-self-test
+#   TEST_DATABASE_URL=postgres://… ./bin/gate-self-test
+#
+# ## Why this exists
+#
+# `gate.yml` is a claim about this repository: the command exists, the mise task
+# resolves to the same file, CI invokes it, the external requirements are
+# satisfiable, and running it makes the suite print the lines the declaration
+# says it will print. A claim that has only ever been true is not a claim that
+# was checked — it is a comment. So this script copies the repository, breaks
+# exactly one thing at a time, and asserts that core's checker goes red **and
+# names the finding it expects**. Naming matters: "something went red" is a much
+# weaker claim than "the check written for this defect is still load-bearing",
+# and the second is the one that decays silently.
+#
+# The shape is core's `harness/tests/gate_self_test.sh` and kit's
+# `tests/self_test.sh`, for the same reason in both: a control on the unbroken
+# repository first, a fresh throwaway copy per breakage, and a non-zero exit if
+# any breakage stayed green. darkroom keeps its executables in `bin/`, so it
+# lives here and not in `tests/`, which is cargo's directory and holds nothing
+# but Rust test binaries.
+#
+# ## The control is the half that makes the rest mean anything
+#
+# Twenty-three red runs against a repository that was already red prove nothing. Both
+# controls run first, unmodified. The static one asserts the declaration is true
+# of the tree; the proving one runs `bin/prime --db` for real and is the only
+# evidence that the declared proofs match what this repository's gate actually
+# prints. A floor nobody has ever seen satisfied is a floor nobody has checked.
+#
+# ## Which breakages need the database, and which do not
+#
+# The static half of the checker never runs the gate, so every
+# declaration-versus-tree breakage below is fast. The proving half runs
+# `bin/prime --db`, which needs a Postgres at `$TEST_DATABASE_URL`. **Without
+# one, the proving cases are SKIPPED, printed, counted separately, and the run
+# is NOT green** — a skip is not a pass, and a proof nobody ran is not a proof.
+#
+# The proving cases are the expensive ones: each rebuilds the crate from source,
+# because a copy of the tree at a different path is a different cargo unit. Set
+# `DARKROOM_GATE_TARGET_DIR` to reuse a build directory and skip compiling the
+# ~200 dependencies; a cold run compiles them once and is minutes.
+#
+# ## What it is not
+#
+# Not exhaustive mutation testing. It proves that these specific checks are
+# load-bearing, and the checker itself is core's — darkroom declares the gate and
+# does not reimplement the check, so a break *in* the checker is core's
+# self-test's business and is named in this repository's report rather than
+# papered over here.
+
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# core owns the format, the schema and the checker. darkroom consumes it.
+# `CAFAYE_CORE` overrides where a sibling checkout lives.
+CORE="${CAFAYE_CORE:-$ROOT/../core}"
+CHECK="$CORE/harness/bin/gate-check"
+
+# The proving cases need a build directory. Reusing one is a convenience and
+# never a dependency: unset it and the run is slower, not different.
+export CARGO_TARGET_DIR="${DARKROOM_GATE_TARGET_DIR:-$ROOT/target}"
+
+# --------------------------------------------------------------------------
+# preconditions, reported rather than guessed at
+# --------------------------------------------------------------------------
+
+if [ ! -x "$CHECK" ]; then
+  printf 'gate-self-test: core'"'"'s gate checker is not at %s\n' "$CHECK" >&2
+  printf 'gate-self-test: darkroom declares the gate; it does not implement the check.\n' >&2
+  printf 'gate-self-test: set CAFAYE_CORE to a cafaye/core checkout.\n' >&2
+  exit 1
+fi
+
+# core's wrapper resolves its own interpreter and refuses one older than 3.11
+# with exit 2. `CAFAYE_GATE_PYTHON` is forwarded so this script and core's CI
+# would use the same interpreter if they ever ran together.
+if [ -n "${CAFAYE_GATE_PYTHON:-}" ]; then
+  export CAFAYE_GATE_PYTHON
+fi
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/darkroom-gate-self-test.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
+
+failures=0
+breakages=0
+skips=0
+warn_cases=0
+copy_name=""
+
+# Whether the proving phase can happen at all. Decided ONCE, up front, and
+# reported in the summary, so the last line says whether the database half of
+# this script ran.
+can_prove=1
+[ -n "${TEST_DATABASE_URL:-}" ] || can_prove=0
+
+# fresh_copy <name> — a throwaway copy of the repository, minus build output.
+#
+# The file list comes from git: tracked plus untracked-but-not-ignored, so a
+# developer can run this while editing `gate.yml` and the copy carries the edit.
+# `target/` is gitignored and therefore never copied — the static breakages do
+# not need it, and the proving ones would otherwise spend minutes writing into a
+# tree they are about to throw away.
+fresh_copy() {
+  copy_name="$1"
+  local dst="$WORK/$copy_name"
+  rm -rf "$dst"
+  mkdir -p "$dst"
+  local rel
+  while IFS= read -r -d '' rel; do
+    mkdir -p "$dst/$(dirname "$rel")"
+    cp -p "$ROOT/$rel" "$dst/$rel"
+  done < <(git -C "$ROOT" ls-files -co --exclude-standard -z)
+  printf '%s' "$dst"
+}
+
+# edit <file> <old> <new> — a textual breakage that FAILS LOUDLY if this
+# repository has moved past it. A self-test that silently stops breaking
+# anything is worse than no self-test, so an unmatched edit is an error here and
+# not a pass.
+edit() {
+  if ! "${CAFAYE_GATE_PYTHON:-python3}" - "$1" "$2" "$3" <<'PYEOF'
+import sys
+
+path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
+body = open(path, encoding="utf-8").read()
+if old not in body:
+    sys.exit(f"gate-self-test: breakage no longer applies to {path}: {old!r} not found")
+open(path, "w", encoding="utf-8").write(body.replace(old, new, 1))
+PYEOF
+  then
+    printf 'FAIL gate-self-test: a breakage recipe no longer applies. The proof it was\n' >&2
+    printf '       written to provide does not exist any more.\n' >&2
+    failures=$((failures + 1))
+  fi
+}
+
+# write <file> — a breakage that replaces a whole file, such as a gate that exits
+# zero without running anything.
+write() {
+  cat > "$1"
+}
+
+# standin_gate <path> [count] — a small gate that prints the lines darkroom's
+# real gate prints, and nothing else.
+#
+# It exists for the two breakages whose claim is about the SHAPE of a proof — a
+# pattern with no capture group to read a floor from — and not about what this
+# repository's suite actually reports. Using the real gate for those would spend
+# a full `--db` build to learn something about the regular expression, and the
+# control is already the thing that proves the real gate prints these lines.
+# The breakages that ARE about the real gate's output use it unmodified.
+standin_gate() {
+  local path="$1" count="${2:-900}"
+  write "$path" <<SH
+#!/usr/bin/env bash
+# A stand-in for darkroom's gate. It prints exactly the lines gate.yml's proofs
+# name, so a breakage about a proof's SHAPE is not masked by a missing tier.
+set -uo pipefail
+for step in \\
+  'cargo test (no database)' \\
+  'cargo test --features s3 (no database)' \\
+  'cargo test --ignored (against TEST_DATABASE_URL)' \\
+  'cargo test --features s3 --ignored (against TEST_DATABASE_URL)'
+do
+  printf '\n==> %s\n' "\$step"
+  printf 'test result: ok. ${count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n'
+done
+printf '\n==> ok\n'
+SH
+  chmod +x "$path"
+}
+
+# run_checker <repo> [prove] — core's checker, on one copy. The exit code is the
+# checker's own; nothing here is piped, because the exit code of the last
+# element of a pipeline is the exit code of `tee`, and this fleet has already
+# shipped one green over a red gate that way.
+run_checker() {
+  local repo="$1" prove="${2:-}"
+  if [ -n "$prove" ]; then
+    "$CHECK" --prove --log-dir "$repo/.log" "$repo" 2>&1
+  else
+    "$CHECK" --log-dir "$repo/.log" "$repo" 2>&1
+  fi
+}
+
+# expect_red [--prove] <label> <finding-id> <repo> — the copy must exit 1 AND
+# name the finding. Both halves, deliberately.
+#
+# `--prove` is a flag on THIS function rather than a second function, on the
+# strength of a bug this script had: `expect_red_prove` delegated to `expect_red`
+# and `expect_red` ran the checker WITHOUT `--prove`, so all five proving cases
+# quietly ran the static phase instead. Every one of them reported "0 failures"
+# and the run printed a perfectly honest-looking report about the wrong phase.
+# A wrapper that forgets to forward the thing it exists to forward is worse than
+# no wrapper, for the same reason core's `gate-check` never adds `|| true`.
+expect_red() {
+  local prove_it=""
+  if [ "${1:-}" = "--prove" ]; then prove_it="--prove"; shift; fi
+  local label="$1" expect="$2" repo="$3" out code
+  out="$(run_checker "$repo" "$prove_it")"
+  code=$?
+  if [ "$code" -ne 1 ]; then
+    printf 'FAIL gate-self-test: %s — expected exit 1, got %s\n%s\n' "$label" "$code" "$out" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  if ! printf '%s' "$out" | grep -qF "$expect"; then
+    printf 'FAIL gate-self-test: %s — went red as something else, never said %s\n%s\n' \
+      "$label" "$expect" "$out" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  printf 'PASS gate-self-test: %s — caught by `%s`\n' "$label" "$expect"
+}
+
+# expect_red_prove <label> <finding-id> <repo> — the same, against a copy whose
+# gate actually ran. Skipped, loudly, when there is no database.
+expect_red_prove() {
+  local label="$1" expect="$2" repo="$3"
+  if [ "$can_prove" -eq 0 ]; then
+    skips=$((skips + 1))
+    printf 'SKIP gate-self-test: %s — needs a Postgres at $TEST_DATABASE_URL\n' "$label"
+    return
+  fi
+  expect_red --prove "$label" "$expect" "$repo"
+}
+
+# expect_warn <label> <finding-id> <repo> — the finding must be PRINTED and the
+# exit code must still be 0. The exit code is the half that matters, and it is
+# the half a tri-state checker gets wrong: promote a warning to a failure and it
+# is red on a laptop and green on CI.
+expect_warn() {
+  local label="$1" expect="$2" repo="$3" out code
+  out="$(run_checker "$repo")"
+  code=$?
+  if [ "$code" -ne 0 ]; then
+    printf 'FAIL gate-self-test: %s — a warning moved the exit code to %s\n%s\n' \
+      "$label" "$code" "$out" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  if ! printf '%s' "$out" | grep -qF "$expect"; then
+    printf 'FAIL gate-self-test: %s — exited 0 without even printing %s\n%s\n' \
+      "$label" "$expect" "$out" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  warn_cases=$((warn_cases + 1))
+  printf 'PASS gate-self-test: %s — said `%s` and still exited 0\n' "$label" "$expect"
+}
+
+# --------------------------------------------------------------------------
+# the controls. Without them, every red below proves nothing: a checker that
+# refused everything would satisfy every expectation in this file.
+# --------------------------------------------------------------------------
+control="$(fresh_copy control)"
+out="$(run_checker "$control")"
+code=$?
+if [ "$code" -ne 0 ]; then
+  printf 'FAIL gate-self-test: the static control — a declaration that is true of this\n' >&2
+  printf '       repository — came back red (exit %s). The reds below mean nothing.\n%s\n' \
+    "$code" "$out" >&2
+  failures=$((failures + 1))
+else
+  printf 'PASS gate-self-test: the static control — the declaration is true of this tree\n'
+fi
+
+# Every requirement in darkroom's declaration is satisfied by a command on PATH,
+# which the checker deliberately does not run, so every run of this repository
+# prints `gate.requirement-unproven` and every one of them exits 0. Asserting
+# that here means the "three warnings on every run" is a tested property rather
+# than something a reader has to notice in a log.
+if printf '%s' "$out" | grep -qF 'gate.requirement-unproven' && [ "$code" -eq 0 ]; then
+  warn_cases=$((warn_cases + 1))
+  printf 'PASS gate-self-test: the three unrunnable requirements warn and still exit 0\n'
+else
+  printf 'FAIL gate-self-test: expected gate.requirement-unproven on an unmodified run\n' >&2
+  failures=$((failures + 1))
+fi
+
+# And green in the PROVING phase, which is the only phase that can tell a gate
+# that ran from a command that exited zero.
+if [ "$can_prove" -eq 0 ]; then
+  skips=$((skips + 1))
+  printf 'SKIP gate-self-test: the proving control — needs a Postgres at $TEST_DATABASE_URL\n'
+else
+  control_prove="$(fresh_copy control-prove)"
+  out="$(run_checker "$control_prove" prove)"
+  code=$?
+  if [ "$code" -ne 0 ]; then
+    printf 'FAIL gate-self-test: the proving control — `bin/prime --db` did not satisfy the\n' >&2
+    printf '       declaration. The gate is red, or a declared proof does not match it.\n%s\n' \
+      "$out" >&2
+    failures=$((failures + 1))
+  else
+    printf 'PASS gate-self-test: the proving control — `bin/prime --db` ran and every\n'
+    printf '       declared proof appeared at or above its floor\n'
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# the breakages: the declaration disagreeing with the tree
+# --------------------------------------------------------------------------
+
+breakages=$((breakages + 1))
+one="$(fresh_copy no-declaration)"
+rm -f "$one/gate.yml"
+expect_red 'a repository that declares no gate at all' 'gate.declaration-missing' "$one"
+
+breakages=$((breakages + 1))
+two="$(fresh_copy command-missing)"
+edit "$two/gate.yml" 'command: [bin/prime, --db]' 'command: [bin/not-the-gate, --db]'
+expect_red 'a gate command naming a file this repository does not have' \
+  'gate.command-missing' "$two"
+
+breakages=$((breakages + 1))
+three="$(fresh_copy entrypoint-missing)"
+edit "$three/gate.yml" 'entrypoint: bin/prime' 'entrypoint: bin/not-the-gate'
+expect_red 'a gate entrypoint this repository does not have, while the command still does' \
+  'gate.entrypoint-missing' "$three"
+
+breakages=$((breakages + 1))
+four="$(fresh_copy entrypoint-not-executable)"
+chmod -x "$four/bin/prime"
+expect_red 'a gate nobody is allowed to execute' 'gate.entrypoint-not-executable' "$four"
+
+breakages=$((breakages + 1))
+five="$(fresh_copy task-missing)"
+edit "$five/gate.yml" 'miseTask: prime' 'miseTask: verify'
+expect_red 'a mise task that is not in the mise config' 'gate.task-missing' "$five"
+
+breakages=$((breakages + 1))
+six="$(fresh_copy task-unresolvable)"
+edit "$six/mise.toml" 'run = "./bin/prime"' 'run = "./bin/only-lints"'
+expect_red 'a mise task that resolves to a different file than the declaration names' \
+  'gate.task-unresolvable' "$six"
+
+breakages=$((breakages + 1))
+seven="$(fresh_copy task-config-missing)"
+rm -f "$seven/mise.toml"
+expect_red 'a mise task named in a repository that has no mise config' \
+  'gate.task-config-missing' "$seven"
+
+breakages=$((breakages + 1))
+eight="$(fresh_copy ci-missing)"
+edit "$eight/gate.yml" 'workflow: .github/workflows/ci.yml' \
+  'workflow: .github/workflows/gate.yml'
+expect_red 'a declaration naming a CI workflow that is not in this repository' \
+  'gate.ci-missing' "$eight"
+
+breakages=$((breakages + 1))
+nine="$(fresh_copy ci-disagrees)"
+edit "$nine/.github/workflows/ci.yml" './bin/prime --db' 'echo "this job runs no gate"'
+expect_red 'a CI workflow that exists but never runs the gate' 'gate.ci-disagrees' "$nine"
+
+breakages=$((breakages + 1))
+ten="$(fresh_copy requirement-emptied)"
+edit "$ten/gate.yml" '  selfContained: false' '  selfContained: true'
+expect_red 'a gate that calls itself self-contained while naming three things it needs' \
+  'gate.schema' "$ten"
+
+breakages=$((breakages + 1))
+eleven="$(fresh_copy requirement-path-missing)"
+edit "$eleven/gate.yml" 'command: [docker, compose, up, -d, postgres]' 'command: [bin/compose-up]'
+expect_red 'a requirement satisfied by a file this repository does not have' \
+  'gate.requirement-path-missing' "$eleven"
+
+breakages=$((breakages + 1))
+twelve="$(fresh_copy proof-uncompilable)"
+edit "$twelve/gate.yml" "0 failed; 0 ignored;'" "0 failed; 0 ignored; ('" \
+  "0 failed; 0 ignored; ('"
+expect_red 'a proof whose pattern does not compile, which would otherwise read as "no proof required"' \
+  'gate.schema' "$twelve"
+
+# There is deliberately NO static counterpart to the "no capture group" breakage
+# below. It was written, run, and it stayed green, and the reason is worth
+# recording: a proof with a floor and no group to read it from is a fact the
+# static phase does not check at all — `validate()` checks that the pattern
+# compiles and that the minimum is an integer, and neither of those is false
+# here. `gate.proof-invalid` is a proving-phase finding. A declaration that
+# promises a floor it cannot read is green until somebody runs the gate.
+
+# --------------------------------------------------------------------------
+# the warnings, and the promise they make
+# --------------------------------------------------------------------------
+
+breakages=$((breakages + 1))
+w1="$(fresh_copy command-unknown)"
+edit "$w1/gate.yml" 'command: [bin/prime, --db]' 'command: [darkroom-gate-not-on-any-path]'
+expect_warn 'a gate command that is a bare name this machine does not have' \
+  'gate.command-unknown' "$w1"
+
+breakages=$((breakages + 1))
+w2="$(fresh_copy task-undeclared)"
+edit "$w2/gate.yml" '  miseTask: prime
+' ''
+expect_warn 'a repository with mise tasks and a declaration that names none of them' \
+  'gate.task-undeclared' "$w2"
+
+breakages=$((breakages + 1))
+w3="$(fresh_copy ci-undeclared)"
+edit "$w3/gate.yml" 'ci:
+  workflow: .github/workflows/ci.yml
+  invokes: [bin/prime, --db]
+' ''
+expect_warn 'a declaration that says nothing about CI' 'gate.ci-undeclared' "$w3"
+
+breakages=$((breakages + 1))
+w4="$(fresh_copy task-unreadable)"
+edit "$w4/mise.toml" 'run = "./bin/prime"' 'run = "./bin/prime | tee prime.log"'
+expect_warn 'a mise task whose run string is a pipeline, so only a shell could say what it runs' \
+  'gate.task-unreadable' "$w4"
+
+# --------------------------------------------------------------------------
+# the breakages that need the gate to have run
+# --------------------------------------------------------------------------
+#
+# Two of these need only that the gate RAN, not that a database exists: the
+# stand-in gates below never touch one. So they call `expect_red --prove`
+# directly rather than `expect_red_prove`, which would skip them on a bare
+# machine — and skipping a case that could have run is the same sin as calling a
+# skipped case a pass. `expect_red_prove` is for the three that run darkroom's
+# real gate.
+#
+# Every finding from here down is a PROVING-phase finding. That is worth saying
+# out loud because it was the bug: `gate.proof-missing`, `gate.nonzero`,
+# `gate.timeout`, `gate.floor` and `gate.proof-invalid` do not exist in the
+# static phase at all, so a case written against one of them and run without
+# `--prove` cannot fail, and reports a clean static run instead. That is how
+# five of the cases below passed for one whole run while testing nothing.
+
+# The one that is not string matching. Every string in the declaration about
+# this copy is true — the command exists, the entrypoint is executable, the mise
+# task resolves to it, CI calls it — and the repository is ungated. Nothing
+# about the declaration is wrong. The only thing that catches it is asking the
+# gate to say what it did, which is what `gate.proof` is for.
+breakages=$((breakages + 1))
+false_green="$(fresh_copy false-green)"
+write "$false_green/bin/prime" <<'SH'
+#!/usr/bin/env bash
+# A well-formed gate that runs nothing, prints nothing and exits 0. This is the
+# false green reproduced deliberately: every declaration is true about it.
+exit 0
+SH
+chmod +x "$false_green/bin/prime"
+expect_red --prove 'a declaration that is entirely true about a gate that exited 0 without running anything' \
+  'gate.proof-missing' "$false_green"
+
+# Runs, prints every declared proof, and then fails. Without this the checker
+# would accept a gate that proved itself and died on the next line.
+breakages=$((breakages + 1))
+nonzero="$(fresh_copy nonzero)"
+standin_gate "$nonzero/bin/prime" 900
+printf 'echo "FAIL something after the summary" >&2\nexit 1\n' >> "$nonzero/bin/prime"
+expect_red --prove 'a gate that ran, printed its proofs, and still failed' 'gate.nonzero' "$nonzero"
+
+# A budget so small the gate cannot finish inside it, and WITHOUT a sleep:
+# `sleep 3` would make the result depend on the scheduler rather than on the
+# checker. A CPU-bound wait ends by itself, so a checker that failed to stop the
+# gate makes this script slow rather than hung.
+breakages=$((breakages + 1))
+overrun="$(fresh_copy timeout)"
+edit "$overrun/gate.yml" 'timeoutSeconds: 3600' 'timeoutSeconds: 1'
+write "$overrun/bin/prime" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+python3 - <<'PYEOF'
+import time
+
+end = time.monotonic() + 3.0
+while time.monotonic() < end:
+    pass
+PYEOF
+SH
+chmod +x "$overrun/bin/prime"
+expect_red --prove 'a gate that outlived the budget its own declaration gave it' 'gate.timeout' "$overrun"
+
+# A floor is a decrease-detector, and this is what proves it is one rather than
+# decoration: the pattern compiles, the gate is true, and the declaration is red
+# because there is no capture group to read the number from.
+breakages=$((breakages + 1))
+unmeasurable="$(fresh_copy proof-unmeasurable-prove)"
+standin_gate "$unmeasurable/bin/prime" 900
+edit "$unmeasurable/gate.yml" "([1-9][0-9]*) passed; 0 failed; 0 ignored;'" \
+  "[1-9][0-9]* passed; 0 failed; 0 ignored;'"
+expect_red_prove 'a floor with no capture group, against a gate that ran and printed its proof' \
+  'gate.proof-invalid' "$unmeasurable"
+
+# And the floor against the real suite: the gate runs for real, prints its real
+# number, and the declaration is red because the number is below what it promised.
+breakages=$((breakages + 1))
+floor="$(fresh_copy floor)"
+edit "$floor/gate.yml" 'minimum: 7' 'minimum: 999999'
+expect_red_prove 'a gate that proved fewer tests than the declaration promised' \
+  'gate.floor' "$floor"
+
+# The pattern itself, changed to something the real gate does not print. The same
+# claim from the other side, and the only one that has to be run against
+# darkroom's actual suite rather than a stand-in: "the declared proofs match what
+# THIS repository's gate prints" is a claim about this gate.
+breakages=$((breakages + 1))
+unmatched="$(fresh_copy proof-unmatched)"
+edit "$unmatched/gate.yml" "0 failed; 0 ignored;'" "0 failed; 999999 ignored;'"
+expect_red_prove 'a proof that matches nothing the real gate prints' \
+  'gate.proof-missing' "$unmatched"
+
+# The drift this declaration exists to record, from the other side. Drop `--db`
+# from the declared command and the declaration is still *true of the tree*:
+# `bin/prime` exists, the mise task still resolves to it, CI still calls
+# `./bin/prime --db`. Nothing textual sees it, because the only difference is a
+# flag and the flag is not in any file the static half reads. Only running the
+# declared gate can see it, and what it sees is two database tiers that did not
+# run. This is why `gate.command` carries `--db` rather than the task's argv.
+breakages=$((breakages + 1))
+flag_drift="$(fresh_copy flag-drift)"
+edit "$flag_drift/gate.yml" 'command: [bin/prime, --db]' 'command: [bin/prime]'
+expect_red_prove 'a declaration that dropped the --db its own CI job still passes' \
+  'gate.proof-missing' "$flag_drift"
+
+# --------------------------------------------------------------------------
+
+printf '\n'
+if [ "$failures" -ne 0 ]; then
+  printf 'FAIL: gate-self-test — %s of %s breakages and %s warning cases the gate\n' \
+    "$failures" "$breakages" "$warn_cases"
+  printf '      checker did not get right, and %s case(s) skipped.\n' "$skips"
+  exit 1
+fi
+if [ "$skips" -ne 0 ]; then
+  # kit's rule, applied here: a skip in a self-test fails the run, because a
+  # proof nobody ran is not a proof. The static half ran and its results are
+  # real; the proving half did not, and calling that green would be the false
+  # green this script exists to catch.
+  printf 'FAIL: gate-self-test — %s breakage(s) and %s warning case(s) are correct, but\n' \
+    "$breakages" "$warn_cases"
+  printf '      %s case(s) were SKIPPED for want of a Postgres at $TEST_DATABASE_URL.\n' "$skips"
+  printf '      A skipped proof is not a passing proof.\n'
+  exit 1
+fi
+printf 'PASS: gate-self-test — all %s breakages went red, all %s warning cases stayed\n' \
+  "$breakages" "$warn_cases"
+printf '      green with exit 0, both controls are green, and nothing was skipped.\n'
