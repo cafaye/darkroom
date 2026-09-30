@@ -304,6 +304,10 @@ async fn verification_reads_the_object_back_exactly_once() {
 /// A missing object is still a 409 and still costs no read. The `head` exists so
 /// the "the upload never landed" answer does not have to download a gigabyte to
 /// discover the gigabyte is not there.
+///
+/// The corrupting store is deliberate: this asserts the 409 does not depend on
+/// what `get` *would* have returned, which is the same reason it has to be
+/// answered before any read.
 #[tokio::test]
 #[ignore = "needs TEST_DATABASE_URL; see tests/common/mod.rs"]
 async fn an_absent_object_is_a_conflict_and_downloads_nothing() {

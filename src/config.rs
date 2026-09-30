@@ -142,7 +142,7 @@ pub enum ConfigError {
     InvalidObjectStore(String),
     #[error("DARKROOM_S3_BUCKET is required when DARKROOM_OBJECT_STORE=s3")]
     MissingBucket,
-    #[error("DARKROOM_S3_REGION is required when DARKROOM_OBJECT_STORE=s3")]
+    #[error("DARKROOM_S3_REGION is required when DARKROOM_OBJECT_STORE=s3 and the endpoint is not Cloudflare R2, whose region is `auto` and is defaulted")]
     MissingRegion,
     #[error(
         "DARKROOM_S3_REGION is {got:?} but the endpoint is Cloudflare R2, whose region is the literal string `auto`: R2 rejects SigV4 signed for a real region. Set DARKROOM_S3_REGION=auto (or leave it unset, which defaults to `auto` for an R2 endpoint). `{got:?}` is only valid with a non-R2 endpoint."

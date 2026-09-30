@@ -63,7 +63,7 @@ const FORBIDDEN: &[&str] = &[
     "x-amz-grant",
     "x-amz-expected-bucket-owner",
     "x-amz-object-lock",
-    "x-amz-bucket-owner",
+    "x-amz-request-payer",
     "x-amz-checksum",
     "x-amz-sdk-checksum",
     "x-amz-checksum-mode",

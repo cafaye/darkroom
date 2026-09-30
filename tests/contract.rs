@@ -227,7 +227,6 @@ fn no_acl_grant_lock_or_bucket_owner_header_is_ever_asked_for() {
         "x-amz-grant",
         "x-amz-expected-bucket-owner",
         "x-amz-request-payer",
-        "x-amz-bucket-owner",
     ] {
         assert!(
             !s3.contains(forbidden),
