@@ -24,15 +24,19 @@
 //! the process restarted out from under in-flight work — that is `/readyz`'s
 //! job. `/healthz` answering 200 while the database is gone is correct: the
 //! process is alive, it just should not receive traffic.
+//!
+//! The table above is prose. The one the router is built from is
+//! [`OPERATIONS`], and `tests/openapi_document.rs` holds this file's
+//! `openapi/v1.yaml` to it in both directions.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, MethodRouter};
 use axum::{Json, Router};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -72,17 +76,96 @@ pub const MAX_BODY_BYTES: usize = 4096;
 /// exempt ones and that everything else is not.
 const UNAUTHENTICATED_PATHS: &[&str] = &["/healthz", "/readyz"];
 
+/// One operation this router serves: the route, and the handler behind it.
+///
+/// ## Why the route table is data
+///
+/// axum cannot be asked what it routes. There is no `Router::routes()`, no
+/// `Display`, and nothing to reflect over — a `Router` is a tree of boxed
+/// services behind a type that does not expose its contents. So the set of
+/// operations darkroom serves has to be written down, and the only place it can
+/// be written down without a second copy quietly going stale is here, next to
+/// the handlers.
+///
+/// [`OPERATIONS`] is that one declaration and [`router`] is built from it, so
+/// the HTTP surface and the thing a test reads are the same thing. The
+/// alternative is a list written out inside the test, and a list in a test is
+/// the shape that can only fail for a name somebody remembered to type.
+pub struct Operation {
+    /// The method, spelled the way the OpenAPI document spells it.
+    ///
+    /// This is the one field nothing in axum can confirm. The method a
+    /// `MethodRouter` answers is baked into the value `get(handler)` returns
+    /// and there is no accessor for it, so the row states it and the
+    /// OpenAPI check asks the router itself — a request with a method the table
+    /// does not declare, answered with `405` and an `Allow` header that
+    /// enumerates the truth.
+    pub method: Method,
+    /// The route in axum's syntax, so `{id}` and not `:id`.
+    pub path: &'static str,
+    handler: fn() -> MethodRouter<AppState>,
+}
+
+/// Every operation this router serves, in the order they are registered.
+///
+/// A new endpoint is a new row here, and a row is not a promise: adding one
+/// without a matching operation in `openapi/v1.yaml` fails
+/// `tests/openapi_document.rs`, in both directions.
+pub const OPERATIONS: &[Operation] = &[
+    Operation {
+        method: Method::GET,
+        path: "/healthz",
+        handler: || get(healthz),
+    },
+    Operation {
+        method: Method::GET,
+        path: "/readyz",
+        handler: || get(readyz),
+    },
+    Operation {
+        method: Method::POST,
+        path: "/v1/uploads",
+        handler: || post(create_upload),
+    },
+    Operation {
+        method: Method::POST,
+        path: "/v1/uploads/{id}/complete",
+        handler: || post(complete_upload),
+    },
+    Operation {
+        method: Method::GET,
+        path: "/v1/assets",
+        handler: || get(list_assets),
+    },
+    Operation {
+        method: Method::GET,
+        path: "/v1/assets/{id}",
+        handler: || get(get_asset),
+    },
+    Operation {
+        method: Method::DELETE,
+        path: "/v1/assets/{id}",
+        handler: || delete(delete_asset),
+    },
+    Operation {
+        method: Method::POST,
+        path: "/v1/assets/{id}/variants",
+        handler: || post(create_variant),
+    },
+    Operation {
+        method: Method::GET,
+        path: "/v1/assets/{id}/variants",
+        handler: || get(list_variants),
+    },
+];
+
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
-        .route("/v1/uploads", post(create_upload))
-        .route("/v1/uploads/{id}/complete", post(complete_upload))
-        .route("/v1/assets", get(list_assets))
-        .route("/v1/assets/{id}", get(get_asset))
-        .route("/v1/assets/{id}", delete(delete_asset))
-        .route("/v1/assets/{id}/variants", post(create_variant))
-        .route("/v1/assets/{id}/variants", get(list_variants))
+    // Built from `OPERATIONS` rather than from a chain of `.route()` calls, so
+    // the route table is one declaration that both the router and the OpenAPI
+    // drift check read. See `Operation` for why axum forces this shape.
+    OPERATIONS
+        .iter()
+        .fold(Router::new(), |app, op| app.route(op.path, (op.handler)()))
         // Order matters: the body limit is outermost so an oversized body is
         // refused before the auth middleware reads it, and the trace context is
         // inside that so even a refused request has a trace id.
