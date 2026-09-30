@@ -229,7 +229,18 @@ cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo build --all-targets --all-features   # the feature-gated paths
 cargo llvm-cov --fail-under-lines 50       # the coverage floor, and only this
+./bin/gate-self-test # is gate.yml still true of this repository
 ```
+
+**`./bin/prime --db` is the gate, and `mise run prime` is not.** `gate.yml`
+declares the former, and the flag is in the declaration rather than implied by
+it: without `--db` the 41 database tests report as `ignored` and the run still
+prints `==> ok` and exits 0. If you are landing a change, run the declared gate.
+`gate.yml` is core's format — read it before changing it, and read what it says
+about this repository's own requirements.
+
+`bin/gate-self-test` needs a Postgres at `$TEST_DATABASE_URL` for the cases that
+run the gate, and it reports a skip as a failure rather than a pass.
 
 All green before a commit lands. The `--all-features` build matters: `s3` and
 `dev-auth` are behind features, so a default build compiling clean says nothing

@@ -13,6 +13,29 @@ and only `info.version` moves otherwise
 
 ### Added
 
+**`gate.yml`: the gate is declared, so it no longer has to be guessed.** What
+"run the gate" means in this repository was discoverable only by getting it
+wrong: `mise run prime` runs `bin/prime`, CI runs `bin/prime --db`, and the
+difference is the entire database tier, because the database tests are
+`#[ignore]`d and a bare `./bin/prime` reports them as `ignored`, prints `==> ok`
+and exits 0. Nothing in the repository said so in a form a machine or a new
+reader could check. `gate.yml` is core's format
+([`../core/schemas/gate.schema.json`](../core/schemas/gate.schema.json), checked
+by `../core/harness/gate_check.py`) and it states the argv, the mise task, the
+entrypoint, the three external requirements with how to satisfy each, the CI
+invocation — flag included — and five proofs, four of which are the step headers
+that can only appear if all four cargo tiers ran.
+
+`bin/gate-self-test` is the other half: two controls and twenty-three breakages,
+each breaking exactly one thing in a throwaway copy and asserting core's checker
+goes red **and names the finding it expects**. The four cases the packet names
+are in it — an entrypoint that is not a file, a mise task that resolves
+somewhere else, a proof pattern that matches nothing the gate prints, a CI
+workflow that does not invoke the gate — and so are the false green, the floor,
+the timeout, and the drift this declaration exists to record: dropping `--db`
+from the declared command is invisible to every static check and is caught only
+by running the gate.
+
 **`openapi/v1.yaml` and the router are now held to each other by a test, in
 both directions.** `tests/openapi_document.rs` compares the published document
 with the routes the service actually serves. An operation the document describes
