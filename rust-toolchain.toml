@@ -1,0 +1,58 @@
+# The toolchain and the target, pinned.
+#
+# ## Why this file exists at all
+#
+# darkroom's CI has carried a comment promising this file since the first
+# packet: "From rust-toolchain.toml, so CI and a worktree cannot agree about
+# which rustc produced a green result." The promise was never kept. What the
+# workflow actually ran was `rustup show active-toolchain || rustup toolchain
+# install`, and `rustup show active-toolchain` succeeds on any runner — it
+# prints whatever is installed. The `||` fallback therefore never fired and the
+# toolchain was whatever the image shipped that month.
+#
+# That is a floating build. A suite that passes today must not depend on which
+# image was cached when the run started, so the number lives here now.
+#
+# ## One number, four files
+#
+# This channel is the same release as the other three pins, and they must stay
+# the same release:
+#
+#   mise.toml        [tools] rust = "1.95"
+#   Cargo.toml       rust-version = "1.95"
+#   docker/Dockerfile  ARG RUST_VERSION=1.95
+#   rust-toolchain.toml  channel = "1.95.0"     <- this file
+#
+# The three are written at minor granularity because that is what each of them
+# means — mise resolves a range, `rust-version` is an MSRV floor, and a Docker
+# tag is a major/minor. This one is a channel, and a channel is a patch: it is
+# the only one of the four that cannot drift within a release, so it carries
+# the patch. A worktree on a newer rustc than the image builds on produces a
+# binary CI never produced.
+#
+# ## The target
+#
+# `x86_64-unknown-linux-gnu` is what CI compiles and tests on, and the runner
+# is pinned to `ubuntu-24.04` so the host triple cannot drift either. Listing
+# it here means rustup installs the std for it on any machine, so a
+# cross-build from a laptop resolves rather than failing on a missing target.
+#
+# The deployment target is deliberately NOT listed. The image builds
+# `x86_64-unknown-linux-musl` (see docker/Dockerfile), and `ring` — which
+# rustls depends on — needs a C toolchain for that target, so a glibc CI
+# runner cannot link it. Listing a target rustup cannot finish installing
+# would make every `cargo` invocation on a developer machine pay for a failure
+# it cannot fix. musl is a build-image concern; see the "Not done" section of
+# the README.
+#
+# ## Components
+#
+# `clippy` and `rustfmt` because `bin/prime` opens with `cargo fmt --check` and
+# runs `cargo clippy --all-targets --all-features -- -D warnings`. A pinned
+# toolchain without them is a toolchain where the first two steps of the gate
+# fail on a missing binary rather than on a real problem.
+[toolchain]
+channel = "1.95.0"
+components = ["clippy", "rustfmt"]
+targets = ["x86_64-unknown-linux-gnu"]
+profile = "minimal"

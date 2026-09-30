@@ -11,7 +11,61 @@ and only `info.version` moves otherwise
 
 ## [Unreleased]
 
+### Added
+
+**`bin/tier-counts` — the gate's own accounting.** `bin/prime --db` exits zero
+in three situations where it has verified nothing: tier 6 never ran, tier 6 ran
+and touched nothing, and tier 5 never compiled the `s3` feature. None of those
+change the exit code, so the counts are what is left to read.
+
+`bin/tier-counts` takes a captured run and asserts 77 unit, 89 with `s3`, 9
+R2/S3 behaviour-table rows, and 41 database tests in each feature set — plus one
+identity that is not a constant-to-constant comparison: **the count the default
+run skips must equal the count the database run passes**, because they are the
+same set of tests. A test `#[ignore]`d without the database tier running it
+breaks it in one direction; a test added and never ignored breaks it in the
+other. Neither reaches master as a green badge. Adding a test means raising the
+number in the same commit, which is the point of the constant.
+
+Proven able to fail, not assumed to: six mutations of a real green log, each
+producing a specific message and a non-zero exit.
+
+**`rust-toolchain.toml`.** The workflow has promised this file since
+darkroom-01. It did not exist, and the `rustup show active-toolchain ||
+rustup toolchain install` that stood in for it succeeds on every runner, so the
+`||` branch could never fire and the toolchain was whatever the image shipped
+that month. Now pinned to `1.95.0` — the same release as `mise.toml`,
+`Cargo.toml`'s `rust-version` and the Dockerfile's `RUST_VERSION` — with
+`clippy` and `rustfmt` as components and `x86_64-unknown-linux-gnu` as the
+target CI compiles on.
+
 ### Changed
+
+**CI calls `cafaye/kit/.github/workflows/ci.reusable.yml@master`** for the
+shared half (`language: rust`, coverage floor 50 against 53.73% measured line
+coverage), and keeps two jobs that kit cannot own. `gate` runs `bin/prime --db`
+against a `postgres:17-alpine` service — the database tier is the reason this
+packet exists, and it cannot run without an environment kit's rust job has no
+way to provide. `contract` checks out `cafaye/caf` and runs their tool, which is
+a step that reaches into another cafaye repository and is out of kit's scope by
+name.
+
+The `build` job is gone. `gate` is a strict superset of it: `bin/prime` already
+ran fmt, build, `--all-features` clippy, `cargo test` and
+`cargo test --features s3`, and `gate` adds the database tier, the tier
+accounting and a `git diff --exit-code Cargo.lock` guard. The global
+`RUSTFLAGS: -D warnings` is gone with it — it was set in CI and not locally, and
+a gate that is stricter in CI than on a laptop is a gate the two can disagree
+about.
+
+**No object-storage credential, and no MinIO service, in CI.** The `s3` tier
+needs neither. `tests/storage_backends.rs` presigns with the real SDK and static
+dummy credentials; presigning builds a URI and a signature locally and transmits
+nothing, so the nine-row table runs offline. A MinIO container would boot a
+bucket nothing in the suite speaks to — a green checkmark on nothing. The
+limitation is now written down instead: the table proves the request darkroom
+would sign, not that R2 accepts it, and the README's manual procedure covers
+that half.
 
 **The checksum is verified by reading the object back, on every backend.**
 `POST /v1/uploads/{id}/complete` used to ask the backend what checksum it had

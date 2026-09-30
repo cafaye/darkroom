@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# bin/tier-counts — did `bin/prime --db` actually run every tier, and how many?
+#
+#   ./bin/prime --db 2>&1 | tee /tmp/prime.log
+#   ./bin/tier-counts /tmp/prime.log
+#
+# ## Why this exists at all
+#
+# `bin/prime` exits zero when it is happy, and `cargo test` exits zero when it
+# ignored every test it could. Those two facts are the same fact: a green exit
+# code is a claim, and this repository has three ways to make a false one.
+#
+#   1. Tier 6 does not run at all — someone calls `bin/prime` instead of
+#      `bin/prime --db`, and the 41 database tests report as `ignored` while
+#      the suite still exits 0. darkroom is a service whose entire job is
+#      putting bytes in a database.
+#   2. Tier 6 runs but touches nothing — `TEST_DATABASE_URL` is unset, every
+#      `#[ignore]`d test panics or the harness finds no database, and the run
+#      is quietly `0 passed`.
+#   3. Tier 5 does not run — `cargo test` does not compile the `s3` feature at
+#      all, so the R2 configuration rules and the presigned-URL table are
+#      decoration.
+#
+# None of those change the exit code. All three change the counts, so this
+# reads the counts. It is an accounting check, not a second gate: `bin/prime`
+# remains the gate, and nothing here loosens it.
+#
+# ## The invariant worth having
+#
+# The number of tests the default run *skips* must equal the number the
+# database run *passes*. Those are the same set of tests, so the two counts
+# agreeing is a real identity and not two numbers that happen to be plausible:
+#
+#   default `cargo test`      77 passed, 41 ignored
+#   `cargo test -- --ignored` 41 passed,  0 ignored
+#
+# A test that is `#[ignore]`d without the database tier running it breaks the
+# identity. A test that is added and never `#[ignore]`d breaks it the other
+# way. Neither can reach master as a green badge.
+#
+# ## The absolute numbers
+#
+# The floor below is the count on master. It catches the blunter failure — the
+# whole integration tree silently ceasing to compile, which would report `0
+# passed` everywhere and still balance out. **Adding a test means raising the
+# number in the same commit that adds it.** That is the point: the constant is
+# a claim someone has to look at, not a number that drifts.
+#
+# | tier | command | expected |
+# |---|---|---|
+# | 4 | `cargo test` | 77 lib unit tests, 41 skipped for want of a database |
+# | 5 | `cargo test --features s3` | 89 lib unit tests, 9 backend-table rows |
+# | 6 | `cargo test -- --ignored` | 41 passed |
+# | 6 | `cargo test --features s3 -- --ignored` | 41 passed |
+#
+# The step labels below are the ones `bin/prime` prints. Rewording a step there
+# breaks this script, loudly and on the first run, which is the intended
+# coupling: the two files must agree about what the tiers are.
+set -euo pipefail
+
+DB_TESTS=41
+UNIT_TESTS=77
+S3_UNIT_TESTS=89
+S3_TABLE_TESTS=9
+
+usage() {
+  echo "usage: bin/tier-counts <log-of-'bin/prime --db'>" >&2
+  exit 2
+}
+
+log="${1:-}"
+[[ -n "$log" && -f "$log" ]] || usage
+
+# `bin/prime` prints its step headers through printf with SGR escapes, and
+# cargo colours its own output when it thinks it is on a terminal. Neither is
+# part of what is being measured, and neither is allowed to change an answer,
+# so both are stripped before anything is counted.
+clean="$(mktemp)"
+trap 'rm -f "$clean"' EXIT
+sed -e $'s/\x1b\\[[0-9;]*m//g' "$log" >"$clean"
+
+# Sum `passed` or `ignored` over the `test result:` lines cargo printed,
+# optionally restricted to one `==> ` step header and one test binary.
+#
+# Every binary's result is counted, including the two that are always empty:
+# `Running unittests src/main.rs` and the doc-test block. Both contribute zero
+# to every total — main.rs has no tests, the crate is `publish = false` and has
+# no doctests — so counting them changes no number. Restricting to named
+# binaries would hide a file that stopped compiling at all, and "a suite that
+# silently stopped running is the failure this script is here to catch" applies
+# to a test file exactly as it applies to a test.
+count() {
+  local scope="${1:-}" pattern="${2:-.*}" field="$3"
+  awk -v scope="$scope" -v pattern="$pattern" -v field="$field" '
+    /^==>/ { group = $0; sub(/^==> /, "", group) }
+    /^ *Running / {
+      binary = $0
+      sub(/^ *Running /, "", binary)
+      sub(/\(.*/, "", binary)
+      sub(/ +$/, "", binary)
+    }
+    /^test result:/ {
+      if (scope != "" && group != scope) next
+      if (pattern != ".*" && binary !~ pattern) next
+      # Cargo writes the count BEFORE the field name — `77 passed;` — so the
+      # number is $(i - 1), and the terminator is a semicolon, not a colon.
+      # Getting either of those backwards reads every count as zero, which is
+      # precisely the failure this script exists to prevent.
+      for (i = 1; i <= NF; i++) {
+        if ($i == field";") { total += $(i - 1); break }
+      }
+    }
+    END { print total + 0 }
+  ' "$clean"
+}
+
+fail() {
+  printf '\033[1;31m==> tier-counts FAILED\033[0m  %s\n' "$1" >&2
+  printf '    %s\n' "$2" >&2
+  exit 1
+}
+
+expect() {
+  local what="$1" got="$2" want="$3"
+  if [[ "$got" != "$want" ]]; then
+    fail "$what" "expected $want, log says $got"
+  fi
+  printf '  ok  %-46s %s\n' "$what" "$got"
+}
+
+# --- the log is a `--db` run at all ------------------------------------------
+# Tier 6 exists only under the flag. A `bin/prime` log is missing its headers,
+# and saying so is more useful than reporting a count of zero.
+for step in \
+  'cargo test (no database)' \
+  'cargo test --features s3 (no database)' \
+  'cargo test --ignored (against TEST_DATABASE_URL)' \
+  'cargo test --features s3 --ignored (against TEST_DATABASE_URL)'
+do
+  if ! grep -qxF "==> $step" "$clean"; then
+    fail "tier ran" "'$step' is not in this log — this is not a complete 'bin/prime --db' run"
+  fi
+done
+
+# --- tier 4: the default run -------------------------------------------------
+# 41 skipped here is not a problem; it is the accounting identity's left side.
+expect "tier 4  unit tests" \
+  "$(count 'cargo test (no database)' 'unittests src/lib.rs' passed)" "$UNIT_TESTS"
+default_ignored="$(count 'cargo test (no database)' '' ignored)"
+expect "tier 4  skipped for want of a database" \
+  "$default_ignored" "$DB_TESTS"
+
+# --- tier 5: the s3 build ----------------------------------------------------
+# `cargo test` does not compile the s3 feature at all, so these two numbers are
+# the only evidence darkroom-02's R2 work is still tested by anything.
+expect "tier 5  unit tests (s3 build)" \
+  "$(count 'cargo test --features s3 (no database)' 'unittests src/lib.rs' passed)" "$S3_UNIT_TESTS"
+expect "tier 5  R2/S3 behaviour table rows" \
+  "$(count 'cargo test --features s3 (no database)' 'tests/storage_backends.rs' passed)" "$S3_TABLE_TESTS"
+
+# --- tier 6: the database, both feature sets ---------------------------------
+# Two runs, not one. `cargo test -- --ignored` and
+# `cargo test --features s3 -- --ignored` are different builds of the library —
+# `S3ObjectStore` exists in one and `Config` has a second variant — and the
+# checksum table runs against whatever `ObjectStore` is wired, so the
+# deployment build has to pass the database tier too.
+for label in 'default build' 's3 build'
+do
+  case "$label" in
+    'default build') step='cargo test --ignored (against TEST_DATABASE_URL)' ;;
+    's3 build') step='cargo test --features s3 --ignored (against TEST_DATABASE_URL)' ;;
+  esac
+  expect "tier 6  database tests passed ($label)" \
+    "$(count "$step" '' passed)" "$DB_TESTS"
+  expect "tier 6  database tests left ignored ($label)" \
+    "$(count "$step" '' ignored)" "0"
+done
+
+# --- and the identity --------------------------------------------------------
+# The only line here that is not a constant-to-constant comparison, and the one
+# that would survive the constants being wrong together.
+if [[ "$default_ignored" != "$DB_TESTS" ]]; then
+  fail "skipped == run" \
+    "the default run skipped $default_ignored tests and the database run passed $DB_TESTS; those are the same set and must be the same number"
+fi
+
+printf '\n\033[1m==> tier-counts ok\033[0m  %d unit, %d with s3, %d database x2, %d backend-table rows\n' \
+  "$UNIT_TESTS" "$S3_UNIT_TESTS" "$DB_TESTS" "$S3_TABLE_TESTS"
