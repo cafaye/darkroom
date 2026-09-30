@@ -1,0 +1,951 @@
+# openapi/v1.yaml — the HTTP contract for darkroom's v1 surface.
+#
+# This file is what `exposes.api` in cafaye.yml points at, and it is written to
+# cafaye/core's docs/openapi-conventions.md. Where core and this file disagree,
+# core is right and this file is the bug.
+openapi: 3.1.0
+
+info:
+  title: cafaye darkroom
+  version: 1.0.0
+  summary: Media service — signed uploads, a tenant-scoped asset registry, and derived variants.
+  description: |
+    `darkroom` owns uploaded media for the platform. anychat's voice clips and
+    anymark's attachments both sit on this API rather than each rolling their
+    own.
+
+    ## The upload flow
+
+    Uploads are three calls, and the bytes never pass through this service:
+
+    1. `POST /v1/uploads` with the file's name, type, size and sha256. The
+       response is a **presigned PUT URL**, scoped to exactly one storage key,
+       one content type and one maximum size, valid for **15 minutes**.
+    2. The client `PUT`s the bytes **straight to object storage**. Not to this
+       service. A 1 GiB upload is one request to the bucket, not a stream
+       through an API process that has to buffer it.
+    3. `POST /v1/uploads/{id}/complete`. The service reads the object's metadata,
+       computes the sha256 of what storage actually holds, compares it to what
+       the client claimed, and only then marks the asset `ready`.
+
+    Step 3 is the security property, and it is the reason step 2 is direct. The
+    checksum the client sent at step 1 is a *claim*. At step 3 it is checked
+    against reality, and the row ends up carrying the computed value. A service
+    that trusted the claim would let a client register an asset whose checksum
+    describes bytes it never uploaded — and that checksum is what every
+    downstream dedupe and every future integrity check is keyed on.
+
+    ## The three failure paths
+
+    | What happened | Status | Asset ends up |
+    |---|---|---|
+    | Bytes arrived, checksum matches | `200` | `ready` |
+    | No object at complete time (URL expired, client gave up) | `409` | `failed` |
+    | Checksum does not match the stored bytes | `422` | `failed` |
+
+    `ready` and `failed` are both terminal. A `failed` upload is not retried
+    into `ready`; the client creates a new upload. That keeps
+    `UNIQUE (account_id, checksum)` meaningful — a checksum that failed once
+    cannot be quietly retried into a second attempt — and it means "pending
+    older than the presign TTL" is a sweepable set with exactly one meaning.
+
+    ## Duplicate uploads
+
+    The same bytes uploaded twice by the same account return **the existing
+    asset**, with `201` and a fresh presigned URL for its key. Not a `409`. The
+    reasoning is in the repository README, and it comes down to: a 409 makes
+    every client implement "on conflict, fetch the existing asset and carry
+    on", and a client that has not yet looks like it is failing. One asset, one
+    copy of the bytes, one bill. The response carries
+    `X-Darkroom-Duplicate: true` so a client that wants to say "already
+    uploaded" can.
+
+    The same bytes in a *different* account are two assets. The constraint is
+    `(account_id, checksum)`, so one tenant can never learn from a count that
+    another uploaded something.
+
+    ## Errors
+
+    Every non-2xx is `application/problem+json` (RFC 9457) with core's `code`
+    and `trace_id` extensions. `trace_id` is always present and always equal to
+    the `X-Trace-Id` response header; an inbound W3C `traceparent` is continued
+    rather than replaced.
+
+    ## Tenancy
+
+    `account_id` comes from the verified token and from nowhere else. There is
+    no account field in any request body, and a cross-tenant read is a `404` —
+    identical, byte for byte, to a read of an asset that does not exist. A `403`
+    there would be a free asset-id oracle.
+  contact:
+    name: darkroom
+    url: https://github.com/cafaye/darkroom
+    email: darkroom@cafaye.com
+  license:
+    name: MIT
+    url: https://opensource.org/license/mit
+
+servers:
+  - url: https://darkroom.cafaye.com
+    description: production
+  - url: http://localhost:8080
+    description: local development
+
+tags:
+  - name: uploads
+    description: The three-step signed upload. Bytes go client-to-storage, never through this service.
+  - name: assets
+    description: The tenant-scoped asset registry.
+  - name: variants
+    description: Derived images. The original is never mutated.
+  - name: probes
+    description: Liveness and readiness. Consumed by orchestrators, not by clients.
+
+security:
+  - bearerAuth: [assets:read, assets:write]
+
+paths:
+  /healthz:
+    get:
+      tags: [probes]
+      operationId: healthz
+      summary: Liveness
+      description: |
+        Unconditional. Never touches the database or object storage: a database
+        outage must not get the process restarted out from under in-flight
+        uploads. That is `/readyz`'s job.
+      security: []
+      responses:
+        '200':
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Probe'
+              example: { status: ok }
+
+  /readyz:
+    get:
+      tags: [probes]
+      operationId: readyz
+      summary: Readiness
+      description: |
+        Executes `select 1` against this service's own database. A probe that
+        returns 200 blindly is worse than no probe: it tells the load balancer
+        to send traffic to a process that cannot serve a request.
+
+        On failure the response names the dependency; the underlying error goes
+        to the log, never to an unauthenticated caller.
+      security: []
+      responses:
+        '200':
+          description: The service can serve traffic.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Probe'
+              example: { status: ready }
+        '503':
+          description: A dependency is not answering. Body is a Problem.
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /v1/uploads:
+    post:
+      tags: [uploads]
+      operationId: createUpload
+      summary: Create an upload and presign its destination
+      description: |
+        Creates a `pending` asset and returns a presigned PUT URL. The bytes do
+        not move yet.
+
+        The URL is scoped on **three** axes: exactly one storage key, one
+        content type, and one maximum size, and it expires **900 seconds (15
+        minutes)** after it is issued. A URL that permits any key is a URL that
+        permits overwriting another tenant's object.
+
+        **Idempotent.** Accepts `Idempotency-Key`. A replay with the same key
+        and the same body returns this same response with
+        `Idempotency-Replayed: true` and creates no second asset. The same key
+        with a different body is `409 idempotency_key_reused`.
+
+        **Duplicates.** If this account already has an asset with this
+        checksum, the existing asset is returned with `201` and
+        `X-Darkroom-Duplicate: true`, with a fresh presigned URL for its key.
+        The one case that is a `409` is a duplicate of an asset that previously
+        **failed** — its checksum was never verified against real bytes, so
+        handing it back would return something unusable.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUploadRequest'
+            examples:
+              image:
+                summary: a PNG the client has already hashed
+                value:
+                  filename: screenshot.png
+                  content_type: image/png
+                  byte_size: 284512
+                  checksum: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+      responses:
+        '201':
+          description: The asset exists in `pending`, and the URL is ready to use.
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+            X-Darkroom-Duplicate:
+              description: '`true` when this resolved a duplicate to an existing asset.'
+              schema:
+                type: string
+                enum: ['true']
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateUploadResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: The key was reused with a different body, or the duplicate previously failed.
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: The request body exceeded 4096 bytes.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/uploads/{id}/complete:
+    post:
+      tags: [uploads]
+      operationId: completeUpload
+      summary: Verify the uploaded object and mark the asset ready
+      description: |
+        Reads the object's metadata, computes the sha256 of what storage
+        actually holds, and compares it to the claimed checksum. On a match the
+        asset becomes `ready` and `darkroom.asset.ready` is written to the
+        outbox **in the same transaction**.
+
+        On a mismatch the asset becomes `failed` and the answer is `422`. On an
+        absent object it becomes `failed` and the answer is `409`.
+
+        **Idempotent.** Accepts `Idempotency-Key`. A replay returns the
+        original response and emits no second event.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The asset id returned by `POST /v1/uploads`.
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteUploadRequest'
+            example:
+              checksum: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+      responses:
+        '200':
+          description: The bytes are in storage and the checksum matched.
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompleteUploadResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: |
+            No object was found at the presigned key, or the upload has already
+            failed. The asset is now `failed`.
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: |
+            The claimed checksum does not match the bytes in storage. The asset
+            is now `failed`.
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/assets:
+    get:
+      tags: [assets]
+      operationId: listAssets
+      summary: List the caller's account's assets
+      description: |
+        Cursor-paginated and scoped to the `account_id` in the caller's token.
+        An asset belonging to another account is simply not in the result, and
+        the total count does not include it either.
+      parameters:
+        - name: limit
+          in: query
+          description: Defaults to 25, capped at 100. A larger request is clamped, not rejected.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+        - name: cursor
+          in: query
+          description: Opaque base64url. Clients must not parse it.
+          schema:
+            type: string
+        - name: order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: One page. `data` is always an array, empty rather than absent.
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/assets/{id}:
+    get:
+      tags: [assets]
+      operationId: getAsset
+      summary: Fetch one asset
+      description: |
+        Scoped to the caller's account. An asset belonging to another account
+        returns `404` with a body **identical** to the one returned for an id
+        that never existed — a `403` would be an asset-id oracle.
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      responses:
+        '200':
+          description: The asset.
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [asset]
+                properties:
+                  asset:
+                    $ref: '#/components/schemas/Asset'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      tags: [assets]
+      operationId: deleteAsset
+      summary: Delete an asset
+      description: |
+        Removes the row, removes the storage objects — the original **and every
+        variant** — and writes `darkroom.asset.deleted` to the outbox in the
+        same transaction.
+
+        Objects are deleted before the row commits. A row that says "gone" while
+        a gigabyte of objects survives is a leak nobody will ever find, whereas
+        an object removed just before a rolled-back row is recoverable.
+
+        Idempotent: a second delete is `404`, not a `500`.
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      responses:
+        '204':
+          description: Deleted. The storage objects are gone.
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/assets/{id}/variants:
+    post:
+      tags: [variants]
+      operationId: createVariant
+      summary: Generate a derived image
+      description: |
+        Decodes the original, bounds it to the kind's box, and re-encodes it.
+        The original row and its object are **never** touched — the variant is a
+        separate row pointing at a separate key.
+
+        Every variant is JPEG. WebP would be better and is deliberately not
+        used: the `image` crate's WebP encoder is lossless-only, so lossy WebP
+        is a dependency decision for a later packet rather than a silent C
+        dependency here.
+
+        Re-requesting a kind replaces that variant rather than accumulating
+        rows.
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind:
+                  type: string
+                  enum: [thumbnail, preview, web]
+                  description: |
+                    * `thumbnail` — longest edge bounded to 256px.
+                    * `preview` — longest edge bounded to 1024px.
+                    * `web` — re-encoded at original dimensions; converts
+                      without resizing.
+
+                    Never upscales: a 100px image asked for as a 256px thumbnail
+                    stays 100px.
+            examples:
+              thumbnail:
+                value: { kind: thumbnail }
+      responses:
+        '201':
+          description: The variant exists and is readable.
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [variant]
+                properties:
+                  variant:
+                    $ref: '#/components/schemas/AssetVariant'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: |
+            The asset is not `ready`, is not an image, or the stored bytes are
+            not a readable image of the declared type.
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    get:
+      tags: [variants]
+      operationId: listVariants
+      summary: List an asset's variants
+      description: |
+        Scoped to the caller's account. An asset belonging to another account
+        returns `404`, **not** an empty list — an empty list would be
+        indistinguishable from "this asset has no variants yet", which is an
+        existence oracle with one bit.
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      responses:
+        '200':
+          description: The asset's variants.
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VariantList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        A token issued by identity. darkroom verifies it locally against
+        identity's JWKS with a bounded cache; identity is never on the hot
+        path.
+
+        Required claims: `iss`, `aud`, `sub`, `exp`, `account_id`, `scope`.
+        `roles` is **not** read — core's convention is that services check
+        scopes, not roles.
+
+        Accepted algorithms are RS256 and ES256. `alg: none`, HS256, and any
+        algorithm the key does not advertise are rejected outright.
+
+        `account_id` is the tenancy boundary and is taken from this token and
+        from nowhere else. There is no account field in any request body.
+      x-required-scopes:
+        read: [assets:read]
+        write: [assets:write]
+
+  headers:
+    TraceId:
+      description: Always present, always equal to `trace_id` in the problem body.
+      schema:
+        type: string
+    IdempotencyReplayed:
+      description: '`true` when this response is a replay of a recorded one.'
+      schema:
+        type: string
+        enum: ['true']
+
+  parameters:
+    AssetId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Client-chosen, scoped to `(endpoint, principal, key)`. A replay with the
+        same key and the same body returns the original response; the same key
+        with a different body is `409 idempotency_key_reused`.
+
+        Requests without the key are processed normally.
+      schema:
+        type: string
+        maxLength: 255
+
+  responses:
+    BadRequest:
+      description: Malformed request syntax.
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: No credential, or one that did not verify.
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: |
+        Authenticated, but the token lacks the required scope. Never used for a
+        resource under another account — that is a `404`.
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: No such asset **in the caller's account**.
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    ValidationFailed:
+      description: Semantically wrong. `errors[]` lists the per-field failures.
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unavailable:
+      description: A dependency is not answering. Safe to retry.
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+  schemas:
+    Problem:
+      type: object
+      description: |
+        The cafaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
+        Every non-2xx response from this service is this shape.
+      required: [type, title, status, detail, instance, code, trace_id]
+      properties:
+        type:
+          type: string
+          format: uri
+          example: https://errors.cafaye.com/validation_failed
+        title:
+          type: string
+          description: A fixed summary for the code. May be reworded without a version bump.
+        status:
+          type: integer
+        detail:
+          type: string
+          description: |
+            Specific to this occurrence, never parsed by clients. Never contains
+            an internal error, a host, a role or a query fragment.
+        instance:
+          type: string
+          description: The request path, never including the query string.
+        code:
+          type: string
+          enum:
+            - unauthorized
+            - forbidden
+            - not_found
+            - conflict
+            - validation_failed
+            - rate_limited
+            - idempotency_key_reused
+            - internal
+            - unavailable
+        trace_id:
+          type: string
+          description: Always present, always equal to the `X-Trace-Id` header.
+        errors:
+          type: array
+          description: Present only on 422.
+          items:
+            type: object
+            required: [field, code]
+            properties:
+              field:
+                type: string
+              code:
+                type: string
+
+    Probe:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready]
+
+    AssetKind:
+      type: string
+      enum: [image, audio, video, document]
+      description: |
+        Derived server-side from `content_type`, never client-supplied. A `kind`
+        chooses the decoder, so a client that could set one could route a
+        request through a decoder it should not reach.
+
+    AssetStatus:
+      type: string
+      enum: [pending, ready, failed]
+      description: |
+        `pending` means a URL was issued and nothing is confirmed. `ready` and
+        `failed` are both terminal.
+
+    Asset:
+      type: object
+      required:
+        - id
+        - account_id
+        - owner_user_id
+        - kind
+        - original_filename
+        - content_type
+        - byte_size
+        - checksum
+        - status
+        - metadata
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+          description: Taken from the caller's token, never from the request.
+        owner_user_id:
+          type: string
+          format: uuid
+          description: '`sub` — the user who created the upload.'
+        kind:
+          $ref: '#/components/schemas/AssetKind'
+        original_filename:
+          type: string
+          maxLength: 512
+        content_type:
+          type: string
+          example: image/png
+        byte_size:
+          type: integer
+          format: int64
+          maximum: 1073741824
+        checksum:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: |
+            Lowercase sha256 of the bytes **as stored**. Not the client's claim —
+            the claim is verified at complete time and replaced by the computed
+            value.
+        status:
+          $ref: '#/components/schemas/AssetStatus'
+        metadata:
+          type: object
+          additionalProperties: true
+          description: |
+            Free-form. On a `failed` asset it carries `failure_reason`:
+            `object_absent_at_complete` or `checksum_mismatch`.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      description: |
+        There is deliberately no `storage_key` field. The key is a server-side
+        implementation detail of where the bytes live, and a client that can
+        read it will eventually try to build a URL from it.
+
+    AssetVariant:
+      type: object
+      required: [id, asset_id, account_id, kind, content_type, byte_size, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        asset_id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [thumbnail, preview, web]
+        content_type:
+          type: string
+          example: image/jpeg
+        byte_size:
+          type: integer
+          format: int64
+        width:
+          type: [integer, 'null']
+          description: The derived image's width. Null for a non-visual variant.
+        height:
+          type: [integer, 'null']
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Carries `source_asset_id`, `source_checksum`, and the source's dimensions.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateUploadRequest:
+      type: object
+      required: [filename, content_type, byte_size, checksum]
+      additionalProperties: true
+      properties:
+        filename:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: |
+            Must not contain a path separator or control characters. It is not
+            used to build any path — the storage key is opaque and server
+            generated.
+        content_type:
+          type: string
+          description: |
+            An allow-list. Parameters (`; charset=utf-8`) are ignored and the
+            comparison is case-insensitive. An unsupported type is a `422`
+            naming `content_type`.
+          examples: [image/png, image/jpeg, audio/mpeg, video/mp4, application/pdf]
+        byte_size:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 1073741824
+          description: |
+            Caps the presigned URL. 1 GiB, deliberately under S3's 5 GiB single
+            PUT limit so that "presigned PUT" never becomes "multipart upload",
+            which would be a second flow with a second set of URLs.
+        checksum:
+          type: string
+          pattern: '^[0-9a-fA-F]{64}$'
+          description: |
+            The sha256 the client is about to upload. Required, and validated
+            for shape here so a malformed one is a `422` now rather than a
+            `422` after a gigabyte has been uploaded. It is a **claim**; it is
+            verified against storage at complete time.
+
+    CreateUploadResponse:
+      type: object
+      required: [asset, upload_url, storage_key, expires_in_secs, content_type, duplicate]
+      properties:
+        asset:
+          $ref: '#/components/schemas/Asset'
+        upload_url:
+          type: string
+          format: uri
+          description: |
+            Presigned PUT. Scoped to exactly this `storage_key`, this
+            `content_type`, and `byte_size` as a ceiling. Expires in
+            `expires_in_secs`.
+        storage_key:
+          type: string
+          description: The one key this URL may write to. Opaque and server-generated.
+        expires_in_secs:
+          type: integer
+          example: 900
+          description: 900 seconds (15 minutes). Short on purpose.
+        content_type:
+          type: string
+          description: The exact `Content-Type` the PUT must send. Storage rejects anything else.
+        headers:
+          type: object
+          description: Headers the client must send on the PUT.
+          additionalProperties:
+            type: string
+        duplicate:
+          type: boolean
+          description: True when this resolved to an asset that already existed.
+
+    CompleteUploadRequest:
+      type: object
+      required: [checksum]
+      properties:
+        checksum:
+          type: string
+          pattern: '^[0-9a-fA-F]{64}$'
+          description: |
+            The checksum the client claims the stored object has. Checked
+            against what storage actually holds; never trusted.
+
+    CompleteUploadResponse:
+      type: object
+      required: [asset]
+      properties:
+        asset:
+          $ref: '#/components/schemas/Asset'
+
+    Page:
+      type: object
+      required: [next_cursor, has_more]
+      properties:
+        next_cursor:
+          type: [string, 'null']
+          description: Opaque. Null on the last page.
+        has_more:
+          type: boolean
+
+    AssetList:
+      type: object
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Asset'
+        page:
+          $ref: '#/components/schemas/Page'
+
+    VariantList:
+      type: object
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AssetVariant'
+        page:
+          $ref: '#/components/schemas/Page'

@@ -1,0 +1,7 @@
+/target
+/coverage
+.env
+.env.*
+!.env.example
+*.local
+.DS_Store

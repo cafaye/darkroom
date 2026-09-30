@@ -1,0 +1,49 @@
+# Toolchain pins for this repository. darkroom is a single static Rust binary.
+#
+#   mise install     # install the pinned toolchain
+#   mise run prime   # the gate
+#
+# kit/templates/mise.toml carries `rust = "1.84"` as an explicit PLACEHOLDER and
+# says so: "a service is pinned to the version it deploys on". The pin is raised
+# here to 1.95, the toolchain this service builds and tests on, and the same
+# number is the RUST_VERSION build-arg in docker/Dockerfile. Three files, one
+# number — a worktree on a newer rustc than the image builds on produces a
+# binary CI never produced.
+[tools]
+rust = "1.95"
+# cargo-llvm-cov is not resolvable from the mise registry under this name; install it
+# with `cargo install cargo-llvm-cov` if a coverage gate is ever added here.
+# cargo-llvm-cov = "0.6.13"
+
+[tasks.prime]
+description = "The gate: build, test, clippy, fmt"
+run = "./bin/prime"
+
+[tasks.build]
+description = "Build the darkroom binary into ./target/release"
+run = "cargo build --release"
+
+[tasks.run]
+description = "Run darkroom locally against the in-memory object store (no database, no network)"
+run = "cargo run --features dev-auth"
+
+[tasks.fmt]
+description = "Fail if anything needs rustfmt"
+run = "cargo fmt --check"
+
+[tasks.lint]
+description = "Clippy, warnings are errors"
+run = "cargo clippy --all-targets -- -D warnings"
+
+[tasks.test]
+description = "The whole suite. No network, no database."
+run = "cargo test"
+
+
+[tasks.compose-up]
+description = "Start the local stack: postgres and darkroom"
+run = "docker compose up -d"
+
+[tasks.compose-down]
+description = "Stop the local stack"
+run = "docker compose down"

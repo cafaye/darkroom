@@ -1,0 +1,48 @@
+# cafaye.yml — darkroom: a Rust service that serves an HTTP API and publishes events.
+# Validated by `caf contract lint` against cafaye/core's
+# schemas/cafaye.manifest.schema.json.
+name: darkroom
+description: Media service — signed uploads, tenant-scoped asset registry, and derived variants.
+language: rust
+core: ^0.2.0
+
+exposes:
+  api: openapi/v1.yaml
+  events:
+    # Three segments, publisher-prefixed, past tense — core/docs/event-naming.md.
+    #
+    # The brief asked for `media.asset.*`. core/docs/event-naming.md §1 and the
+    # `eventType` cross-rule in the manifest schema both require the first
+    # segment to be the PUBLISHING SERVICE's own name, and `caf contract lint`
+    # enforces it ("must start with this service's own name"). core is the
+    # contract and core is right, so the prefix is `darkroom`. `media` is the
+    # DOMAIN, not a cafaye service; identity publishes `identity.user.created`,
+    # not `auth.user.created`. A rename is a new `type`, never a repurpose, so
+    # these are the names from the start.
+    #
+    # `variant` is a generic entity and so is the prefix: every type carries one.
+    - darkroom.asset.ready
+    - darkroom.asset.deleted
+    - darkroom.variant.created
+
+# darkroom is a leaf. It authenticates the caller locally against identity's
+# JWKS (core/docs/openapi-conventions.md "Auth") and reads account_id and
+# scopes from the verified token, but it subscribes to nothing: media is produced
+# by API calls, not by reacting to other services' events. `consumes` is omitted
+# rather than filled with a placeholder.
+#
+# dependencies is omitted for the same reason. identity is a hard runtime
+# requirement (a token cannot be verified without it), and the `dependencies`
+# field is documented as "other cafaye services this service builds on" with a
+# `required: false` soft-dependency flag — a field that models "the service runs
+# without it, degraded" has no honest value for a service that cannot verify a
+# single request without it.
+
+repository:
+  url: git@github.com:cafaye/darkroom.git
+  defaultBranch: master
+  visibility: public
+
+owner:
+  team: darkroom
+  contact: darkroom@cafaye.com

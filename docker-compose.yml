@@ -1,0 +1,53 @@
+# The local stack: postgres and darkroom. This is what a worktree runs against
+# and what the ignored integration tests need.
+#
+#   docker compose up -d postgres
+#   TEST_DATABASE_URL="postgres://darkroom:darkroom@localhost:5432/darkroom_test?sslmode=disable" \
+#     cargo test -- --ignored --test-threads=1
+#
+# The service runs with the in-memory object store by default. That is on
+# purpose: a local stack that needs a bucket credential is a local stack nobody
+# starts, and every byte uploaded in development is lost on restart anyway.
+# DARKROOM_OBJECT_STORE=s3 switches to the real thing.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: darkroom
+      POSTGRES_PASSWORD: darkroom
+      POSTGRES_DB: darkroom_test
+    ports:
+      - "5432:5432"
+    volumes:
+      - darkroom-pg:/var/lib/postgresql/data
+    healthcheck:
+      # The service waits for this, so `docker compose up` returns only when
+      # the database can actually accept a connection.
+      test: ["CMD-SHELL", "pg_isready -U darkroom"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  darkroom:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://darkroom:darkroom@postgres:5432/darkroom_test?sslmode=disable
+      PORT: "8080"
+      DARKROOM_OBJECT_STORE: memory
+      DARKROOM_LOG_FORMAT: human
+      DARKROOM_JWKS_URL: https://identity.cafaye.com/.well-known/jwks.json
+      DARKROOM_ISSUER: https://identity.cafaye.com
+      DARKROOM_AUDIENCE: darkroom
+      # Production default. Set to `development` for the HMAC verifier, which
+      # only exists behind --features dev-auth.
+      DARKROOM_ENV: development
+    ports:
+      - "8080:8080"
+
+volumes:
+  darkroom-pg:

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# bin/prime — the gate. Everything that must pass before a commit lands.
+#
+#   ./bin/prime          build, test, clippy, fmt        (no database needed)
+#   ./bin/prime --db     the above, plus the ignored tests against Postgres
+#
+# `--db` is separate on purpose. The default run is green on a bare machine with
+# no Postgres and no Docker, which is what makes it usable as a pre-commit hook.
+# The database tests are `#[ignore]`d, and a skipped test proves nothing — so
+# CI runs `--db` and this comment is the reason it is not optional there.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+# The gate discipline from PLAN.md §1: a pipeline's exit code is the LAST
+# command's, so a failing suite read through a pipe looks like a pass. That is
+# exactly how a broken packet reached master once. Every command here runs
+# unpiped, and `set -e` is the whole reason this is a script and not a Makefile
+# target someone ran with `make -k`.
+set -o pipefail
+
+step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
+
+step "cargo fmt --check"
+cargo fmt --check
+
+step "cargo build"
+cargo build --all-targets
+
+step "cargo clippy -D warnings"
+cargo clippy --all-targets --all-features -- -D warnings
+
+step "cargo test (no database)"
+cargo test
+
+if [[ "${1:-}" == "--db" ]]; then
+  : "${TEST_DATABASE_URL:?--db needs TEST_DATABASE_URL, e.g. postgres://darkroom:darkroom@localhost:5432/darkroom_test?sslmode=disable}"
+  step "cargo test --ignored (against TEST_DATABASE_URL)"
+  # --test-threads=1 is not a workaround for a race: each test truncates the
+  # tables it touches, and two tests truncating concurrently would delete each
+  # other's fixtures mid-assert.
+  cargo test -- --ignored --test-threads=1
+fi
+
+step "ok"
