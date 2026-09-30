@@ -11,7 +11,7 @@
 # code is a claim, and this repository has three ways to make a false one.
 #
 #   1. Tier 6 does not run at all — someone calls `bin/prime` instead of
-#      `bin/prime --db`, and the 41 database tests report as `ignored` while
+#      `bin/prime --db`, and the 54 database tests report as `ignored` while
 #      the suite still exits 0. darkroom is a service whose entire job is
 #      putting bytes in a database.
 #   2. Tier 6 runs but touches nothing — `TEST_DATABASE_URL` is unset, every
@@ -31,8 +31,8 @@
 # database run *passes*. Those are the same set of tests, so the two counts
 # agreeing is a real identity and not two numbers that happen to be plausible:
 #
-#   default `cargo test`      77 passed, 41 ignored
-#   `cargo test -- --ignored` 41 passed,  0 ignored
+#   default `cargo test`      77 passed, 54 ignored
+#   `cargo test -- --ignored` 54 passed,  0 ignored
 #
 # A test that is `#[ignore]`d without the database tier running it breaks the
 # identity. A test that is added and never `#[ignore]`d breaks it the other
@@ -48,8 +48,8 @@
 #
 # | tier | command | expected |
 # |---|---|---|
-# | 4 | `cargo test` | 77 lib unit tests, 54 skipped for want of a database, 9 OpenAPI drift checks, 10 tenant-scoping checks |
-# | 5 | `cargo test --features s3` | 89 lib unit tests, 9 backend-table rows, 9 OpenAPI drift checks, 10 tenant-scoping checks |
+# | 4 | `cargo test` | 77 lib unit tests, 54 skipped for want of a database, 9 OpenAPI drift checks, 12 tenant-scoping checks |
+# | 5 | `cargo test --features s3` | 89 lib unit tests, 9 backend-table rows, 9 OpenAPI drift checks, 12 tenant-scoping checks |
 # | 6 | `cargo test -- --ignored` | 54 passed, 7 of them query-scoping |
 # | 6 | `cargo test --features s3 -- --ignored` | 54 passed |
 #
@@ -79,7 +79,7 @@
 #   `DB_TESTS` is the ignored count, and the new file has **no** `#[ignore]`d
 #     test: it needs neither `TEST_DATABASE_URL` nor a socket. It therefore adds
 #     0 to the default run's skips and 0 to tier 6's passes, and the identity
-#     below stays 41 == 41.
+#     below stays 41 == 41 at the time it was written.
 #   `S3_TABLE_TESTS` is scoped to `tests/storage_backends.rs` and is untouched.
 #
 # darkroom-09 is the second instance of that pattern, and the one that made the
@@ -122,7 +122,28 @@ OPENAPI_DRIFT_TESTS=9
 # Pinned in BOTH default tiers for the reason `OPENAPI_DRIFT_TESTS` is: the two
 # are separate builds of `src/http.rs` and the file reads that source, so a file
 # that compiles and runs in one need not in the other.
-TENANT_SCOPE_TESTS=10
+#
+# Twelve. Two are new relative to the first draft of this packet, and both exist
+# because that draft was measured rather than trusted:
+#
+#   `the_operation_kinds_are_what_the_comment_claims` asserts the four-reads,
+#   three-lists, two-updates, one-delete breakdown that was previously only
+#   prose, and
+#   `naming_a_row_is_anchored_to_a_whole_identifier` tests the mutation guard's
+#   own predicate, because the unanchored version of it passed a
+#   `where account_id = $2` update that rewrites every row an account has.
+#
+# `the_operation_kinds_are_what_the_comment_claims` deserves its own note. The
+# file's headline claim — four reads, three lists, two updates, one delete — was
+# prose, and the coverage it describes is exactly what a reader would otherwise
+# take on trust. It is also the test that caught the *other* problem in the
+# first draft: the sibling assertion compared the derived list of scoped queries
+# as a **sequence** against this file's constant, which is grouped by operation
+# kind, so it went red on a tree where the two lists held the same ten names in a
+# different order. A guard that fails for a reason unrelated to the property gets
+# re-run without being read, and one that is habitually red protects nothing. The
+# derived side is now sorted, and the grouping is asserted by kind instead.
+TENANT_SCOPE_TESTS=12
 
 # `tests/query_scoping.rs` is the only place the query layer is exercised
 # against a real Postgres. It is in the `DB_TESTS` total above, which is a count
@@ -214,7 +235,7 @@ do
 done
 
 # --- tier 4: the default run -------------------------------------------------
-# 41 skipped here is not a problem; it is the accounting identity's left side.
+# 54 skipped here is not a problem; it is the accounting identity's left side.
 expect "tier 4  unit tests" \
   "$(count 'cargo test (no database)' 'unittests src/lib.rs' passed)" "$UNIT_TESTS"
 default_ignored="$(count 'cargo test (no database)' '' ignored)"

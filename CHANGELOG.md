@@ -13,6 +13,47 @@ and only `info.version` moves otherwise
 
 ### Added
 
+**Fixed: three guards that could not fire, and a test that failed on half of all
+runs.** The isolation work below was recovered from an OOM restart and did not
+pass as it stood. Re-running it found four defects, all of the same family — a
+check that cannot fail, or one that fails for a reason unrelated to the property
+it asserts — and the three guards are worth more than the feature they guard:
+
+- **The structural scanner was quadratic and the guard hung instead of running.**
+  `sql_statements` left its cursor on a closing quote rather than past it, so
+  every literal bought a fresh forward scan of the rest of the unit, and
+  `src/store.rs`'s doc comments — full of `"` — made the input far larger than
+  the SQL. Two tests in `tests/tenant_scoping.rs` burned eleven minutes of CPU
+  and were still running when the gate was killed at the machine's limit. The
+  packet's central claim, that a bare machine checks the structural half, was
+  **false** until the scan was linear. One character, plus a
+  not-one-past-the-end case for a stray quote in prose.
+- **The "a mutation must name a row" check was satisfied by `account_id` itself.**
+  It asked for `sql.contains("id = $")`, and that substring occurs *inside*
+  `account_id = $2`. So `update assets … where account_id = $2` — which rewrites
+  every pending row an account has ever uploaded, the exact defect the check
+  exists to catch — passed the whole file, and cargo reported `11 passed; 0
+  failed` with that whole-account update in the source. The match is now anchored
+  to a whole identifier, and `naming_a_row_is_anchored_to_a_whole_identifier`
+  asserts the anchoring against the exact mutation that defeated it. An unanchored
+  `contains` was not a weak test here; it was an inverted one.
+- **The scoped-query set was compared as a sequence.** The derived side is source
+  order and the constant is grouped by operation kind, so the assertion failed on
+  a tree where both lists held the same ten names. Now a sorted set, with the
+  kind grouping asserted separately by
+  `the_operation_kinds_are_what_the_comment_claims` so the file's coverage claim
+  is load-bearing rather than a comment that can rot.
+- **`one_accounts_key_cannot_replay_another_accounts_response` compared
+  uuid-ordered rows against declaration-ordered expectations**, so it failed on
+  roughly half of all runs with `left: [c494acf5, …] right: [f9ff6853, …]` — a
+  failure that reads exactly like a cross-tenant leak and is not one. Both sides
+  are sorted now.
+
+A guard nobody has watched fail is a guard nobody knows works, and two of these
+were only found because divergences were planted in `src/store.rs` and reverted.
+`bin/tier-counts` moves `TENANT_SCOPE_TESTS` 10 → 12 for the two new structural
+tests.
+
 **Tenant isolation, made load-bearing.** The implementation was already correct:
 `assets` and `asset_variants` carry `account_id uuid not null`, there is a
 `unique (account_id, checksum)`, and all ten account-scoped queries constrain on
@@ -30,10 +71,11 @@ properties: every function taking a `&Tenant` constrains `account_id = $N`;
 that set is exactly the ten named in the file; every mutating scoped query names
 a **row** as well as an account, because `where account_id = $2` alone is scoped
 and still a defect; exactly one query reads across accounts, and no request-path
-module can reach it; and `principal_scope` carries the account, because the
+module can reach it; `principal_scope` carries the account, because the
 idempotency ledger stores whole response *bodies* and an unscoped replay hands
-one account another's response. It needs no database, so the structural half of
-the isolation guarantee is now checked on a bare machine.
+one account another's response; and the four-reads / two-updates / one-delete
+breakdown is asserted rather than described. It needs no database, so the
+structural half of the isolation guarantee is now checked on a bare machine.
 
 **`tests/query_scoping.rs` — the behavioural half, against Postgres.** A
 two-account fixture covering read, list, update and delete, which is the shape a
@@ -91,9 +133,21 @@ enumerate the platform. This includes below the wire: `store::find_asset` return
 `Ok(None)`, never a `StoreError`, because a distinguishable error is the same
 oracle one layer down.
 
-`bin/tier-counts` gains `TENANT_SCOPE_TESTS=10` and `QUERY_SCOPING_TESTS=7`, and
+`bin/tier-counts` gains `TENANT_SCOPE_TESTS=12` and `QUERY_SCOPING_TESTS=7`, and
 `DB_TESTS` moves 41 → 54 for the 13 new `#[ignore]`d cases. The skipped-equals-run
 identity is now 54 == 54.
+
+**Two environment notes, because both read as code defects and are not.** Port
+5432 on this machine is already bound by a host Postgres and another container, so
+`docker compose up -d postgres` starts a container whose documented URL then
+connects to *somebody else's* database and fails with `role "darkroom" does not
+exist` — which reads like a missing migration. And these tests truncate the tables
+they touch, so a checkout sharing a database with another worktree destroys each
+other's fixtures mid-assert: three `tests/api.rs` failures observed during
+re-verification were another checkout's `--db` run. Run the database tier against
+this worktree's own Postgres. Relatedly, `./bin/prime --db | tail` reports exit 0
+on a run that failed `fmt`, `clippy` and three suites — the `gate.yml` note about
+pipelines under zsh, met again in practice.
 
 **`gate.yml`: the gate is declared, so it no longer has to be guessed.** What
 "run the gate" means in this repository was discoverable only by getting it

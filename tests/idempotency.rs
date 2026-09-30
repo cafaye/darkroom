@@ -366,7 +366,10 @@ async fn one_accounts_key_cannot_replay_another_accounts_response() {
     let (a_status, a_replayed, a_body) = send(app.clone(), "token-a", "shared-key", &body).await;
     assert_eq!(a_status, StatusCode::CREATED);
     assert_eq!(a_replayed, None, "a first response is not a replay");
-    assert_eq!(a_body["asset"]["account_id"], accounts.a_account.to_string());
+    assert_eq!(
+        a_body["asset"]["account_id"],
+        accounts.a_account.to_string()
+    );
 
     // B sends the same key and the same body. Not a replay, and emphatically not
     // A's response.
@@ -389,7 +392,10 @@ async fn one_accounts_key_cannot_replay_another_accounts_response() {
         b_body["upload_url"], a_body["upload_url"],
         "B received A's presigned URL — a credential for A's storage key"
     );
-    assert_eq!(b_body["asset"]["account_id"], accounts.b_account.to_string());
+    assert_eq!(
+        b_body["asset"]["account_id"],
+        accounts.b_account.to_string()
+    );
 
     // A's own replay still works, so the guard is the account and not a
     // regression that broke replaying for everyone.
@@ -408,19 +414,34 @@ async fn one_accounts_key_cannot_replay_another_accounts_response() {
         .expect("counts");
     assert_eq!(rows, 2, "one ledger row per (endpoint, principal, key)");
 
-    // And two assets, one per account.
-    let accounts_seen: Vec<String> = sqlx::query_scalar(
-        "select account_id::text from assets order by account_id",
-    )
-    .fetch_all(store.pool())
-    .await
-    .expect("counts");
+    // And two assets, one per account. Compared as a **set**, and the reason is
+    // worth stating because this exact bug shipped in the first draft of this
+    // test and failed on roughly half of all runs.
+    //
+    // The query says `order by account_id`, and Postgres orders uuid by its raw
+    // bytes, so the result is "whichever account id happens to be smaller" —
+    // which is A and B in a coin flip. The expectation was written in "A then B"
+    // declaration order, so a green run was a run where A's uuid happened to sort
+    // first, and a red one read as `left: [a, b] right: [b, a]`: a failure that
+    // looks precisely like a cross-tenant leak and is not one.
+    //
+    // Both sides are sorted before comparison, so the assertion is about *which*
+    // accounts hold a row and never about the order two random v4s came out in.
+    // The sibling test in `tenant_isolation.rs` carried the same comment and had
+    // already learned this; a rule that only one file knows is a rule the next
+    // file re-learns by failing.
+    let mut accounts_seen: Vec<String> = sqlx::query_scalar("select account_id::text from assets")
+        .fetch_all(store.pool())
+        .await
+        .expect("counts");
+    let mut expected = vec![
+        accounts.a_account.to_string(),
+        accounts.b_account.to_string(),
+    ];
+    accounts_seen.sort();
+    expected.sort();
     assert_eq!(
-        accounts_seen,
-        vec![
-            accounts.a_account.to_string(),
-            accounts.b_account.to_string()
-        ],
+        accounts_seen, expected,
         "the same bytes are one asset per account, and neither account can see \
          the other's"
     );

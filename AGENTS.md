@@ -178,7 +178,7 @@ counts instead, with `bin/tier-counts`:
 ```
 
 It asserts 77 unit / 89 with s3 / 9 behaviour-table rows / 54 database twice /
-10 tenant-scoping twice / 7 query-scoping, **and** one identity: the count the
+12 tenant-scoping twice / 7 query-scoping, **and** one identity: the count the
 default run skips equals the count the database run passes, because they are the
 same tests. **Adding a test means raising the number in `bin/tier-counts` in the
 same commit** — that is the point of the constant, and a CI red that says
@@ -198,6 +198,18 @@ Neither file is decoration and both are pinned in `bin/tier-counts`
 (`TENANT_SCOPE_TESTS`, `QUERY_SCOPING_TESTS`). A check nobody's gate runs is a
 check that proves nothing, and a security check that reports zero is worse than
 one that is absent: it looks like coverage.
+
+**A guard has to be shown to fail, and the predicate has to be tested too.** The
+first draft of `tests/tenant_scoping.rs` shipped three ways of not guarding
+anything, and every one was found by running it rather than reading it: a
+quadratic string scanner that hung two tests for eleven minutes instead of
+failing, a "a mutation must name a row" predicate satisfied by `account_id = $2`
+itself (because `id = $` is a substring of it), and a set comparison that
+asserted an accident of file layout. `sql_statements` and `names_a_row` are
+therefore both linear and both have their own tests, the second of which asserts
+the exact mutation that defeated the first. **Any new guard here gets a planted
+divergence before it is believed**, and if it hangs or passes on a broken source,
+that is a finding about the guard, not about the source.
 
 ## No object-storage credentials in CI, and none needed
 
@@ -261,7 +273,7 @@ cargo llvm-cov --fail-under-lines 50       # the coverage floor, and only this
 
 **`./bin/prime --db` is the gate, and `mise run prime` is not.** `gate.yml`
 declares the former, and the flag is in the declaration rather than implied by
-it: without `--db` the 41 database tests report as `ignored` and the run still
+it: without `--db` the 54 database tests report as `ignored` and the run still
 prints `==> ok` and exits 0. If you are landing a change, run the declared gate.
 `gate.yml` is core's format — read it before changing it, and read what it says
 about this repository's own requirements.

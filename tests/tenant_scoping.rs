@@ -60,6 +60,8 @@
 // embedded at compile time, so this cannot pass by reading a file that differs
 // from the one that built the binary, and renaming `src/store.rs` breaks the
 // build here instead of failing at runtime on someone else's machine.
+use std::collections::BTreeMap;
+
 const STORE_SRC: &str = include_str!("../src/store.rs");
 const SERVICE_SRC: &str = include_str!("../src/service.rs");
 const HTTP_SRC: &str = include_str!("../src/http.rs");
@@ -125,11 +127,30 @@ fn query_fns(source: &str) -> Vec<QueryFn<'_>> {
 /// lands inside the multi-byte `—` in a comment, and slicing there panics — a
 /// crash in a security guard is a guard that gets deleted rather than fixed.
 ///
-/// Escapes are handled by skipping the escaped byte, so `\"` does not end the
-/// literal early. A `where` clause spans multiple lines and cannot be forged by
-/// a shortened scan, so nothing here is load-bearing on the exactness of the
+/// Escapes are handled by skipping the escaped character, so `\"` does not end
+/// the literal early. A `where` clause spans multiple lines and cannot be forged
+/// by a shortened scan, so nothing here is load-bearing on the exactness of the
 /// lexer — and a hand-written parser would need its own tests, which is the
 /// wrong shape for a guard.
+///
+/// ## The cursor must consume the closing quote, and it does
+///
+/// The obvious version of the loop below left the cursor **on** the closing
+/// quote rather than past it: `rest` begins after the opening quote and `len` is
+/// the offset of the closing quote within `rest`, so `&rest[len..]` starts with
+/// that same quote. The next iteration took the same branch again and scanned
+/// forward to the *next* quote, so every literal in the text bought a fresh
+/// forward scan of everything after it.
+///
+/// That is quadratic, and it was not slow — it was unbounded. `src/store.rs`
+/// carries doc comments containing `"` characters ("`not found` and `not
+/// yours`", `"have I seen this key"`), and because a unit runs to the next
+/// `pub async fn` it includes the following function's prose. Two tests in this
+/// file spent **eleven minutes** of CPU inside `sql_statements` and were still
+/// running when the gate was killed, so the guard that is supposed to run on a
+/// bare machine in the default tier could not be run at all. The single
+/// character `+ 1` is the difference between a security check that executes and
+/// one that hangs the gate.
 fn sql_statements(body: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut cursor = body;
@@ -144,6 +165,7 @@ fn sql_statements(body: &str) -> Vec<&str> {
         if let Some(rest) = cursor.strip_prefix('"') {
             let mut chars = rest.char_indices();
             let mut len = rest.len();
+            let mut closed = false;
             while let Some((i, c)) = chars.next() {
                 if c == '\\' {
                     // Skip the escaped character. `char_indices` resumes at the
@@ -153,17 +175,31 @@ fn sql_statements(body: &str) -> Vec<&str> {
                 }
                 if c == '"' {
                     len = i;
+                    closed = true;
                     break;
                 }
             }
             out.push(&rest[..len]);
-            cursor = &rest[len..];
+            // Step over the closing quote. Leaving the cursor sitting on it is
+            // the quadratic bug described above. An unterminated literal — a
+            // stray quote in prose, which these units do contain — consumes the
+            // rest of the unit rather than indexing one past its end.
+            cursor = if closed {
+                &rest[len + 1..]
+            } else {
+                &rest[len..]
+            };
             continue;
         }
         // Advance one whole character, so a cursor never lands mid-codepoint.
-        let mut chars = cursor.chars();
-        chars.next();
-        cursor = &cursor[chars.as_str().len()..];
+        // `len_utf8` of the consumed char, **not** `Chars::as_str().len()`:
+        // `as_str` is the *remaining* string, so using its length indexes to 0
+        // and the loop never advances — which is a guard that hangs rather than
+        // one that fails, and a hanging guard gets deleted rather than fixed.
+        match cursor.chars().next() {
+            Some(c) => cursor = &cursor[c.len_utf8()..],
+            None => break,
+        }
     }
     out
 }
@@ -178,11 +214,58 @@ fn constrains_account_id(body: &str) -> bool {
         .any(|sql| sql.contains("account_id = $"))
 }
 
+/// The statement narrows to a **row** — one asset, or one variant of it — and
+/// not merely to an account.
+///
+/// ## The word boundary is the whole test, and it is not decoration
+///
+/// The obvious spelling is `sql.contains("id = $") || sql.contains("asset_id =
+/// $")`, and that is **true for every statement naming `account_id = $2`**: the
+/// substring `id = $` occurs inside `account_id = $2`, starting one character in.
+/// So `update assets set status = 'failed' where account_id = $2 and status =
+/// 'pending'` — an update that rewrites *every* pending row an account has ever
+/// uploaded, the exact defect this check exists to catch — satisfied it.
+///
+/// That is the shape of a guard that proves the opposite of what it says: it
+/// passed the whole-account update, and could only ever have fired on a mutation
+/// that also dropped `account_id`, which the sibling check already catches.
+/// Measured by mutation rather than by argument: the `where account_id = $2`
+/// variant of `mark_failed` left all eleven tests green.
+///
+/// So the match is anchored at **both** ends of the identifier. A match counts
+/// only where `id` is a whole word — the character before it is not a word
+/// character, so `account_id` and `owner_id` do not qualify — and it is one of
+/// the two column names a row of this schema is addressed by. `asset_id` is
+/// deliberately *not* accepted: variants are addressed through their parent
+/// asset, and a mutation scoped to `asset_id` without `id` is a different
+/// question, asked of no statement in `store.rs` today.
+fn names_a_row(sql: &str) -> bool {
+    sql.match_indices("id = $").any(|(at, _)| {
+        // `at` is the offset of the `i`, so the identifier *ends* two bytes
+        // later and *starts* at the last non-word byte before it plus one. The
+        // bytes are ASCII in a SQL predicate, so byte-wise is safe and needs no
+        // UTF-8 boundary reasoning: every index walked here lands on an ASCII
+        // byte.
+        let start = sql.as_bytes()[..at]
+            .iter()
+            .rposition(|b| !is_word_byte(*b))
+            .map_or(0, |i| i + 1);
+        let column = &sql[start..at + 2];
+        // `id` is the primary key; `asset_id` addresses a variant's parent. Both
+        // name a row. `account_id` names an account, and is the whole point.
+        matches!(column, "id" | "asset_id")
+    })
+}
+
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
 /// Reads the tenant tables at all.
 fn reads_tenant_tables(body: &str) -> bool {
-    sql_statements(body).iter().any(|sql| {
-        sql.contains("from assets") || sql.contains("from asset_variants")
-    })
+    sql_statements(body)
+        .iter()
+        .any(|sql| sql.contains("from assets") || sql.contains("from asset_variants"))
 }
 
 /// The ten, written out because the point of a constant is that somebody has to
@@ -211,6 +294,40 @@ const TENANT_SCOPED_QUERIES: &[&str] = &[
     "delete_asset",
 ];
 
+/// The predicate above, tested directly — because a guard with a hole in it
+/// that nothing exercises is a hole that ships.
+///
+/// Three cases, and the middle one is the bug this file found in itself: the
+/// mutation that turned `where id = $1 and account_id = $2` into `where
+/// account_id = $2` passed every check in the file while rewriting every pending
+/// row an account had. `where account_id = $2` contains the text `id = $` one
+/// character in, so a substring test could not tell the two apart. A check that
+/// has never been seen to fail has not been shown to work.
+#[test]
+fn naming_a_row_is_anchored_to_a_whole_identifier() {
+    // The mutation that slipped through: scoped to the account, naming no row.
+    assert!(
+        !names_a_row("update assets set status = 'failed' where account_id = $2"),
+        "`account_id = $2` contains `id = $` as a substring, so an unanchored \
+         test calls a whole-account update row-scoped. This is the assertion that \
+         makes the anchoring a rule rather than a guess."
+    );
+    // The other lookalike, for the same reason.
+    assert!(
+        !names_a_row("delete from assets where owner_id = $1"),
+        "the anchoring is about identifiers generally, not about one column"
+    );
+    // And the shapes that genuinely do name a row.
+    for real in [
+        "delete from assets where id = $1 and account_id = $2",
+        "update assets set status = 'ready' where id = $1 and account_id = $2 and status = 'pending'",
+        "select storage_key from asset_variants where asset_id = $1 and account_id = $2",
+        "where id = $1",
+    ] {
+        assert!(names_a_row(real), "a genuine row predicate was rejected: {real}");
+    }
+}
+
 /// The functions that take a tenant and therefore must scope on it.
 fn tenant_scoped() -> Vec<QueryFn<'static>> {
     query_fns(STORE_SRC)
@@ -222,10 +339,27 @@ fn tenant_scoped() -> Vec<QueryFn<'static>> {
 #[test]
 fn every_tenant_scoped_query_constrains_account_id() {
     let scoped = tenant_scoped();
-    let names: Vec<&str> = scoped.iter().map(|f| f.name).collect();
+    let mut names: Vec<&str> = scoped.iter().map(|f| f.name).collect();
+    let mut expected: Vec<&str> = TENANT_SCOPED_QUERIES.to_vec();
+    names.sort_unstable();
+    expected.sort_unstable();
 
+    // Sorted, and **deliberately not** in source order. The derived side is the
+    // order `src/store.rs` happens to declare its functions in, and the constant
+    // is grouped by operation kind, so a sequence comparison asserts a fact
+    // about file layout that has nothing to do with tenancy — and it did: this
+    // assertion failed on a tree where the two lists held *the same ten names*,
+    // because `find_asset_by_checksum` precedes `find_asset` in the source and
+    // follows it in the constant.
+    //
+    // A guard that fails for a reason unrelated to the property is a guard
+    // somebody learns to re-run without reading, and a guard that is
+    // habitually red is a guard that is not protecting anything. The kind
+    // grouping the constant exists to document is asserted on its own, by
+    // `the_operation_kinds_are_what_the_comment_claims`, where a change to it
+    // is a real change rather than an accident of ordering.
     assert_eq!(
-        names, TENANT_SCOPED_QUERIES,
+        names, expected,
         "the set of store.rs functions taking a &Tenant moved. If one was added \
          it must constrain account_id like its neighbours. If one was removed, \
          find out who was calling it before removing it from this list: a query \
@@ -241,6 +375,64 @@ fn every_tenant_scoped_query_constrains_account_id() {
             f.name
         );
     }
+}
+
+/// The kind breakdown in `TENANT_SCOPED_QUERIES`' doc comment is a claim about
+/// coverage, so it is asserted rather than described.
+///
+/// "Four reads, three lists, two updates, one delete" is not decoration: it is
+/// the sentence that says the suite is not four reads and a shrug, and the
+/// delete and the two updates are the operations a service that scoped its reads
+/// and forgot its writes would be missing. A grouping that silently changed to
+/// four reads and six updates would still pass every other test in this file, so
+/// without this the comment is the only thing holding the claim up.
+#[test]
+fn the_operation_kinds_are_what_the_comment_claims() {
+    // The grouping is the constant's own comments, read rather than restated, so
+    // a name cannot be moved between kinds by editing one list and not the
+    // other. `// read`, `// list`, `// update`, `// delete` are the section
+    // headers in the constant below.
+    let source = include_str!("tenant_scoping.rs");
+    let constant = source
+        .split("const TENANT_SCOPED_QUERIES")
+        .nth(1)
+        .expect("the constant is in this file")
+        .split("];")
+        .next()
+        .expect("the constant is terminated");
+
+    let kind_of = |name: &str| -> &'static str {
+        let mut current = "";
+        for line in constant.lines() {
+            let trimmed = line.trim();
+            for kind in ["read", "list", "update", "delete"] {
+                if trimmed == format!("// {kind}") {
+                    current = match kind {
+                        "read" => "read",
+                        "list" => "list",
+                        "update" => "update",
+                        _ => "delete",
+                    };
+                }
+            }
+            if trimmed.starts_with('"') && trimmed.contains(&format!("\"{name}\"")) {
+                return current;
+            }
+        }
+        panic!("{name} is not in TENANT_SCOPED_QUERIES");
+    };
+
+    let mut counts = std::collections::BTreeMap::new();
+    for name in TENANT_SCOPED_QUERIES {
+        *counts.entry(kind_of(name)).or_insert(0usize) += 1;
+    }
+    assert_eq!(
+        counts,
+        BTreeMap::from([("read", 4), ("list", 3), ("update", 2), ("delete", 1)]),
+        "TENANT_SCOPED_QUERIES is documented as four reads, three lists, two \
+         updates and one delete. A different breakdown is a coverage change and \
+         needs the comment changed with it, deliberately."
+    );
 }
 
 #[test]
@@ -259,7 +451,7 @@ fn a_mutating_scoped_query_names_one_row_and_never_a_whole_account() {
             }
             checked += 1;
             assert!(
-                sql.contains("id = $") || sql.contains("asset_id = $"),
+                names_a_row(sql),
                 "store::{} mutates the tenant tables without naming a row: \
                  `{sql}`. Scoped to one account, it is still every row in that \
                  account.",
@@ -313,10 +505,7 @@ fn the_sweeper_cannot_be_reached_from_a_request() {
          uploads in `pending` forever"
     );
 
-    for (module, source) in [
-        ("service.rs", SERVICE_SRC),
-        ("http.rs", HTTP_SRC),
-    ] {
+    for (module, source) in [("service.rs", SERVICE_SRC), ("http.rs", HTTP_SRC)] {
         assert!(
             !source.contains("find_stale_pending"),
             "src/{module} names find_stale_pending. It reads every account's \
@@ -445,7 +634,10 @@ const NEGATIVE_CASES: &[(&str, &str)] = &[
         "POST /v1/uploads/{id}/complete",
         "a_cross_tenant_complete_does_not_fail_another_accounts_upload",
     ),
-    ("GET /v1/assets", "a_listing_returns_only_the_callers_own_assets"),
+    (
+        "GET /v1/assets",
+        "a_listing_returns_only_the_callers_own_assets",
+    ),
     (
         "GET /v1/assets/{id}",
         "a_cross_tenant_404_is_indistinguishable_from_a_missing_one",

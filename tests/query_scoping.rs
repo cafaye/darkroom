@@ -78,7 +78,13 @@ fn checksum(hex: char) -> String {
 /// later. The fixture interleaves the two accounts' timestamps on purpose — see
 /// `a_cursor_from_another_account_returns_no_rows_of_theirs`, where an
 /// interleave is what keeps the assertion from passing on an empty page.
-async fn seed(store: &Store, account: Uuid, user: Uuid, shared: &str, at: time::OffsetDateTime) -> Row {
+async fn seed(
+    store: &Store,
+    account: Uuid,
+    user: Uuid,
+    shared: &str,
+    at: time::OffsetDateTime,
+) -> Row {
     let make = |id: Uuid, sum: String, status: AssetStatus, at: time::OffsetDateTime| Asset {
         id,
         account_id: account,
@@ -248,12 +254,39 @@ async fn every_read_is_scoped_to_the_callers_account() {
             .is_none(),
         "A must not learn B's variant storage key from B's asset id"
     );
+    // A checksum is a *shared* value, so the negative assertion here is NOT
+    // "nothing" — the correct answer is A's own row, because that is what A
+    // uploaded. What must not happen is B's row coming back, which is the leak
+    // `unique (account_id, checksum)` makes possible and
+    // `the_same_bytes_are_two_assets_and_neither_account_sees_the_other` states
+    // in full. Asserting `is_none()` here would be asserting that scoping works
+    // by breaking the feature.
+    match store::find_asset_by_checksum(f.store.pool(), &f.a, &f.shared_checksum)
+        .await
+        .expect("reads")
+    {
+        Some((asset, _)) => assert_eq!(
+            asset.id, f.a_rows.ready,
+            "A's checksum lookup must resolve to A's own row, not B's"
+        ),
+        None => panic!("A must resolve its own asset from the shared checksum"),
+    }
+
+    // And a checksum nobody uploaded is `None` for both — a miss, not an error.
+    let absent = checksum('e');
     assert!(
-        store::find_asset_by_checksum(f.store.pool(), &f.a, &f.shared_checksum)
+        store::find_asset_by_checksum(f.store.pool(), &f.a, &absent)
             .await
             .expect("no error, only absence")
             .is_none(),
-        "A must not resolve B's asset out of the shared checksum"
+        "a checksum with no row in A is a miss, not B's row"
+    );
+    assert!(
+        store::find_asset_by_checksum(f.store.pool(), &f.b, &absent)
+            .await
+            .expect("no error, only absence")
+            .is_none(),
+        "and a miss in B as well"
     );
 
     // --- and the other direction, because scoping that only works one way is
@@ -273,19 +306,27 @@ async fn every_read_is_scoped_to_the_callers_account() {
         "B must not learn A's storage key from A's asset id"
     );
     assert!(
-        store::find_variant_storage_key(f.store.pool(), &f.b, f.a_rows.ready, VariantKind::Thumbnail)
-            .await
-            .expect("no error, only absence")
-            .is_none(),
+        store::find_variant_storage_key(
+            f.store.pool(),
+            &f.b,
+            f.a_rows.ready,
+            VariantKind::Thumbnail
+        )
+        .await
+        .expect("no error, only absence")
+        .is_none(),
         "B must not learn A's variant storage key from A's asset id"
     );
-    assert!(
-        store::find_asset_by_checksum(f.store.pool(), &f.b, &f.shared_checksum)
-            .await
-            .expect("no error, only absence")
-            .is_none(),
-        "B must not resolve A's asset out of the shared checksum"
-    );
+    match store::find_asset_by_checksum(f.store.pool(), &f.b, &f.shared_checksum)
+        .await
+        .expect("reads")
+    {
+        Some((asset, _)) => assert_eq!(
+            asset.id, f.b_rows.ready,
+            "B's checksum lookup must resolve to B's own row, not A's"
+        ),
+        None => panic!("B must resolve its own asset from the shared checksum"),
+    }
 
     // --- and A's own key lookups still work, so nothing above is a
     // --- "the query is broken for everyone" pass ------------------------------
@@ -297,9 +338,14 @@ async fn every_read_is_scoped_to_the_callers_account() {
         "scoping must not stop A seeing its own storage key"
     );
     assert_eq!(
-        store::find_variant_storage_key(f.store.pool(), &f.a, f.a_rows.ready, VariantKind::Thumbnail)
-            .await
-            .expect("reads"),
+        store::find_variant_storage_key(
+            f.store.pool(),
+            &f.a,
+            f.a_rows.ready,
+            VariantKind::Thumbnail
+        )
+        .await
+        .expect("reads"),
         Some(f.a_rows.variant_key.clone()),
         "scoping must not stop A seeing its own variant key"
     );
@@ -419,6 +465,17 @@ async fn an_update_from_another_account_changes_nothing() {
         Some(AssetStatus::Pending),
         "B's upload must still be pending after A tried to complete it"
     );
+    // And B's checksum was not rewritten, which is the same claim about the
+    // column rather than about the status.
+    let (b_row, _) = store::find_asset(f.store.pool(), &f.b, f.b_rows.pending)
+        .await
+        .expect("reads")
+        .expect("B's row is still there");
+    assert_eq!(
+        b_row.checksum,
+        checksum('a'),
+        "A's cross-tenant mark_ready must not write its checksum into B's row"
+    );
 
     // --- mark_failed ---------------------------------------------------------
     // The other update, and the more dangerous one: a cross-tenant `mark_failed`
@@ -456,13 +513,23 @@ async fn an_update_from_another_account_changes_nothing() {
     // --- the positive half ---------------------------------------------------
     // A suite that only asserts denials passes on a service that refuses
     // everyone, so both accounts must still be able to write their own.
-    let (ready, _) =
-        store::mark_ready(f.store.pool(), &f.a, f.a_rows.pending, &f.shared_checksum)
-            .await
-            .expect("no error")
-            .expect("A can complete A's own upload");
+    //
+    // The checksum passed is the `pending` row's **own** declared checksum, not
+    // the shared one, because `mark_ready` writes the verified checksum into the
+    // column and `unique (account_id, checksum)` would then hold two A rows with
+    // the same checksum. That is the constraint doing its job, and it is worth
+    // stating because the failure it produces is a `Conflict`, not a scoping
+    // bug — a reader hitting it would otherwise go looking in the wrong place.
+    let a_own = checksum('a');
+    let (ready, _) = store::mark_ready(f.store.pool(), &f.a, f.a_rows.pending, &a_own)
+        .await
+        .expect("no error")
+        .expect("A can complete A's own upload");
     assert_eq!(ready.status, AssetStatus::Ready);
     assert_eq!(ready.account_id, f.accounts.a_account);
+    // The row now carries the computed checksum, not the one it was created
+    // with — the compare-and-set replaced it, which is the service's rule.
+    assert_eq!(ready.checksum, a_own);
 
     let failed = store::mark_failed(f.store.pool(), &f.b, f.b_rows.pending, "object_absent")
         .await
@@ -593,7 +660,10 @@ async fn a_cursor_from_another_account_returns_no_rows_of_theirs() {
         .await
         .expect("lists");
     assert_eq!(first.len(), 1);
-    assert_eq!(first[0].0.id, f.a_rows.ready, "A's newest row is A's ready row");
+    assert_eq!(
+        first[0].0.id, f.a_rows.ready,
+        "A's newest row is A's ready row"
+    );
     let cursor = (first[0].0.created_at, first[0].0.id);
 
     // A walking its own cursor sees its own next row — non-empty, so the
@@ -642,14 +712,21 @@ async fn no_scoped_query_ever_returns_a_row_under_the_wrong_account() {
         ("A", &f.a, &f.a_rows, &f.b_rows, f.accounts.a_account),
         ("B", &f.b, &f.b_rows, &f.a_rows, f.accounts.b_account),
     ] {
+        // Per-account, and *per round*. Asserting ownership over a cumulative
+        // `seen` would make the B round demand that A's rows belong to B — which
+        // is what the first version of this test did, and it failed on its own
+        // fixture for that reason. A sweep whose bookkeeping is wrong fails on
+        // the second account and gets read as a leak, which is worse than not
+        // having it: it teaches a reader to ignore it.
+        let mut round: Vec<Uuid> = Vec::new();
+
         // --- the positive reads --------------------------------------------
-        if let Some((asset, _)) =
-            store::find_asset(f.store.pool(), tenant, own.ready)
-                .await
-                .expect("reads")
+        if let Some((asset, _)) = store::find_asset(f.store.pool(), tenant, own.ready)
+            .await
+            .expect("reads")
         {
             assert_eq!(asset.account_id, expected);
-            seen.push(asset.id);
+            round.push(asset.id);
         }
         if let Some((asset, _)) =
             store::find_asset_by_checksum(f.store.pool(), tenant, &f.shared_checksum)
@@ -657,7 +734,7 @@ async fn no_scoped_query_ever_returns_a_row_under_the_wrong_account() {
                 .expect("reads")
         {
             assert_eq!(asset.account_id, expected);
-            seen.push(asset.id);
+            round.push(asset.id);
         }
         for (asset, _) in store::list_assets(f.store.pool(), tenant, 100, None)
             .await
@@ -667,74 +744,71 @@ async fn no_scoped_query_ever_returns_a_row_under_the_wrong_account() {
                 asset.account_id, expected,
                 "{label}'s listing returned another account's row"
             );
-            seen.push(asset.id);
+            round.push(asset.id);
         }
         for variant in store::list_variants(f.store.pool(), tenant, own.ready)
             .await
             .expect("lists")
         {
             assert_eq!(variant.account_id, expected);
-            seen.push(variant.id);
+            round.push(variant.id);
         }
 
         // --- the negative probe of every kind --------------------------------
-        assert!(
-            store::find_asset(f.store.pool(), tenant, other.ready)
-                .await
-                .expect("reads")
-                .is_none()
-        );
-        assert!(
-            store::find_storage_key(f.store.pool(), tenant, other.ready)
-                .await
-                .expect("reads")
-                .is_none()
-        );
-        assert!(
-            store::find_variant_storage_key(
-                f.store.pool(),
-                tenant,
-                other.ready,
-                VariantKind::Thumbnail
-            )
+        assert!(store::find_asset(f.store.pool(), tenant, other.ready)
             .await
             .expect("reads")
-            .is_none()
-        );
+            .is_none());
+        assert!(store::find_storage_key(f.store.pool(), tenant, other.ready)
+            .await
+            .expect("reads")
+            .is_none());
+        assert!(store::find_variant_storage_key(
+            f.store.pool(),
+            tenant,
+            other.ready,
+            VariantKind::Thumbnail
+        )
+        .await
+        .expect("reads")
+        .is_none());
         assert!(store::list_variants(f.store.pool(), tenant, other.ready)
             .await
             .expect("lists")
             .is_empty());
-        assert!(store::list_storage_keys(f.store.pool(), tenant, other.ready)
-            .await
-            .expect("lists")
-            .is_empty());
-        assert!(store::mark_ready(f.store.pool(), tenant, other.pending, &f.shared_checksum)
-            .await
-            .expect("updates")
-            .is_none());
+        assert!(
+            store::list_storage_keys(f.store.pool(), tenant, other.ready)
+                .await
+                .expect("lists")
+                .is_empty()
+        );
+        assert!(
+            store::mark_ready(f.store.pool(), tenant, other.pending, &f.shared_checksum)
+                .await
+                .expect("updates")
+                .is_none()
+        );
         assert!(
             store::mark_failed(f.store.pool(), tenant, other.pending, "cross_tenant")
                 .await
                 .expect("updates")
                 .is_none()
         );
-        assert!(
-            !store::delete_asset(f.store.pool(), tenant, other.pending)
-                .await
-                .expect("deletes")
-        );
+        assert!(!store::delete_asset(f.store.pool(), tenant, other.pending)
+            .await
+            .expect("deletes"));
 
-        // Everything either account handed back belongs to that account. The
-        // oracle is test-local and knows the fixture layout, which is exactly
-        // what a sweep needs and what production code never has.
-        for id in &seen {
+        // Everything this round handed back belongs to this account. The oracle
+        // is test-local and knows the fixture layout, which is exactly what a
+        // sweep needs and what production code never has.
+        for id in &round {
             assert_eq!(
                 id_owner(id, &f),
                 expected,
                 "{label} returned row {id}, which is not {label}'s"
             );
         }
+        seen.extend(round);
     }
 
     // Five positive reads per account — the row by id, the row by checksum, both
@@ -742,15 +816,15 @@ async fn no_scoped_query_ever_returns_a_row_under_the_wrong_account() {
     // distinct rows. A sweep that quietly stopped calling a query would pass
     // every assertion above and prove less than it reads; the count is what
     // turns that back into a failure.
-    assert_eq!(
-        seen.len(),
-        10,
-        "five positive reads per account: {seen:?}"
-    );
+    assert_eq!(seen.len(), 10, "five positive reads per account: {seen:?}");
     let mut distinct = seen.clone();
     distinct.sort();
     distinct.dedup();
-    assert_eq!(distinct.len(), 6, "four assets and two variants: {distinct:?}");
+    assert_eq!(
+        distinct.len(),
+        6,
+        "four assets and two variants: {distinct:?}"
+    );
     for id in [f.a_rows.ready, f.a_rows.pending, f.a_rows.variant] {
         assert!(seen.contains(&id), "A's row {id} was never reached");
     }

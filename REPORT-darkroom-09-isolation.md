@@ -16,6 +16,16 @@ queries *through* a `Tenant`, so a future edit that dropped `and account_id = $2
 from one line turned a private asset store into a shared one and every test in
 the repository stayed green. This packet makes the correctness load-bearing.
 
+> **Status: verified after an OOM restart.** The work was recovered as commit
+> `recover(worker/darkroom-09-isolation)` and re-checked from a clean
+> `src/store.rs` before anything below was believed. It did not pass as it
+> stood: two guards hung for eleven minutes, one was satisfiable by the very
+> column it exists to reject, a set comparison asserted an accident of file
+> layout, and a new test failed on roughly half of all runs. All four are
+> written up under "Three bugs the guards had themselves" and the two
+> behavioural defects are planted-and-caught below. **Nothing in this report is
+> inherited from the interrupted run's conclusions.**
+
 ## The count
 
 | | |
@@ -25,11 +35,11 @@ the repository stayed green. This packet makes the correctness load-bearing.
 | — service methods taking a `Tenant` | 7 |
 | — account-scoped store queries | 10 |
 | — the idempotency replay path | 1 |
-| **Negative tests asserting A is refused B** | **30** (was 7) |
+| **Negative tests asserting A is refused B** | **32** (was 7) |
 | — wire (`tests/tenant_isolation.rs`) | 12 |
 | — query layer (`tests/query_scoping.rs`) | 7 |
 | — idempotency ledger (`tests/idempotency.rs`) | 1 |
-| — structural, no database (`tests/tenant_scoping.rs`) | 10 |
+| — structural, no database (`tests/tenant_scoping.rs`) | 12 |
 | **Operation kinds covered at the query layer** | **4 of 4** — read, list, update, delete |
 | `403` responses found for an invisible resource | **0** |
 | `403` responses added | **0** |
@@ -104,15 +114,19 @@ properties, each load-bearing alone:
    find is a query nobody has ever run.
 3. **A mutating scoped query names a row, not just an account.** `update assets
    set status = 'failed' where account_id = $2` is scoped and still a defect — it
-   rewrites every row an account has. Necessary and not sufficient.
+   rewrites every row an account has. Necessary and not sufficient. The predicate
+   is anchored, and the anchoring is itself tested — see the guard's own bug
+   below.
 4. **Exactly one query reads across accounts, and no request path reaches it.**
 5. **`principal_scope` carries the account**, because the idempotency ledger
    stores whole response bodies.
+6. **The four/two/one operation-kind breakdown is asserted**, not described, so
+   the file's headline coverage claim cannot rot into prose.
 
 It is in the **default tier on purpose**: the structural half of the isolation
 guarantee should be checked on a machine with no Postgres and no Docker, because
 that is where it will be run most often and it is the half that catches the edit
-before a fixture is built. Pinned as `TENANT_SCOPE_TESTS=10` in both default
+before a fixture is built. Pinned as `TENANT_SCOPE_TESTS=12` in both default
 tiers — a security check that reports zero is worse than one that is absent,
 because it looks like coverage.
 
@@ -246,20 +260,139 @@ cannot see was treated as a finding throughout, and none was present.
 ## Proven able to fire
 
 A guard nobody has watched fail is a guard nobody knows works. Four
-divergences were planted in `src/store.rs` and `tests/query_scoping.rs` and
-reverted, each breaking exactly one thing:
+divergences were planted in `src/store.rs` and reverted. Every one was caught,
+and the messages below are the real output, not a paraphrase.
 
-| planted | caught by | how |
-|---|---|---|
-| `and account_id = $2` dropped from `delete_asset` | `every_tenant_scoped_query_constrains_account_id` | default tier, no database — **fails on a bare machine** |
-| `and account_id = $2` dropped from `mark_failed` | same, plus `an_update_from_another_account_changes_nothing` | the source check fires first; the behavioural one confirms the row was really untouched |
-| `where account_id = $2` swapped for `id = $1` only in `mark_ready` | `a_mutating_scoped_query_names_one_row_and_never_a_whole_account` | the mutation no longer names a row |
-| a second unscoped read added beside `find_stale_pending` | `exactly_one_query_reads_across_accounts_and_it_is_the_sweeper` | the derived set grows from one name to two |
+| # | planted | caught by | tier |
+|---|---|---|---|
+| 1 | `delete_asset` lost `and account_id = $2` | `every_tenant_scoped_query_constrains_account_id` **and** `exactly_one_query_reads_across_accounts_and_it_is_the_sweeper` | default, **no database** |
+| 2 | `mark_failed` lost `and account_id = $2` | `every_tenant_scoped_query_constrains_account_id`; and `an_update_from_another_account_changes_nothing` + the sweep behaviourally | default + database |
+| 3 | a mutation scoped to the account but naming no row | `a_mutating_scoped_query_names_one_row_and_never_a_whole_account` | default |
+| 4 | `find_asset_by_checksum` lost `account_id = $1` | the same two structural guards; and `every_read_is_scoped_to_the_callers_account` + `the_same_bytes_…` + the sweep behaviourally | default + database |
+| 5 | a second unscoped read beside `find_stale_pending` | `exactly_one_query_reads_across_accounts_and_it_is_the_sweeper` | default |
 
-The first is the one that matters: **the delete regression is caught in the
-default tier, with no Postgres running**, which is the difference between a guard
-that protects the code and a guard that protects the code *on the machine where
-somebody remembered to run it*.
+Divergences 1 and 4 were each planted, caught, and reverted during this
+re-verification, not inherited from the first draft — the recovered work was
+re-measured from a clean `src/store.rs` rather than trusted.
+
+Divergence 1, verbatim, from the default tier with **no Postgres running**:
+
+```
+test result: FAILED. 10 passed; 2 failed; 0 ignored
+---- every_tenant_scoped_query_constrains_account_id ----
+store::delete_asset takes a &Tenant but its SQL does not constrain account_id,
+so account A could read, update or delete account B's rows. This file exists
+for exactly that line.
+---- exactly_one_query_reads_across_accounts_and_it_is_the_sweeper ----
+these read tenant data with no account_id predicate:
+  ["find_stale_pending", "delete_asset"]
+```
+
+and the same divergence caught behaviourally, against real Postgres:
+
+```
+test a_delete_from_another_account_removes_nothing ... FAILED
+A must not delete B's asset
+```
+
+That behavioural failure is the important one: **B's asset was actually
+deleted** in the test database. The vulnerability is not hypothetical, the
+default tier catches the edit before it happens, and the database tier
+demonstrates what it would have cost.
+
+Divergence 4 is the one that proves the shared-checksum fixture earns its place.
+Dropping `account_id = $1` from `find_asset_by_checksum` produced:
+
+```
+test every_read_is_scoped_to_the_callers_account ... FAILED
+test the_same_bytes_in_two_accounts_are_two_assets_and_neither_account_sees_the_other ... FAILED
+test no_scoped_query_ever_returns_a_row_under_the_wrong_account ... FAILED
+test result: FAILED. 4 passed; 3 failed
+```
+
+An unscoped checksum lookup does not error and does not return nothing — it
+returns a row, and the wrong account's. A read that resolves the wrong tenant's
+asset is a *write* leak one step later, because the caller then PUTs bytes at
+the storage key the response handed back.
+
+Two results worth stating because they are not what the plan predicted:
+
+- **Two independent guards caught divergence 1**, not one. The derived
+  "exactly one query reads across accounts" set catches a `delete` losing its
+  predicate, because a `delete … where id = $1` is also a read of the table from
+  the analysis's point of view. That redundancy is why the sweeper test exists
+  rather than being folded into the first one.
+- **Divergence 3 was caught by a guard the plan did not know was needed.**
+  Scoping an `update` to `where account_id = $2` — with the tenant predicate
+  present and correct — is scoped and is still a defect, because it rewrites
+  every row in the account. No `account_id`-presence check can see that, and the
+  "names a row" rule exists only because that case was thought about while
+  writing the file. **Then the guard for that case turned out to be
+  satisfiable by `account_id` itself**, which is the second of the three bugs
+  above and the reason the anchoring now has its own test.
+
+### Three bugs the guards had themselves
+
+This is the part of the packet worth the most, and all three were found by
+**running** the guards rather than reading them. Every one has the same shape: a
+check that cannot fail, or a check that fails for a reason unrelated to the
+property it exists to assert.
+
+- **The string scanner was quadratic, and the guard hung instead of running.**
+  `sql_statements` left its cursor sitting *on* a closing quote rather than past
+  it, so every literal in the text bought a fresh forward scan of everything
+  after it. `src/store.rs` carries doc comments containing `"` characters, and
+  because a unit runs to the next `pub async fn` it swallows the following
+  function's prose — so the input was much larger than the SQL. Two tests spent
+  **eleven minutes** of CPU and were still running when the gate was killed at
+  the machine's own limit. A hanging guard is worse than a missing one: it gets
+  deleted rather than fixed, and it burns a CI slot. The fix is one character,
+  `&rest[len..]` to `&rest[len + 1..]`, with the unterminated-literal case
+  handled so a stray quote in prose cannot index one past the end.
+
+  This is worth stating plainly: the guard that exists to make tenant scoping
+  load-bearing **could not be executed at all** until it was fixed. The packet's
+  central claim — that a bare machine checks the structural half — was false
+  until the scan was linear.
+
+- **The "names a row" predicate was satisfied by `account_id` itself.** The
+  mutation guard asked for `sql.contains("id = $")`, and the substring `id = $`
+  occurs *inside* `account_id = $2`, one character in. So
+  `update assets set status = 'failed' where account_id = $2` — which rewrites
+  every pending row an account has ever uploaded, the exact defect that guard
+  exists to catch — **passed the entire file**, and `cargo test` reported
+  `11 passed; 0 failed` while a whole-account update sat in the source.
+
+  Found by mutation, not by argument, and it is the single strongest argument in
+  this report for testing the guards. An unanchored `contains` here was not a
+  weak test, it was an inverted one. The match is now anchored to a whole
+  identifier, and `naming_a_row_is_anchored_to_a_whole_identifier` asserts the
+  anchoring against the exact mutation that defeated the old version — so the
+  next refactor of that helper fails rather than silently re-opening the hole.
+
+- **The scoped-query set was compared as a sequence.** The derived side is the
+  order `src/store.rs` declares its functions in; the constant groups them by
+  operation kind. `find_asset_by_checksum` precedes `find_asset` in the source
+  and follows it in the constant, so the assertion failed on a tree where **both
+  lists held the same ten names**. It is now compared as a sorted set, and the
+  kind grouping the constant exists to document is asserted on its own by
+  `the_operation_kinds_are_what_the_comment_claims` — so the coverage claim is
+  load-bearing instead of being a comment that can rot.
+
+A fourth defect was not in a guard but in a new test, and it is the one that
+would have shipped a permanently-flaky gate:
+
+- **`one_accounts_key_cannot_replay_another_accounts_response` compared
+  uuid-ordered rows against declaration-ordered expectations.** The query says
+  `order by account_id`; Postgres orders uuid by raw bytes, so the result is
+  "whichever account id is smaller" — a coin flip between A and B. The
+  expectation was written "A then B", so the test failed on **roughly half of all
+  runs**, and the failure read
+  `left: [c494acf5, f9ff6853] right: [f9ff6853, c494acf5]`: a shape that looks
+  precisely like a cross-tenant leak and is not one. Both sides are now sorted.
+  The sibling test in `tenant_isolation.rs` already carried the comment explaining
+  this; a rule that only one file knows is a rule the next file re-learns by
+  failing.
 
 ## What was not done, and why
 
@@ -288,8 +421,8 @@ worse than no CI:
 
 | tier | command | executed | skipped |
 |---|---|---|---|
-| 4 | `cargo test` | 10 tenant-scoping checks, no database needed | 54 `#[ignore]`d for want of `TEST_DATABASE_URL` |
-| 5 | `cargo test --features s3` | the same 10, in the deployment build | 54 |
+| 4 | `cargo test` | 12 tenant-scoping checks, no database needed | 54 `#[ignore]`d for want of `TEST_DATABASE_URL` |
+| 5 | `cargo test --features s3` | the same 12, in the deployment build | 54 |
 | 6 | `cargo test -- --ignored` | 54 passed, 7 of them query-scoping | 0 |
 | 6 | `cargo test --features s3 -- --ignored` | 54 passed | 0 |
 
@@ -297,6 +430,47 @@ worse than no CI:
 the default run's skip count and the database run's pass count ever disagree —
 they are the same set of tests, so 54 == 54 is an identity and not two plausible
 numbers.
+
+`bin/gate-self-test` also passes on this tree: 23 planted breakages all go red,
+5 warning cases stay green with exit 0, both controls are green, and nothing was
+skipped. Worth running after a packet that adds a tier, because a declaration
+whose proof no longer matches what the gate prints calls itself self-contained
+and the failure is silent. `./bin/gate-self-test`, run against the same database, is green with
+**nothing skipped** — and it reports a skip as a failure, so the 5 database-gated
+cases in it were genuinely executed rather than passed over.
+
+### The gate on this machine, and one environment finding
+
+`./bin/prime --db` exits 0 and `bin/tier-counts` reports `77 unit, 89 with s3,
+54 database x2, 9 backend-table rows, 9 openapi drift x2, 12 tenant scoping x2,
+7 query scoping`.
+
+Getting there needed a Postgres, and **`docker compose up -d postgres` does not
+work on this machine** — port 5432 is already bound by a host Postgres (pid 845)
+and by another container, so the compose container starts and then the URL in
+`docker-compose.yml` connects to somebody else's database. The connection fails
+with `role "darkroom" does not exist`, which reads like a missing migration and
+is actually a port collision. Two further properties of the machine, recorded
+because both cost time and neither is visible from the repository:
+
+- **A test that shares a database with another worktree is not reliable.** The
+  suite truncates the tables it touches, so two checkouts running the same
+  database destroy each other's fixtures mid-assert. Four `tests/api.rs`
+  failures — `left: 2, right: 1`, "the row is gone", `left: 4, right: 2`, and a
+  missing `x-darkroom-duplicate` header — were somebody else's `--db` run, not
+  defects: the same suite is green on its own, twice. The two causes were an
+  orphaned `bin/prime --db` left behind by a killed run, and a core
+  `gate_check.py --prove` in this worktree. `darkroom09-pg` on port 15543 is
+  this worktree's own instance and the database tier is green on it. Worth
+  naming because each of those assertions is a *correct* assertion failing for a
+  reason that has nothing to do with the code under test — and a reader who
+  believed it would go looking for a delete bug that does not exist.
+- **`cargo fmt --check` piped into `tail` reports success while failing.** The
+  recovered work was unformatted, and `./bin/prime --db … | tail -40` printed
+  `PRIME EXIT=0` on the same run that failed `fmt`, `clippy` and three suites.
+  That is this repository's own `gate.yml` note about `… | tail` under zsh, met
+  again in practice. Every exit code quoted in this report was taken from
+  `$pipestatus[1]` or from an unpiped run.
 
 ## The numbers a reader can check
 
@@ -307,6 +481,20 @@ grep -c 'path: "/v1' src/http.rs
 # the 10 account-scoped queries, from the &Tenant signatures
 grep -c 'tenant: &Tenant' src/store.rs
 
-# the 4 operation kinds at the query layer
-grep -c 'async fn' tests/query_scoping.rs
+# the 12 structural checks — the tier that needs no database
+grep -c '^#\[test\]' tests/tenant_scoping.rs
+
+# the 7 query-layer cases
+grep -c '#\[ignore' tests/query_scoping.rs
+
+# the 12 wire cases
+grep -c '#\[ignore' tests/tenant_isolation.rs
+
+# the gate, and the counts behind it
+./bin/prime --db > /tmp/prime.log 2>&1
+./bin/tier-counts /tmp/prime.log
 ```
+
+Note the two greps that count `fn` rather than `#[test]`: the file has six
+helper functions as well as its tests, so `grep -c '^\s*async fn\|^fn '`
+returns 20 and looks like a disagreement that is not one.

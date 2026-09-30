@@ -43,15 +43,27 @@ use darkroom::service::CreateUpload;
 use tower::ServiceExt as _;
 use uuid::Uuid;
 
-/// Create a ready asset for `account` and return `(account, asset_id)`.
+/// Create a ready asset for `account` and return its id.
+///
+/// `variant` makes the bytes distinct, and it is a **required** parameter
+/// rather than an optional one. Without it this helper uploads the same PNG
+/// every time, so a second call for the same account resolves as a duplicate
+/// and returns the *same* asset — and a test that expected two rows gets one
+/// and fails somewhere else entirely, reading like a pagination bug. The
+/// failure this caused was exactly that.
+///
+/// An image is used rather than a document because the variant endpoints derive
+/// from an image, and a test that could only seed a document would not cover
+/// them.
 async fn seed_ready_asset(
     service: &darkroom::Service,
     objects: &std::sync::Arc<darkroom::objectstore::InMemoryObjectStore>,
     account: Uuid,
     user: Uuid,
+    variant: u32,
 ) -> Uuid {
     let tenant = darkroom::auth::Tenant::from_principal(&principal(account, user));
-    let payload = png(40, 30);
+    let payload = png(40 + variant, 30);
     let checksum = darkroom::checksum::sha256_hex(&payload);
     let created = service
         .create_upload(
@@ -65,6 +77,11 @@ async fn seed_ready_asset(
         )
         .await
         .expect("creates");
+    assert!(
+        !created.duplicate,
+        "seed_ready_asset(variant={variant}) resolved as a duplicate: the bytes \
+         must be distinct per call or this helper returns a row it did not create"
+    );
     objects
         .apply_presigned_put(&created.presigned.url, payload, "image/png")
         .await
@@ -80,20 +97,18 @@ async fn seed_ready_asset(
 /// never sent. The state `POST /v1/uploads/{id}/complete` and the sweeper both
 /// act on, and the state a `complete` that forgot its scoping would silently
 /// advance.
+///
+/// `variant` is required for the same reason as in [`seed_ready_asset`]: two
+/// calls for one account must not be the same bytes, or the second is a
+/// duplicate and there is no second row to fail a cross-tenant update against.
 async fn seed_pending_asset(
     service: &darkroom::Service,
     account: Uuid,
     user: Uuid,
+    variant: u32,
 ) -> Uuid {
     let tenant = darkroom::auth::Tenant::from_principal(&principal(account, user));
-    // Distinct bytes per account: `unique (account_id, checksum)` is per
-    // account, so a shared checksum would be legal but would make the
-    // cross-tenant assertion ambiguous about which row it meant.
-    let payload = if account == Uuid::nil() {
-        png(1, 1)
-    } else {
-        png((account.as_u128() % 7 + 20) as u32, 30)
-    };
+    let payload = png(20 + variant, 25);
     let checksum = darkroom::checksum::sha256_hex(&payload);
     service
         .create_upload(
@@ -123,7 +138,8 @@ async fn cross_tenant_access_is_404_on_every_endpoint() {
     let (app, _verifier) = test_app(service.clone(), verifier_for(&accounts));
 
     // An asset that belongs to A.
-    let a_asset = seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user).await;
+    let a_asset =
+        seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user, 0).await;
     // A thumbnail on it, so the variant endpoints have something to protect.
     let a_tenant =
         darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user));
@@ -223,7 +239,8 @@ async fn a_cross_tenant_404_is_indistinguishable_from_a_missing_one() {
     let accounts = two_accounts();
     let (app, _verifier) = test_app(service.clone(), verifier_for(&accounts));
 
-    let a_asset = seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user).await;
+    let a_asset =
+        seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user, 0).await;
     // An id that was never issued to anyone.
     let never_existed = Uuid::new_v4();
 
@@ -294,8 +311,14 @@ async fn a_cross_tenant_404_is_indistinguishable_from_a_missing_one() {
     for (name, method, template) in &routes {
         let (theirs_status, theirs_body) =
             ask(app.clone(), method.clone(), template, a_asset, "token-b").await;
-        let (missing_status, missing_body) =
-            ask(app.clone(), method.clone(), template, never_existed, "token-b").await;
+        let (missing_status, missing_body) = ask(
+            app.clone(),
+            method.clone(),
+            template,
+            never_existed,
+            "token-b",
+        )
+        .await;
 
         assert_eq!(
             theirs_status,
@@ -304,7 +327,8 @@ async fn a_cross_tenant_404_is_indistinguishable_from_a_missing_one() {
             theirs_status
         );
         assert_eq!(
-            missing_status, StatusCode::NOT_FOUND,
+            missing_status,
+            StatusCode::NOT_FOUND,
             "{name}: control — a missing id is 404 too"
         );
         assert_eq!(
@@ -335,8 +359,10 @@ async fn a_listing_returns_only_the_callers_own_assets() {
     let accounts = two_accounts();
     let (app, _verifier) = test_app(service.clone(), verifier_for(&accounts));
 
-    let a_asset = seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user).await;
-    let b_asset = seed_ready_asset(&service, &objects, accounts.b_account, accounts.b_user).await;
+    let a_asset =
+        seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user, 0).await;
+    let b_asset =
+        seed_ready_asset(&service, &objects, accounts.b_account, accounts.b_user, 2).await;
     assert_ne!(a_asset, b_asset);
 
     let request = Request::builder()
@@ -386,7 +412,8 @@ async fn a_member_sees_their_own_accounts_assets() {
     let accounts = two_accounts();
     let (app, _verifier) = test_app(service.clone(), verifier_for(&accounts));
 
-    let a_asset = seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user).await;
+    let a_asset =
+        seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user, 0).await;
 
     let request = Request::builder()
         .uri(format!("/v1/assets/{a_asset}"))
@@ -419,7 +446,7 @@ async fn a_token_without_the_scope_is_403_and_anonymous_is_401() {
     let store = test_store().await;
     let (service, objects) = test_service(store);
     let accounts = two_accounts();
-    let asset = seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user).await;
+    let asset = seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user, 0).await;
 
     let verifier = verifier_for(&accounts).with_token(
         "token-no-scope",
@@ -471,7 +498,8 @@ async fn a_cross_tenant_delete_is_404_and_the_asset_survives() {
     let accounts = two_accounts();
     let (app, _verifier) = test_app(service.clone(), verifier_for(&accounts));
 
-    let a_asset = seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user).await;
+    let a_asset =
+        seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user, 0).await;
     let objects_before = objects.len();
 
     let request = Request::builder()
@@ -558,7 +586,8 @@ async fn the_same_bytes_in_two_accounts_are_two_assets_and_never_a_credential() 
     let accounts = two_accounts();
     let (app, _verifier) = test_app(service.clone(), verifier_for(&accounts));
 
-    let a_asset = seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user).await;
+    let a_asset =
+        seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user, 0).await;
     let a_key = {
         // A's own storage key, read as A — the thing B must not learn.
         let a_tenant =
@@ -568,10 +597,19 @@ async fn the_same_bytes_in_two_accounts_are_two_assets_and_never_a_credential() 
             .expect("reads")
             .expect("A's asset has a key")
     };
-    // The same bytes B is about to claim: a distinct image, so the checksum
-    // genuinely differs from A's.
-    let b_payload = png(41, 31);
+    // B claims **the same bytes** A uploaded. That is the case the unique
+    // constraint exists for and the one a scoping bug hides in: an unscoped
+    // `find_asset_by_checksum` would not error and would not return nothing, it
+    // would return A's row — and B would then PUT to A's storage key and
+    // complete A's asset. `unique (account_id, checksum)` is per account, so the
+    // insert is legal and the *lookup* is the only thing standing in the way.
+    let b_payload = png(40, 30);
     let b_checksum = darkroom::checksum::sha256_hex(&b_payload);
+    assert_eq!(
+        b_checksum,
+        darkroom::checksum::sha256_hex(&png(40, 30)),
+        "B must be claiming A's exact bytes, or this is not the test it claims"
+    );
 
     let body = format!(
         r#"{{"filename":"b.png","content_type":"image/png","byte_size":{},"checksum":"{b_checksum}"}}"#,
@@ -593,12 +631,10 @@ async fn the_same_bytes_in_two_accounts_are_two_assets_and_never_a_credential() 
             .unwrap(),
     )
     .expect("json");
-    assert_eq!(
-        body["asset"]["account_id"],
-        accounts.b_account.to_string()
-    );
+    assert_eq!(body["asset"]["account_id"], accounts.b_account.to_string());
     assert_ne!(
-        body["asset"]["id"], a_asset.to_string(),
+        body["asset"]["id"],
+        a_asset.to_string(),
         "B was handed A's asset"
     );
     assert_ne!(
@@ -613,7 +649,7 @@ async fn the_same_bytes_in_two_accounts_are_two_assets_and_never_a_credential() 
     let b_key = body["storage_key"].as_str().expect("a key").to_string();
     objects
         .apply_presigned_put(
-            &body["upload_url"].as_str().expect("a url"),
+            body["upload_url"].as_str().expect("a url"),
             b_payload.clone(),
             "image/png",
         )
@@ -659,19 +695,23 @@ async fn the_same_bytes_in_two_accounts_are_two_assets_and_never_a_credential() 
         "the duplicate must resolve to B's own asset, never A's"
     );
 
-    // Two rows, one per account, and A's is untouched.
-    let per_account: Vec<(String, i64)> = sqlx::query_as(
-        "select account_id::text, count(*) from assets group by account_id order by account_id",
-    )
-    .fetch_all(service.store.pool())
-    .await
-    .expect("counts");
+    // Two rows, one per account, and A's is untouched. Compared as a **set**:
+    // `order by account_id` orders by uuid, and an expectation written in
+    // "A then B" order fails on half of all uuid pairs — which is a test that
+    // reads as a leak and is not one.
+    let mut per_account: Vec<(String, i64)> =
+        sqlx::query_as("select account_id::text, count(*) from assets group by account_id")
+            .fetch_all(service.store.pool())
+            .await
+            .expect("counts");
+    let mut expected = vec![
+        (accounts.a_account.to_string(), 1),
+        (accounts.b_account.to_string(), 1),
+    ];
+    per_account.sort();
+    expected.sort();
     assert_eq!(
-        per_account,
-        vec![
-            (accounts.a_account.to_string(), 1),
-            (accounts.b_account.to_string(), 1),
-        ],
+        per_account, expected,
         "one asset per account, and A's upload was not disturbed"
     );
 }
@@ -698,7 +738,7 @@ async fn a_cross_tenant_complete_does_not_fail_another_accounts_upload() {
     let accounts = two_accounts();
     let (app, _verifier) = test_app(service.clone(), verifier_for(&accounts));
 
-    let a_pending = seed_pending_asset(&service, accounts.a_account, accounts.a_user).await;
+    let a_pending = seed_pending_asset(&service, accounts.a_account, accounts.a_user, 0).await;
     let a_tenant =
         darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user));
     assert_eq!(
@@ -715,10 +755,7 @@ async fn a_cross_tenant_complete_does_not_fail_another_accounts_upload() {
     // point: if B's request reached the failure path at all, it would mark A's
     // asset `failed` with `checksum_mismatch` before the comparison ever
     // mattered.
-    let body = format!(
-        r#"{{"checksum":"{}"}}"#,
-        "0".repeat(64)
-    );
+    let body = format!(r#"{{"checksum":"{}"}}"#, "0".repeat(64));
     let request = Request::builder()
         .method(http::Method::POST)
         .uri(format!("/v1/uploads/{a_pending}/complete"))
@@ -758,7 +795,8 @@ async fn a_cross_tenant_complete_does_not_fail_another_accounts_upload() {
     // And A can still finish it, so nothing above broke the real path.
     let payload = png(30, 20);
     let checksum = darkroom::checksum::sha256_hex(&payload);
-    let tenant = darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user));
+    let tenant =
+        darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user));
     let created = service
         .create_upload(
             &tenant,
@@ -800,7 +838,8 @@ async fn a_cross_tenant_variant_write_touches_nothing() {
     let accounts = two_accounts();
     let (app, _verifier) = test_app(service.clone(), verifier_for(&accounts));
 
-    let a_asset = seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user).await;
+    let a_asset =
+        seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user, 0).await;
     let a_tenant =
         darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user));
     let objects_before = objects.len();
@@ -828,11 +867,12 @@ async fn a_cross_tenant_variant_write_touches_nothing() {
         objects_before,
         "B must not have written a storage object for A's asset"
     );
-    let events: i64 =
-        sqlx::query_scalar("select count(*) from outbox_events where event_type = 'darkroom.variant.created'")
-            .fetch_one(service.store.pool())
-            .await
-            .expect("counts");
+    let events: i64 = sqlx::query_scalar(
+        "select count(*) from outbox_events where event_type = 'darkroom.variant.created'",
+    )
+    .fetch_one(service.store.pool())
+    .await
+    .expect("counts");
     assert_eq!(
         events, 0,
         "B's cross-tenant variant must emit no darkroom.variant.created"
@@ -870,7 +910,8 @@ async fn a_cross_tenant_variant_list_is_404_not_an_empty_list() {
 
     // An asset with a variant, and an asset with none: B must not be able to
     // tell the two apart, because if it could, the difference is existence.
-    let with_variant = seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user).await;
+    let with_variant =
+        seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user, 0).await;
     let a_tenant =
         darkroom::auth::Tenant::from_principal(&principal(accounts.a_account, accounts.a_user));
     service
@@ -942,12 +983,19 @@ async fn a_cursor_from_another_account_pages_only_the_callers_own_rows() {
     let (app, _verifier) = test_app(service.clone(), verifier_for(&accounts));
 
     // A gets two assets, so A's first page has a `next_cursor` to hand out.
-    let _a_first = seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user).await;
-    let a_second = seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user).await;
-    // B gets one, created between them in time is not guaranteed — the cursor
-    // test below does not depend on the ordering between accounts, only on the
-    // scoping, which is the thing under test.
-    let b_asset = seed_ready_asset(&service, &objects, accounts.b_account, accounts.b_user).await;
+    // Distinct bytes per call — `seed_ready_asset` asserts it, and without it
+    // the second call is a duplicate and A has one row, which reads as a
+    // pagination bug rather than a fixture bug.
+    let a_first =
+        seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user, 0).await;
+    let a_second =
+        seed_ready_asset(&service, &objects, accounts.a_account, accounts.a_user, 1).await;
+    // B gets one. The interleaving between accounts is not guaranteed and the
+    // assertions below do not depend on it: the question is whether B's page
+    // contains A's rows, not which page boundary they fall on.
+    let b_asset =
+        seed_ready_asset(&service, &objects, accounts.b_account, accounts.b_user, 2).await;
+    assert_ne!(a_first, a_second, "A must have two distinct assets");
 
     async fn page(app: axum::Router, token: &'static str, query: &str) -> serde_json::Value {
         let request = Request::builder()
@@ -982,13 +1030,10 @@ async fn a_cursor_from_another_account_pages_only_the_callers_own_rows() {
     // A walking its own cursor gets exactly one row back, and it is A's.
     let second = page(app.clone(), "token-a", &format!("limit=1&cursor={cursor}")).await;
     let second_ids = ids_in(&second);
-    assert_eq!(
-        second_ids.len(),
-        1,
-        "one row per page: {second_ids:?}"
-    );
+    assert_eq!(second_ids.len(), 1, "one row per page: {second_ids:?}");
     assert_ne!(
-        second_ids[0], b_asset.to_string(),
+        second_ids[0],
+        b_asset.to_string(),
         "A's own cursor returned B's row"
     );
     assert!(
@@ -998,7 +1043,12 @@ async fn a_cursor_from_another_account_pages_only_the_callers_own_rows() {
 
     // B replaying A's cursor. B's page is B's rows or nothing: A's cursor
     // encodes A's asset id and A's timestamp, and B gets none of it.
-    let b_page = page(app.clone(), "token-b", &format!("limit=100&cursor={cursor}")).await;
+    let b_page = page(
+        app.clone(),
+        "token-b",
+        &format!("limit=100&cursor={cursor}"),
+    )
+    .await;
     let b_ids = ids_in(&b_page);
     assert!(
         !b_ids.contains(&a_second.to_string()),

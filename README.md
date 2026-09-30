@@ -223,8 +223,29 @@ the case a scoping bug hides in: an unscoped lookup by checksum does not error
 and does not return nothing, it returns a row and the wrong one, while every
 id-keyed test stays green.
 
-The full enumeration, the counts per operation kind, and the four tripwires
-proven able to fire are in `REPORT-darkroom-09-isolation.md`.
+These guards were themselves wrong three times before they were right — a
+quadratic scanner that hung two of the twelve tests for eleven minutes, a
+"names a row" predicate that `account_id = $2` satisfied because `id = $` is a
+substring of it, and a set comparison that asserted an accident of file layout.
+Each is written up in `REPORT-darkroom-09-isolation.md`, and each is the reason
+`sql_statements` is linear and `naming_a_row_is_anchored_to_a_whole_identifier`
+exists. The habit to copy: **plant a divergence, watch the guard go red, and treat
+a guard that hangs or passes on broken source as a finding about the guard.**
+
+The full enumeration, the counts per operation kind, and the five tripwires proven
+able to fire are in `REPORT-darkroom-09-isolation.md`.
+
+Two things to know before running the database tier on a busy machine, both of
+which present as code defects and are not:
+
+- **These suites truncate the tables they touch.** Two checkouts pointed at one
+  database will delete each other's fixtures mid-assert, and the failures look
+  like real ones — `left: 2, right: 1` from `tests/api.rs` during this work was
+  another worktree's run, not a leak. Give each worktree its own Postgres.
+- **Port 5432 may already be taken.** `docker compose up -d postgres` will then
+  start a container whose documented URL connects to a *different* database, and
+  the suite fails with `role "darkroom" does not exist`, which reads like a
+  missing migration. Check what owns the port before reading that error.
 
 ## The storage boundary
 
@@ -502,10 +523,10 @@ left to read:
 
 | tier | command | what it must report |
 |---|---|---|
-| 4 | `cargo test` | 77 lib unit tests, 41 skipped for want of a database, 9 OpenAPI drift checks |
-| 5 | `cargo test --features s3` | 89 lib unit tests, 9 R2/S3 behaviour-table rows, 9 OpenAPI drift checks |
-| 6 | `cargo test -- --ignored` | 41 passed, 0 left ignored |
-| 6 | `cargo test --features s3 -- --ignored` | 41 passed, 0 left ignored |
+| 4 | `cargo test` | 77 lib unit tests, 54 skipped for want of a database, 9 OpenAPI drift checks, 12 tenant-scoping checks |
+| 5 | `cargo test --features s3` | 89 lib unit tests, 9 R2/S3 behaviour-table rows, 9 OpenAPI drift checks, 12 tenant-scoping checks |
+| 6 | `cargo test -- --ignored` | 54 passed, 0 left ignored, 7 of them query-scoping |
+| 6 | `cargo test --features s3 -- --ignored` | 54 passed, 0 left ignored |
 
 One of those is an identity rather than a constant: **the count the default run
 skips must equal the count the database run passes**, because they are the same
@@ -597,13 +618,14 @@ Three things it does not measure, stated rather than implied:
 - the `--features s3` build, because kit's coverage step runs with default
   features — so `objectstore/s3_impl.rs` is not in the picture at all;
 - the database tier, because `cargo llvm-cov` runs the same `cargo test` that
-  ignores the 41 database tests — which is why `store.rs` reports 0.54%;
+  ignores the 54 database tests — which is why `store.rs` reports 0.54%;
 - `main.rs`, at 0%, because a binary's `main` is never called by a test.
 
 What it does catch is the default suite ceasing to run: the only tests
-`cargo llvm-cov` executes are the 77 lib unit tests and the 18 non-ignored
-integration tests — 1 in `api.rs`, 8 in `contract.rs` and 9 in
-`openapi_document.rs` — so if those stop running the number falls off a cliff.
+`cargo llvm-cov` executes are the 77 lib unit tests and the 30 non-ignored
+integration tests — 1 in `api.rs`, 8 in `contract.rs`, 9 in
+`openapi_document.rs` and 12 in `tenant_scoping.rs` — so if those stop running
+the number falls off a cliff.
 
 No test in this repository opens a socket to anything but the database named by
 the environment. HTTP tests drive the router with `tower::ServiceExt::oneshot`,
