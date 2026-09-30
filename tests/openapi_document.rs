@@ -46,11 +46,24 @@
 //! ## What this still cannot see, said here rather than left to be found
 //!
 //! The `Allow` probe reads a path *it already knows about*, so it catches a
-//! method registered on a known path outside the table — verified, by planting
-//! one — and it does **not** catch a whole new path registered outside the
-//! table. Nothing in axum will enumerate the paths a `Router` holds, so a check
-//! that cannot see a path cannot notice one is there. That gap is not closable
-//! from inside a test, and what narrows it is structural rather than a
+//! method registered on a known path outside the table and it does **not** catch
+//! a whole new path registered outside the table. Both halves of that sentence
+//! were measured rather than reasoned, by planting a `.route()` call into
+//! `router()` beside the fold and reading what each one did:
+//!
+//!   * `.route("/v1/assets", put(…))` — a method on a path the table knows.
+//!     `the_router_answers_exactly_the_methods_the_route_table_declares` failed
+//!     with `the router advertises {"GET", "PUT"} on /v1/assets and the route
+//!     table declares {"GET"}`, **and the two document tests stayed green**,
+//!     because the document does describe that path. Nothing else in this
+//!     repository would have noticed.
+//!   * `.route("/v1/brand-new", get(…))` — a path nothing knows about.
+//!     All nine tests passed. A new surface route appeared in the binary and
+//!     this check said nothing at all.
+//!
+//! So the gap is real and it is not closable from inside a test: nothing in axum
+//! will enumerate the paths a `Router` holds, so a check that cannot see a path
+//! cannot notice one is there. What narrows it is structural rather than a
 //! guarantee: `router()` is a fold over `OPERATIONS`, so there is exactly one
 //! line in this repository where a route can be registered by hand.
 //!
