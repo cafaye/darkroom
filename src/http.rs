@@ -61,10 +61,19 @@ pub struct AppState {
 /// how much this process parses.
 pub const MAX_BODY_BYTES: usize = 4096;
 
+/// Paths that skip authentication.
+///
+/// They are named here rather than relied on from route ORDER, because
+/// `Router::layer` in axum applies to every route the router holds at the time
+/// the layer is added — registering a route "before" the auth layer does not
+/// exempt it. A `/healthz` behind the auth middleware returns 401, an
+/// orchestrator marks the instance unhealthy, and the deployment rolls back
+/// with no indication of why. The probe test asserts these two paths are the
+/// exempt ones and that everything else is not.
+const UNAUTHENTICATED_PATHS: &[&str] = &["/healthz", "/readyz"];
+
 pub fn router(state: AppState) -> Router {
     Router::new()
-        // Probes first and unauthenticated: an orchestrator has no bearer token
-        // and must not need one.
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/v1/uploads", post(create_upload))
@@ -124,6 +133,13 @@ async fn authenticate(
     mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Result<Response, Error> {
+    // The probes are exempt: an orchestrator has no bearer token and must not
+    // need one. See `UNAUTHENTICATED_PATHS` for why this is an allow-list
+    // rather than a consequence of route order.
+    if UNAUTHENTICATED_PATHS.contains(&request.uri().path()) {
+        return Ok(next.run(request).await);
+    }
+
     let header = request
         .headers()
         .get(axum::http::header::AUTHORIZATION)
@@ -573,6 +589,79 @@ mod tests {
         // "let's accept a base64 data: URL inline" change has to notice that it
         // is changing this number.
         assert_eq!(MAX_BODY_BYTES, 4096);
+    }
+
+    #[test]
+    fn only_the_probes_are_exempt_from_authentication() {
+        // A `/healthz` behind the auth middleware returns 401, an orchestrator
+        // marks the instance unhealthy, and the deployment rolls back with no
+        // indication of why. The exemption is therefore an explicit allow-list,
+        // and this test is the regression guard: adding a third path here must
+        // be deliberate, and the probe test asserts the other direction.
+        assert_eq!(UNAUTHENTICATED_PATHS, &["/healthz", "/readyz"]);
+        for protected in [
+            "/v1/uploads",
+            "/v1/assets",
+            "/v1/assets/abc",
+            "/v1/assets/abc/variants",
+            // Near-misses: a path that merely starts with a probe name is not
+            // exempt, or a probe path would become a prefix that opens the API.
+            "/healthz/../v1/assets",
+            "/readyzfoo",
+            "/v1/healthz",
+        ] {
+            assert!(
+                !UNAUTHENTICATED_PATHS.contains(&protected),
+                "{protected} must not be exempt from authentication"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_probe_reaches_its_handler_without_a_token_and_an_api_path_does_not() {
+        // Built against the REAL router, because the failure this guards
+        // against is a wiring mistake: axum's `Router::layer` applies to every
+        // route the router holds, so registering a route "before" the auth
+        // layer does not exempt it. A test that only checked the constant
+        // would not have caught that.
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        // The store's pool is lazy and points at a closed port. `/healthz`
+        // must not touch it — that is the point of the assertion — and nothing
+        // else in this test reaches a handler that would.
+        let verifier = crate::auth::StaticTokenVerifier::new();
+        let state = AppState {
+            service: Service::new(
+                std::sync::Arc::new(crate::store::Store::from_pool(
+                    sqlx::postgres::PgPoolOptions::new()
+                        .acquire_timeout(std::time::Duration::from_millis(1))
+                        .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/none")
+                        .expect("a lazy pool never dials"),
+                )),
+                std::sync::Arc::new(crate::objectstore::InMemoryObjectStore::new()),
+            ),
+            verifier: std::sync::Arc::new(verifier),
+        };
+        let app = router(state);
+
+        let health = app
+            .clone()
+            .oneshot(Request::get("/healthz").body(Body::empty()).expect("builds"))
+            .await
+            .expect("responds");
+        assert_eq!(
+            health.status(),
+            StatusCode::OK,
+            "liveness must not require a credential"
+        );
+
+        let api = app
+            .oneshot(Request::get("/v1/assets").body(Body::empty()).expect("builds"))
+            .await
+            .expect("responds");
+        assert_eq!(api.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[test]

@@ -197,8 +197,14 @@ pub struct InMemoryObjectStore {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct StoreStats {
+    /// Bytes written by the SERVICE (`ObjectStore::put`). A client's bytes
+    /// never go through here, which is what the signed-upload pattern is for.
     pub puts: u64,
+    /// Full object reads (`ObjectStore::get`). A metadata probe does not count.
     pub gets: u64,
+    /// Metadata probes (`ObjectStore::head`). Separate from `gets` so a test
+    /// can assert "the service checked but did not download".
+    pub heads: u64,
     pub deletes: u64,
     pub presigns: u64,
 }
@@ -337,7 +343,7 @@ impl ObjectStore for InMemoryObjectStore {
     }
 
     async fn head(&self, key: &str) -> Result<ObjectMeta, ObjectStoreError> {
-        self.stats.lock().expect("stats mutex is not poisoned").gets += 1;
+        self.stats.lock().expect("stats mutex is not poisoned").heads += 1;
         let guard = self.objects.lock().expect("objects mutex is not poisoned");
         let object = guard.get(key).ok_or(ObjectStoreError::NotFound)?;
 

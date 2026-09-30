@@ -113,7 +113,23 @@ hmac = { version = "0.12", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "test-util"] }
-tempfile = "3"
+# `tower::ServiceExt::oneshot` drives the router without binding a socket, so an
+# HTTP test is a function call rather than a network round trip. This is the
+# concrete reason no test in this repository can hit the network by accident.
+tower = { version = "0.5", features = ["util"] }
+http = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+    "uuid",
+    "json",
+    "time",
+    "macros",
+    "migrate",
+] }
 
 [profile.release]
 lto = "thin"
