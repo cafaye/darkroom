@@ -178,6 +178,8 @@ places by hand:
   `where` clause) and puts it in the query. A repository method that forgot
   would not typecheck against `Tenant`.
 
+### Absence, not refusal
+
 **A cross-tenant read is 404, never 403**, and the body is byte-identical to the
 one for an id that never existed. A 403 would be a free asset-id oracle: a
 caller enumerates ids, gets 403 for the ones that exist and 404 for the ones
@@ -186,7 +188,64 @@ for `GET /v1/assets/{id}/variants`, which returns 404 rather than an empty list
 — an empty list is indistinguishable from "no variants yet", which is an
 existence oracle with one bit.
 
-`tests/tenant_isolation.rs` is the matrix; the exact statuses are in the report.
+This is the rule the rest of the platform should copy. Every service that holds
+another service's data has to answer "what do I say when the caller is
+authenticated and the row is not theirs?", and there is one correct answer: the
+same thing you say when the row does not exist. It holds below the wire too —
+`store::find_asset` returns `Ok(None)` for another account's row, never a
+`StoreError`, because a distinguishable error is the same oracle one layer down.
+
+### What holds the predicates in place
+
+`store.rs` was correct by construction and **held in place by nothing**. Every
+existing test exercised the queries *through* a `Tenant`, so all of them stayed
+green if a future edit dropped `and account_id = $2` from one of the eleven
+lines. Three files now make the correctness load-bearing:
+
+| file | tier | what it proves |
+|---|---|---|
+| `tests/tenant_scoping.rs` | default, **no database** | the `account_id` predicate is still written down, for every query that takes a `&Tenant` |
+| `tests/query_scoping.rs` | database | read, list, update and delete return only the caller's own rows, against a two-account fixture |
+| `tests/tenant_isolation.rs` | database | the same, over the wire: every tenant-scoped route, and the exact status and body |
+
+`tests/tenant_scoping.rs` reads `src/store.rs` with `include_str!` and fails
+when a `&Tenant` query stops constraining the column, when the set of such
+queries changes, when a mutation names an account without naming a row, when a
+second query starts reading across accounts, and when a route in
+`http::OPERATIONS` has no negative case. It is in the default tier on purpose:
+the structural half of the isolation guarantee should be checked on a machine
+with no Postgres and no Docker, because that is where it will be run most often
+and it is the half that catches the edit before a fixture is built.
+
+`tests/query_scoping.rs` seeds both accounts with **the same checksum** —
+`unique (account_id, checksum)` makes that two legitimate rows — because that is
+the case a scoping bug hides in: an unscoped lookup by checksum does not error
+and does not return nothing, it returns a row and the wrong one, while every
+id-keyed test stays green.
+
+These guards were themselves wrong three times before they were right — a
+quadratic scanner that hung two of the twelve tests for eleven minutes, a
+"names a row" predicate that `account_id = $2` satisfied because `id = $` is a
+substring of it, and a set comparison that asserted an accident of file layout.
+Each is written up in `REPORT-darkroom-09-isolation.md`, and each is the reason
+`sql_statements` is linear and `naming_a_row_is_anchored_to_a_whole_identifier`
+exists. The habit to copy: **plant a divergence, watch the guard go red, and treat
+a guard that hangs or passes on broken source as a finding about the guard.**
+
+The full enumeration, the counts per operation kind, and the five tripwires proven
+able to fire are in `REPORT-darkroom-09-isolation.md`.
+
+Two things to know before running the database tier on a busy machine, both of
+which present as code defects and are not:
+
+- **These suites truncate the tables they touch.** Two checkouts pointed at one
+  database will delete each other's fixtures mid-assert, and the failures look
+  like real ones — `left: 2, right: 1` from `tests/api.rs` during this work was
+  another worktree's run, not a leak. Give each worktree its own Postgres.
+- **Port 5432 may already be taken.** `docker compose up -d postgres` will then
+  start a container whose documented URL connects to a *different* database, and
+  the suite fails with `role "darkroom" does not exist`, which reads like a
+  missing migration. Check what owns the port before reading that error.
 
 ## The storage boundary
 
@@ -464,10 +523,10 @@ left to read:
 
 | tier | command | what it must report |
 |---|---|---|
-| 4 | `cargo test` | 77 lib unit tests, 41 skipped for want of a database, 9 OpenAPI drift checks |
-| 5 | `cargo test --features s3` | 89 lib unit tests, 9 R2/S3 behaviour-table rows, 9 OpenAPI drift checks |
-| 6 | `cargo test -- --ignored` | 41 passed, 0 left ignored |
-| 6 | `cargo test --features s3 -- --ignored` | 41 passed, 0 left ignored |
+| 4 | `cargo test` | 77 lib unit tests, 54 skipped for want of a database, 9 OpenAPI drift checks, 12 tenant-scoping checks |
+| 5 | `cargo test --features s3` | 89 lib unit tests, 9 R2/S3 behaviour-table rows, 9 OpenAPI drift checks, 12 tenant-scoping checks |
+| 6 | `cargo test -- --ignored` | 54 passed, 0 left ignored, 7 of them query-scoping |
+| 6 | `cargo test --features s3 -- --ignored` | 54 passed, 0 left ignored |
 
 One of those is an identity rather than a constant: **the count the default run
 skips must equal the count the database run passes**, because they are the same
@@ -559,13 +618,14 @@ Three things it does not measure, stated rather than implied:
 - the `--features s3` build, because kit's coverage step runs with default
   features — so `objectstore/s3_impl.rs` is not in the picture at all;
 - the database tier, because `cargo llvm-cov` runs the same `cargo test` that
-  ignores the 41 database tests — which is why `store.rs` reports 0.54%;
+  ignores the 54 database tests — which is why `store.rs` reports 0.54%;
 - `main.rs`, at 0%, because a binary's `main` is never called by a test.
 
 What it does catch is the default suite ceasing to run: the only tests
-`cargo llvm-cov` executes are the 77 lib unit tests and the 18 non-ignored
-integration tests — 1 in `api.rs`, 8 in `contract.rs` and 9 in
-`openapi_document.rs` — so if those stop running the number falls off a cliff.
+`cargo llvm-cov` executes are the 77 lib unit tests and the 30 non-ignored
+integration tests — 1 in `api.rs`, 8 in `contract.rs`, 9 in
+`openapi_document.rs` and 12 in `tenant_scoping.rs` — so if those stop running
+the number falls off a cliff.
 
 No test in this repository opens a socket to anything but the database named by
 the environment. HTTP tests drive the router with `tower::ServiceExt::oneshot`,

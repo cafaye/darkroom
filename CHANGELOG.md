@@ -13,6 +13,142 @@ and only `info.version` moves otherwise
 
 ### Added
 
+**Fixed: three guards that could not fire, and a test that failed on half of all
+runs.** The isolation work below was recovered from an OOM restart and did not
+pass as it stood. Re-running it found four defects, all of the same family — a
+check that cannot fail, or one that fails for a reason unrelated to the property
+it asserts — and the three guards are worth more than the feature they guard:
+
+- **The structural scanner was quadratic and the guard hung instead of running.**
+  `sql_statements` left its cursor on a closing quote rather than past it, so
+  every literal bought a fresh forward scan of the rest of the unit, and
+  `src/store.rs`'s doc comments — full of `"` — made the input far larger than
+  the SQL. Two tests in `tests/tenant_scoping.rs` burned eleven minutes of CPU
+  and were still running when the gate was killed at the machine's limit. The
+  packet's central claim, that a bare machine checks the structural half, was
+  **false** until the scan was linear. One character, plus a
+  not-one-past-the-end case for a stray quote in prose.
+- **The "a mutation must name a row" check was satisfied by `account_id` itself.**
+  It asked for `sql.contains("id = $")`, and that substring occurs *inside*
+  `account_id = $2`. So `update assets … where account_id = $2` — which rewrites
+  every pending row an account has ever uploaded, the exact defect the check
+  exists to catch — passed the whole file, and cargo reported `11 passed; 0
+  failed` with that whole-account update in the source. The match is now anchored
+  to a whole identifier, and `naming_a_row_is_anchored_to_a_whole_identifier`
+  asserts the anchoring against the exact mutation that defeated it. An unanchored
+  `contains` was not a weak test here; it was an inverted one.
+- **The scoped-query set was compared as a sequence.** The derived side is source
+  order and the constant is grouped by operation kind, so the assertion failed on
+  a tree where both lists held the same ten names. Now a sorted set, with the
+  kind grouping asserted separately by
+  `the_operation_kinds_are_what_the_comment_claims` so the file's coverage claim
+  is load-bearing rather than a comment that can rot.
+- **`one_accounts_key_cannot_replay_another_accounts_response` compared
+  uuid-ordered rows against declaration-ordered expectations**, so it failed on
+  roughly half of all runs with `left: [c494acf5, …] right: [f9ff6853, …]` — a
+  failure that reads exactly like a cross-tenant leak and is not one. Both sides
+  are sorted now.
+
+A guard nobody has watched fail is a guard nobody knows works, and two of these
+were only found because divergences were planted in `src/store.rs` and reverted.
+`bin/tier-counts` moves `TENANT_SCOPE_TESTS` 10 → 12 for the two new structural
+tests.
+
+**Tenant isolation, made load-bearing.** The implementation was already correct:
+`assets` and `asset_variants` carry `account_id uuid not null`, there is a
+`unique (account_id, checksum)`, and all ten account-scoped queries constrain on
+the column. What was missing was anything that would notice if a future edit
+dropped `and account_id = $2` from one of them — every existing test exercised
+the queries *through* a `Tenant`, so all of them stayed green and a private asset
+store became a shared one. Correct by construction is not a property if the
+construction is never checked.
+
+**`tests/tenant_scoping.rs` — the structural half, in the default tier.** It reads
+`src/store.rs` with `include_str!`, so the check is a fact about the source that
+built the binary rather than a grep somebody has to remember to run, and it
+derives its expectations from the code rather than from a maintained list. Five
+properties: every function taking a `&Tenant` constrains `account_id = $N`;
+that set is exactly the ten named in the file; every mutating scoped query names
+a **row** as well as an account, because `where account_id = $2` alone is scoped
+and still a defect; exactly one query reads across accounts, and no request-path
+module can reach it; `principal_scope` carries the account, because the
+idempotency ledger stores whole response *bodies* and an unscoped replay hands
+one account another's response; and the four-reads / two-updates / one-delete
+breakdown is asserted rather than described. It needs no database, so the
+structural half of the isolation guarantee is now checked on a bare machine.
+
+**`tests/query_scoping.rs` — the behavioural half, against Postgres.** A
+two-account fixture covering read, list, update and delete, which is the shape a
+service is usually broken in: it scopes its reads and forgets its delete. Both
+accounts deliberately share a **checksum** — `unique (account_id, checksum)`
+makes that two legitimate rows — because that is where a scoping bug hides: an
+unscoped lookup by checksum does not error and does not return nothing, it
+returns a row and the wrong one, while every id-keyed test stays green. Also
+covers a cross-tenant `mark_failed` (the failure path is a bare `where` clause,
+so it is the easiest of the three writes to get wrong), a cross-tenant
+`list_storage_keys` (two `select`s in a `union all`, so the query most able to be
+half-scoped), and a cursor replayed from one account into another.
+
+**Every tenant-scoped route now has a negative case, and the enumeration is
+derived rather than trusted.** `tests/tenant_isolation.rs` grew from 7 to 12
+cases; the coverage is not taken on faith, because `tests/tenant_scoping.rs`
+builds the route list from `http::OPERATIONS` — the table the router is built
+from — and fails if a route has no case, if a case has no route, or if a case
+names a test that is not there. The byte-identical-404 guard now covers all five
+id-scoped routes rather than only `GET /v1/assets/{id}`: a rule checked on the
+oldest route is a rule checked on one route, and the route somebody added most
+recently is where it would be dropped. New cases: a cross-tenant `complete`
+proving A's upload is still `pending` afterwards (a 404 on its own is compatible
+with "did the work, then reported 404"), a cross-tenant variant write proving
+nothing moved including the outbox, a variant listing that is 404 rather than an
+empty array, a cursor replayed across accounts, and the same bytes in two
+accounts never yielding a presigned URL scoped to the other one's storage key.
+
+**One account's `Idempotency-Key` cannot replay another account's response**
+(`tests/idempotency.rs`). The ledger is the only table here that stores a whole
+HTTP response body, and `reserve_idempotency_key` hands it back on a replay, so
+an unscoped replay is not a status-code leak — it is another account's asset id
+and presigned upload URL. Previously covered only by a unit test on the scope
+string.
+
+**Fixed: the `Forbidden` variant's doc comment described the anti-pattern.**
+`src/error.rs` documented 403 as "the caller authenticated and holds the scope,
+but the account in the token is not theirs" — stating, as the variant's purpose,
+exactly the thing this packet exists to prevent, and contradicting itself two
+clauses later. No behaviour was wrong: `Error::forbidden` has one constructor
+called from one place, `http::require_scope`, so a 403 cannot become a tenancy
+response by accident. But a comment is what a future author reads before writing
+`if caller.account != asset.account { return forbidden() }`, and this one invited
+it. It now states the capability case positively, names the tenancy case as
+`NotFound`, and explains why the two differ in kind rather than in degree — a
+missing scope is a fact about the caller, which they already know, while a
+foreign resource is a fact about somebody else, and reporting it is the leak.
+
+**The rule, stated once in the module docs for the platform to copy:**
+`src/store.rs` and `AGENTS.md` now carry *absence, not refusal* — a resource the
+caller cannot see does not exist, and every layer below the wire says so the same
+way. A 403 is a confirmation; it tells a caller the row is real and somebody else
+owns it, which is a smaller leak than the row and a perfectly good way to
+enumerate the platform. This includes below the wire: `store::find_asset` returns
+`Ok(None)`, never a `StoreError`, because a distinguishable error is the same
+oracle one layer down.
+
+`bin/tier-counts` gains `TENANT_SCOPE_TESTS=12` and `QUERY_SCOPING_TESTS=7`, and
+`DB_TESTS` moves 41 → 54 for the 13 new `#[ignore]`d cases. The skipped-equals-run
+identity is now 54 == 54.
+
+**Two environment notes, because both read as code defects and are not.** Port
+5432 on this machine is already bound by a host Postgres and another container, so
+`docker compose up -d postgres` starts a container whose documented URL then
+connects to *somebody else's* database and fails with `role "darkroom" does not
+exist` — which reads like a missing migration. And these tests truncate the tables
+they touch, so a checkout sharing a database with another worktree destroys each
+other's fixtures mid-assert: three `tests/api.rs` failures observed during
+re-verification were another checkout's `--db` run. Run the database tier against
+this worktree's own Postgres. Relatedly, `./bin/prime --db | tail` reports exit 0
+on a run that failed `fmt`, `clippy` and three suites — the `gate.yml` note about
+pipelines under zsh, met again in practice.
+
 **`gate.yml`: the gate is declared, so it no longer has to be guessed.** What
 "run the gate" means in this repository was discoverable only by getting it
 wrong: `mise run prime` runs `bin/prime`, CI runs `bin/prime --db`, and the
