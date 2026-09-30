@@ -440,8 +440,8 @@ one, because two replicas racing to deploy would deadlock on `CREATE TABLE`.
 
 `cargo test` alone is green on a bare machine with no Postgres and no Docker.
 The database tests are `#[ignore]`d, and **a skipped test proves nothing** —
-which is why `bin/prime --db` and the CI `test-with-database` job exist, and why
-the comment is in both.
+which is why `bin/prime --db` and the CI `gate` job exist, and why the comment
+is in both.
 
 There is a third tier, `cargo test --features s3`, and it exists because
 `cargo test` does not compile the `s3` feature at all. Without it the R2
@@ -449,6 +449,56 @@ configuration rules, the presigned-URL table and the startup refusals would
 compile in nobody's gate and prove nothing — the same "skipped test proves
 nothing" argument, one level up. `--db` runs the ignored suites with and without
 the feature, because the deployment build is a different build of the library.
+
+### Reading the tiers, because the exit code does not
+
+`bin/prime --db` exits zero in three situations where it has verified nothing:
+tier 6 never ran, tier 6 ran and touched nothing, and tier 5 never compiled the
+`s3` feature. None of those change the exit code, so the counts are what is
+left to read:
+
+```sh
+./bin/prime --db 2>&1 | tee /tmp/prime.log
+./bin/tier-counts /tmp/prime.log
+```
+
+| tier | command | what it must report |
+|---|---|---|
+| 4 | `cargo test` | 77 lib unit tests, 41 skipped for want of a database |
+| 5 | `cargo test --features s3` | 89 lib unit tests, 9 R2/S3 behaviour-table rows |
+| 6 | `cargo test -- --ignored` | 41 passed, 0 left ignored |
+| 6 | `cargo test --features s3 -- --ignored` | 41 passed, 0 left ignored |
+
+One of those is an identity rather than a constant: **the count the default run
+skips must equal the count the database run passes**, because they are the same
+set of tests. A test that is `#[ignore]`d without the database tier running it
+breaks it in one direction; a test added and never `#[ignore]`d breaks it in the
+other. Neither can reach master as a green badge.
+
+Adding a test means raising the number in `bin/tier-counts` in the same commit.
+That is the point of the constant: it is a claim somebody has to look at.
+
+### The coverage gate
+
+Coverage is not in `bin/prime` and is not the same thing. It is kit's
+`coverage-fail-under` input, set to **50**, against **53.73%** measured line
+coverage on rustc 1.95.0 (60.95% regions, 55.85% functions). A floor rather
+than a ratchet: it fails if coverage collapses and stays out of the way of a
+legitimate change. `--fail-under-lines 50` was measured green and
+`--fail-under-lines 54` was measured red, so the gate can actually fail — and
+kit's default of 0 fails nothing, which by kit's own rule is not a gate.
+
+Three things it does not measure, stated rather than implied:
+
+- the `--features s3` build, because kit's coverage step runs with default
+  features — so `objectstore/s3_impl.rs` is not in the picture at all;
+- the database tier, because `cargo llvm-cov` runs the same `cargo test` that
+  ignores the 41 database tests — which is why `store.rs` reports 0.54%;
+- `main.rs`, at 0%, because a binary's `main` is never called by a test.
+
+What it does catch is the default suite ceasing to run: the only tests
+`cargo llvm-cov` executes are the 77 lib unit tests and the 9 non-ignored
+integration tests, so if those stop running the number falls off a cliff.
 
 No test in this repository opens a socket to anything but the database named by
 the environment. HTTP tests drive the router with `tower::ServiceExt::oneshot`,
@@ -475,7 +525,22 @@ would be a flake waiting for a loaded CI box.
   tested is configuration, the credential scope, the signed-header list and the
   headers R2 rejects; what is not is R2 accepting them. The "Running against R2"
   section above is the manual procedure, and the variant-generation step in it is
-  the one that catches an SDK-level default.
+  the one that catches an SDK-level default. A **local** S3-compatible double
+  (MinIO) would close the round-trip half of this without a credential, but it
+  needs a test that actually speaks to it — nothing in the suite does today, so
+  adding the service container alone would be a green checkmark on nothing.
+- **CI does not build the deployment target.** `docker/Dockerfile` runs
+  `rustup target add x86_64-unknown-linux-musl` and then copies out of
+  `target/x86_64-unknown-linux-musl/release/darkroom` — but its `cargo build`
+  has no `--target`, so the file it copies is not there and the image build
+  fails. Two problems rather than one: the missing flag, and the fact that
+  `ring` needs a C toolchain for that target, so a glibc `ubuntu` runner cannot
+  link it either. Nothing in CI would have caught either. Fixing it means
+  choosing a musl-capable build image, which is a decision about the release
+  pipeline rather than a fix that belongs in a CI packet.
+- **The two bullets above are what a green badge here does not currently mean:**
+  that a real bucket accepts what darkroom signs, and that the target the image
+  ships is the target the compiler can produce.
 - **The outbox publisher loop.** Needs a NATS client and a deployment. The
   table and the insert path — the half with the correctness guarantee — are
   here; a publisher loop that cannot publish is worse than an absent one.

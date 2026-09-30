@@ -1,109 +1,202 @@
-# The gate, as a GitHub Actions workflow. Shared workflow conventions come from
-# cafaye/kit; this repository's copy is small enough to inline rather than
-# depend on a repo that has not published a reusable Rust template yet.
+---
+# darkroom's CI. The shared half is kit's reusable workflow; the service half
+# is here, and it is here because it is the part kit cannot own.
 #
-# The important part of this file is the `test-with-database` job. The database
-# tests are `#[ignore]`d so that `cargo test` is green on a bare machine, and a
-# skipped test proves nothing — so CI has to run them explicitly or the
-# tenant-isolation suite is decoration. This is the job that makes them real.
+# ## The division, and why it falls where it does
+#
+#   ci       kit's reusable workflow, language: rust. Conventions, and the
+#            coverage gate — the one check `bin/prime` does not have.
+#   gate     `bin/prime --db` against a real Postgres. The three tiers.
+#   contract cafaye.yml against core's schema, using cafaye/caf's own tool.
+#
+# `gate` cannot live in kit. kit's rust job is `cargo fetch`, `cargo fmt
+# --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and a
+# coverage step: the test command is hardcoded, there is no `services:` block,
+# there is no `TEST_DATABASE_URL`, and there is no second feature set. Every
+# one of those is a fact about *this* service — that its gate is a script, that
+# its third tier needs a database, that its second tier needs `--features s3`.
+# kit is config with no dependencies by design, so a job that calls one
+# repository's `bin/prime` is not something kit can grow without becoming the
+# thing it exists to prevent. Raised for the manager as a possible future
+# `gate-command:` input; until it exists, the job is here.
+#
+# `contract` cannot live in kit either, for a sharper reason: it checks out
+# `cafaye/caf` — a *different* cafaye repository — and runs their Go CLI
+# against our manifest. A step that reaches into another cafaye repository is
+# explicitly out of kit's scope.
+#
+# ## The thing this file exists to prevent
+#
+# `bin/prime` has three tiers and the third one does not run by default. Tier 6
+# is `cargo test -- --ignored --test-threads=1` against `TEST_DATABASE_URL`,
+# and its tests are `#[ignore]`d, so a plain `cargo test` reports them as
+# ignored and exits zero. A CI run that stops at tier 5 is a run that has never
+# touched a database, and darkroom is a service whose entire job is putting
+# bytes in one. So `gate` sets the environment and calls `bin/prime --db`, and
+# `bin/tier-counts` reads the counts afterwards so a green run has to mean the
+# 41 database tests actually passed rather than merely did not fail.
 name: ci
 
 on:
   push:
     branches: [master]
   pull_request:
+  # So a maintainer can run this by hand on a branch without pushing to it.
+  # `bin/prime --db` against a service container is not something you can
+  # reproduce from a laptop without Docker, and "it works on my machine" is not
+  # evidence a gate ran.
+  workflow_dispatch:
 
-# PLAN.md §1: the gate runs under `set -o pipefail`, and a gate whose exit code
-# was not observed is treated as unrun, not as green.
-env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
+# Read-only, and the workflow takes no secrets at all. There is no `secrets:`
+# block and no `secrets: inherit`, deliberately: darkroom's storage tests are
+# credential-free by construction (presigning is local), so the only thing a
+# credential here would buy is a secret at rest in repository settings. Adding
+# one is a decision, not a chore.
+permissions:
+  contents: read
+
+# A superseded push on the same ref makes the run moot, and both jobs are slow
+# enough that the wasted minutes are real. Same policy kit uses.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# `ci` and `gate` both compile the crate, on separate runners, so the suite is
+# built twice per push. That is the cost of the shared half being shared rather
+# than inlined, and it is the right trade: `gate` runs `bin/prime` — the command
+# a developer runs, which kit cannot do — and `ci` brings the coverage gate and
+# the conventions. Copying kit's steps into `gate` to save one build would put a
+# duplicate of the shared workflow in this file, which is the drift kit exists
+# to prevent.
 
 jobs:
-  build:
-    name: build, test, clippy, fmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+  # ---------------------------------------------------------------- shared half
+  ci:
+    name: ci (kit)
+    uses: cafaye/kit/.github/workflows/ci.reusable.yml@master
+    with:
+      language: rust
+      working-dir: .
+      # Set even though kit's rust job does not read it yet: `dtolnay/rust-
+      # toolchain@stable` is called with no `toolchain:` input, so the job runs
+      # on floating stable regardless. The input is here so the moment kit
+      # honours it, this repository is already pinned. The pin that is real
+      # today is rust-toolchain.toml, which `gate` honours. See the report.
+      versions: '{"rust":"1.95.0"}'
+      # 50, against 53.73% measured line coverage on rustc 1.95.0 with default
+      # features. A floor rather than a ratchet: it fails if coverage collapses
+      # and stays out of the way of a legitimate change. kit's default is 0,
+      # which fails nothing, and "a gate that can never fail is not a gate" is
+      # kit's own rule. The number is not arbitrary — `--fail-under-lines 50`
+      # was measured green and `--fail-under-lines 54` was measured red, so the
+      # gate can actually fail.
+      #
+      # It measures less than it looks like it does, deliberately stated rather
+      # than implied: kit runs `cargo llvm-cov` with default features, so the
+      # s3 build is in the denominator and out of the numerator, and it runs
+      # the same `cargo test` that ignores the 41 database tests, so
+      # `store.rs` sits at 0.54%. What this number catches is the default suite
+      # ceasing to run at all.
+      coverage-fail-under: '50'
 
-      - name: Install the pinned toolchain
-        # From rust-toolchain.toml, so CI and a worktree cannot disagree about
-        # which rustc produced a green result.
-        run: rustup show active-toolchain || rustup toolchain install
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: fmt
-        run: cargo fmt --check
-
-      - name: build
-        run: cargo build --all-targets
-
-      - name: clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: test
-        run: cargo test
-
-      - name: test with the s3 feature
-        # The R2 configuration rules, the presigned-URL table over AWS / MinIO /
-        # R2, and the startup refusals live behind `--features s3`. `cargo test`
-        # above does not compile them at all, so without this step they are
-        # decoration: a test nobody's gate runs proves nothing, which is the same
-        # argument that makes this job exist for the `#[ignore]`d ones.
-        run: cargo test --features s3
-
-      - name: build with every feature
-        # The `s3` and `dev-auth` code paths are behind features, so a default
-        # build compiling clean says nothing about them. This is the job that
-        # catches a feature-gated file that no longer compiles.
-        run: cargo build --all-targets --all-features
-
-  test-with-database:
-    name: integration tests (postgres)
-    runs-on: ubuntu-latest
+  # ------------------------------------------------------------------ the gate
+  gate:
+    name: gate (bin/prime --db)
+    runs-on: ubuntu-24.04
     services:
       postgres:
+        # The same image docker-compose.yml runs, so the database tier is
+        # verified against the engine a developer verifies it against. Pinned
+        # to a major, not a patch: a tighter pin here would be a database
+        # version CI tests and the local stack does not.
         image: postgres:17-alpine
         env:
           POSTGRES_USER: darkroom
           POSTGRES_PASSWORD: darkroom
           POSTGRES_DB: darkroom_test
-        ports: ["5432:5432"]
+        ports:
+          - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U darkroom"
+          --health-cmd "pg_isready -U darkroom -d darkroom_test"
           --health-interval 2s
           --health-timeout 3s
           --health-retries 20
     env:
       TEST_DATABASE_URL: postgres://darkroom:darkroom@localhost:5432/darkroom_test?sslmode=disable
+      CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v4
-      - run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - name: run the ignored tests
-        # The tests truncate the tables they touch, so they run one at a time.
-        # That is a fixture-isolation requirement, not a race workaround.
-        run: cargo test -- --ignored --test-threads=1
-      - name: run the ignored tests with the s3 feature
-        # The deployment build is a different build of the library: `S3ObjectStore`
-        # exists and `Config` has a second variant. The checksum table runs
-        # against whatever `ObjectStore` is wired, so the database tier is worth
-        # running against that build too.
-        run: cargo test --features s3 -- --ignored --test-threads=1
+      - uses: actions/checkout@v7
 
+      - name: the pinned toolchain, and proof that it is in force
+        # Not `dtolnay/rust-toolchain@stable`. rust-toolchain.toml in this
+        # repository is the pin and `rustup` reads it, so CI and a worktree
+        # cannot disagree about which rustc produced a green result. kit's job
+        # cannot do this for itself — that is the kit gap named in the report.
+        #
+        # The expected version is read out of rust-toolchain.toml rather than
+        # written here, so raising the pin is a one-file change and the check
+        # follows it. What it buys is that "the build is pinned" is a fact this
+        # job asserts, not a comment nobody re-reads.
+        run: |
+          set -euo pipefail
+          rustup show active-toolchain
+          rustc --version --verbose
+          want="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          got="$(rustc --version | awk '{print $2}')"
+          if [ -z "$want" ]; then
+            echo "::error::rust-toolchain.toml has no channel. The pin is the pin; do not remove it." >&2
+            exit 1
+          fi
+          if [ "$got" != "$want" ]; then
+            echo "::error::rustc is $got but rust-toolchain.toml pins $want. The build is not pinned." >&2
+            exit 1
+          fi
+          echo "pinned: rustc $got, host $(rustc -vV | sed -n 's/^host: //p')"
+
+      - name: the gate
+        # `bin/prime`, the same command a developer runs, with the flag that
+        # forces the database tier. `tee` so the counts are in the log AND in
+        # the next step; `set -o pipefail` because without it this pipeline
+        # returns tee's exit code and a failing gate reads as a pass, which is
+        # exactly how a broken packet reached master once (PLAN.md §1).
+        run: |
+          set -euo pipefail
+          ./bin/prime --db 2>&1 | tee "$RUNNER_TEMP/prime.log"
+
+      - name: the tiers actually ran
+        # The gate exits zero when it is happy, and `cargo test` exits zero when
+        # it ignored everything it could. Those are the same exit code, so this
+        # reads the counts: 77 unit, 89 with s3, 9 R2/S3 behaviour-table rows,
+        # and 41 database tests in each feature set. Without it a green badge
+        # is a claim about a run that may never have happened.
+        run: ./bin/tier-counts "$RUNNER_TEMP/prime.log"
+
+      - name: Cargo.lock is the lockfile
+        # Cheap, and it catches a class of drift that is otherwise invisible:
+        # a dependency bump that resolves differently on the runner than it did
+        # on the machine that committed it. The Dockerfile already treats
+        # `--locked` as non-negotiable for the same reason.
+        run: git diff --exit-code Cargo.lock
+
+  # ----------------------------------------------------------------- contract
   contract:
     name: cafaye manifest
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - name: check out caf
+        # darkroom's own tree, into a subdirectory. This step is the reason
+        # `contract` cannot move into kit: it reaches into another cafaye
+        # repository, and kit's AGENTS.md puts that out of scope by name.
+        uses: actions/checkout@v7
         with:
           repository: cafaye/caf
           path: caf
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          # Pinned, because `go-version: stable` is a build that depends on
+          # which toolchain the runner image cached.
+          go-version: '1.26'
       - name: lint cafaye.yml against core's schema
         # The manifest is not this repository's to define. core owns the schema
         # and `caf` owns the validator, so the check is "run their tool" rather

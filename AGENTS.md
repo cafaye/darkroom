@@ -150,9 +150,49 @@ each test truncates the tables it touches, and two tests truncating
 concurrently would delete each other's fixtures mid-assert.
 
 A skip is honest; a test that silently passes without proving anything is not.
-**If you add a `#[ignore]`, add the job that runs it** — CI's
-`test-with-database` is the only reason the tenant-isolation suite is real
+**If you add a `#[ignore]`, add the job that runs it** — CI's `gate` job calls
+`bin/prime --db` and is the only reason the tenant-isolation suite is real
 rather than decoration.
+
+## The exit code is not the evidence
+
+`bin/prime --db` exits zero when it is happy, and `cargo test` exits zero when
+it ignored every test it could. Those are the same exit code, so CI reads the
+counts instead, with `bin/tier-counts`:
+
+```sh
+./bin/prime --db 2>&1 | tee /tmp/prime.log
+./bin/tier-counts /tmp/prime.log
+```
+
+It asserts 77 unit / 89 with s3 / 9 behaviour-table rows / 41 database twice,
+**and** one identity: the count the default run skips equals the count the
+database run passes, because they are the same tests. **Adding a test means
+raising the number in `bin/tier-counts` in the same commit** — that is the
+point of the constant, and a CI red that says `expected 41, got 44` is the
+mechanism working, not failing.
+
+## No object-storage credentials in CI, and none needed
+
+The `s3` tier needs no endpoint and no credential, which is worth being exact
+about. `tests/storage_backends.rs` presigns with the real SDK and static dummy
+credentials; presigning builds a URI and a signature locally and transmits
+nothing, so the nine-row table runs offline against AWS, MinIO and R2
+*configurations*. Adding a MinIO service container to CI would boot a bucket
+that nothing in the suite ever speaks to — a green checkmark on nothing. What
+that table cannot prove, and does not claim, is that R2 *accepts* the URL; the
+README's "Running against R2" is the manual procedure.
+
+## The toolchain is pinned
+
+`rust-toolchain.toml` is the pin, and CI asserts `rustc --version` against it
+rather than trusting it. It is the same release as `mise.toml`, `Cargo.toml`'s
+`rust-version` and the Dockerfile's `RUST_VERSION`; if you raise one, raise
+them in the same commit. kit's shared job calls
+`dtolnay/rust-toolchain@stable` with no `toolchain:` input, so *that* job runs
+on floating stable regardless of `versions:` — which is why the pin is enforced
+in the `gate` job and not only declared in the shared one.
+
 
 ## No network in tests
 
@@ -188,6 +228,7 @@ duplicate uses a real second request. None of them waits.
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo build --all-targets --all-features   # the feature-gated paths
+cargo llvm-cov --fail-under-lines 50       # the coverage floor, and only this
 ```
 
 All green before a commit lands. The `--all-features` build matters: `s3` and
@@ -196,6 +237,12 @@ about them. **So does the `cargo test --features s3` tier**, for the same
 reason in the other direction: `cargo test` does not compile the R2
 configuration rules, the presigned-URL table or the startup refusals at all, and
 a test nobody's gate runs is a test that proves nothing.
+
+The coverage floor is deliberately loose and deliberately not in `bin/prime`:
+instrumenting is a different build, and folding it into the gate would make
+every developer run twice. It measures the default suite only — not the s3
+build, not the database tier — and README says so where a reader will look.
+
 
 ## Adding an endpoint
 
