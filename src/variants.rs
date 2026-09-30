@@ -106,11 +106,27 @@ pub fn encode(
     let image = resized.as_ref().unwrap_or(&decoded);
     let (width, height) = (image.width(), image.height());
 
-    // JPEG has no alpha channel, so an RGBA source is flattened onto white
-    // rather than encoded with the alpha silently discarded against black.
-    // A transparent PNG thumbnail on a black background is a bug a client will
-    // not report; a white matte is what every image CDN does.
-    let rgb = image.to_rgb8();
+    // JPEG has no alpha channel, and `DynamicImage::to_rgb8` DROPS the alpha
+    // rather than compositing it: a fully transparent red pixel stays red, and
+    // a transparent pixel that was black stays black. That is a visible
+    // difference in the served image, so the matte is done here explicitly.
+    let rgba = image.to_rgba8();
+    let mut rgb = image::RgbImage::new(width, height);
+    for (source, target) in rgba.pixels().zip(rgb.pixels_mut()) {
+        let [r, g, b, a] = source.0;
+        // Integer alpha compositing over white:
+        //   out = src * a + 255 * (1 - a)
+        // The `u16` intermediates keep `r * a` from overflowing for a saturated
+        // channel at full alpha; a `u8` multiply wraps and a fully opaque red
+        // pixel comes out black.
+        let a = a as u16;
+        let blend = |channel: u8| -> u8 {
+            let c = channel as u16;
+            ((c * a + 255 * (255 - a) + 127) / 255) as u8
+        };
+        *target = image::Rgb([blend(r), blend(g), blend(b)]);
+    }
+
     let mut out = Vec::with_capacity((width * height * 3) as usize);
     JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY)
         .write_image(rgb.as_raw(), width, height, image::ExtendedColorType::Rgb8)
@@ -254,31 +270,89 @@ mod tests {
     }
 
     #[test]
-    fn a_transparent_source_is_flattened_onto_white_not_black() {
-        // JPEG has no alpha channel. Encoding RGBA directly drops the alpha and
-        // whatever was behind it shows through as black — a transparent PNG
-        // thumbnail on a black square is a bug a client will never report.
+    fn alpha_is_composited_over_white_rather_than_dropped() {
+        // JPEG has no alpha channel. `to_rgb8` would DROP the alpha, leaving a
+        // transparent red pixel red and a transparent black pixel black — both
+        // visible in the served image. So the matte is done explicitly.
+        let transparent_red = encode(&solid_rgba_png(255, 0, 0, 0), VariantKind::Web, "image/png")
+            .expect("encodes");
+        let pixel = middle_pixel(&transparent_red.bytes);
+        assert!(
+            pixel.iter().all(|c| *c > 200),
+            "a fully transparent pixel must matte to white, got {pixel:?}"
+        );
+
+        let transparent_black = encode(&solid_rgba_png(0, 0, 0, 0), VariantKind::Web, "image/png")
+            .expect("encodes");
+        let pixel = middle_pixel(&transparent_black.bytes);
+        assert!(
+            pixel.iter().all(|c| *c > 200),
+            "a transparent black pixel must matte to white too, got {pixel:?}"
+        );
+
+        // Half-transparent: `out = src*a + 255*(1-a)` on a red pixel at a=128
+        // gives (255, 127, 127) — the red survives at full strength because it
+        // is the source colour, and green and blue land halfway to the white
+        // matte. A matte that ignored the source colour, or that used a
+        // different alpha, would pass the two assertions above and fail this.
+        let half = encode(&solid_rgba_png(255, 0, 0, 128), VariantKind::Web, "image/png")
+            .expect("encodes");
+        let [r, g, b] = middle_pixel(&half.bytes);
+        assert!(r.abs_diff(255) < 12, "red must survive the matte, got r={r}");
+        assert!(
+            g.abs_diff(127) < 12 && b.abs_diff(127) < 12,
+            "green and blue must land halfway to white (127), got {g},{b}"
+        );
+    }
+
+    #[test]
+    fn an_opaque_saturated_pixel_does_not_overflow() {
+        // The blend runs in u16 on purpose: a `u8` multiply of a saturated
+        // channel by a full alpha wraps, and a fully opaque red pixel comes out
+        // black. This is the test that would catch that regression, and it is
+        // why the assertion is on an OPAQUE pixel rather than only on
+        // transparent ones.
+        for (r, g, b) in [(255u8, 0u8, 0u8), (0, 255, 0), (0, 0, 255), (255, 255, 255), (0, 0, 0)] {
+            let encoded = encode(
+                &solid_rgba_png(r, g, b, 255),
+                VariantKind::Web,
+                "image/png",
+            )
+            .expect("encodes");
+            let pixel = middle_pixel(&encoded.bytes);
+            // JPEG is lossy, so this is a tolerance rather than an equality.
+            assert!(
+                pixel[0].abs_diff(r) < 12
+                    && pixel[1].abs_diff(g) < 12
+                    && pixel[2].abs_diff(b) < 12,
+                "opaque ({r},{g},{b}) came out as {pixel:?}"
+            );
+        }
+    }
+
+    /// A PNG that is one flat RGBA colour, 8x8.
+    fn solid_rgba_png(r: u8, g: u8, b: u8, a: u8) -> Bytes {
         let mut buffer = ImageBuffer::new(8, 8);
         for pixel in buffer.pixels_mut() {
-            *pixel = Rgba([255, 0, 0, 0]); // red, fully transparent
+            *pixel = Rgba([r, g, b, a]);
         }
-        let mut png_bytes = Vec::new();
+        let mut out = Vec::new();
         image::DynamicImage::ImageRgba8(buffer)
-            .write_to(&mut Cursor::new(&mut png_bytes), ImageFormat::Png)
-            .expect("encodes");
+            .write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
+            .expect("a PNG always encodes");
+        Bytes::from(out)
+    }
 
-        let encoded = encode(&Bytes::from(png_bytes), VariantKind::Web, "image/png")
-            .expect("encodes");
-        let decoded = ImageReader::new(Cursor::new(encoded.bytes.as_ref()))
+    /// Decode `bytes` and return the centre pixel as RGB.
+    fn middle_pixel(bytes: &Bytes) -> [u8; 3] {
+        ImageReader::new(Cursor::new(bytes.as_ref()))
             .with_guessed_format()
             .expect("reads")
             .decode()
-            .expect("decodes");
-        let pixel = decoded.to_rgb8().get_pixel(4, 4).0;
-        assert!(
-            pixel.iter().all(|c| *c > 200),
-            "expected a white matte, got {pixel:?}"
-        );
+            .expect("decodes")
+            .to_rgb8()
+            .get_pixel(4, 4)
+            .0
     }
 
     #[test]

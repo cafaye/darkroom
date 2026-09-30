@@ -275,7 +275,8 @@ mod tests {
     #[test]
     fn the_envelope_time_is_rfc3339_utc() {
         let event = NewEvent::new(EventType::VariantCreated, "var_1", json!({}));
-        let time = event.envelope()["time"].as_str().expect("time is a string");
+        let envelope = event.envelope();
+        let time = envelope["time"].as_str().expect("time is a string");
         // Parses as RFC3339 and is a real instant.
         time::OffsetDateTime::parse(time, &time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|e| panic!("{time} is not RFC3339: {e}"));

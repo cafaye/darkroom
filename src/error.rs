@@ -382,13 +382,26 @@ mod tests {
             "checksum"
         );
 
-        // Everything else must not serialise the key at all.
+        // Everything else must not serialise the key at all. The check is on
+        // the parsed OBJECT's keys, not on the serialised string: the `type` URI
+        // is `https://errors.cafaye.com/...`, so a substring test would match
+        // every response and prove nothing.
         for err in [Error::not_found("x"), Error::conflict("x"), Error::internal("x")] {
-            let json = serde_json::to_string(&err.to_problem("/v1/x", "t")).expect("serialises");
+            let value = serde_json::to_value(err.to_problem("/v1/x", "t")).expect("serialises");
+            let keys: Vec<&str> = value
+                .as_object()
+                .expect("a problem is an object")
+                .keys()
+                .map(String::as_str)
+                .collect();
             assert!(
-                !json.contains("errors"),
-                "non-422 leaked an errors key: {json}"
+                !keys.contains(&"errors"),
+                "non-422 leaked an errors key: {keys:?}"
             );
+            // And the required seven are all present.
+            for required in ["type", "title", "status", "detail", "instance", "code", "trace_id"] {
+                assert!(keys.contains(&required), "{required} is missing from {keys:?}");
+            }
         }
     }
 
@@ -406,15 +419,14 @@ mod tests {
         use tower::ServiceExt as _;
 
         let app = axum::Router::new().fallback(|| async {
-            crate::observability::SCOPED
-                .scope(
-                    crate::observability::TraceContext {
-                        trace_id: "trace-abc".into(),
-                        instance: "/v1/assets".into(),
-                    },
-                    || async { Err::<(), Error>(Error::not_found("asset not found")) },
-                )
-                .await
+            crate::observability::scope(
+                crate::observability::TraceContext {
+                    trace_id: "trace-abc".into(),
+                    instance: "/v1/assets".into(),
+                },
+                async { Err::<(), Error>(Error::not_found("asset not found")) },
+            )
+            .await
         });
 
         let response = app

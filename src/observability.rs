@@ -34,7 +34,10 @@ tokio::task_local! {
     /// Set by [`TraceContextLayer`] for the duration of one request. Reads
     /// outside a request return a placeholder rather than panicking: a panic
     /// in an error path is a worse outcome than an unattributed log line.
-    static SCOPED: TraceContext;
+    ///
+    /// `pub(crate)` because the error-envelope test needs to construct a
+    /// request with a known trace id; it is still not part of the public API.
+    pub(crate) static SCOPED: TraceContext;
 }
 
 /// The current request's trace id, or `"unattributed"` outside a request.

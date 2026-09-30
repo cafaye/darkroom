@@ -304,7 +304,7 @@ mod tests {
 
         let mut env = base();
         env.insert("DARKROOM_LOG_LEVEL".into(), "chatty".into());
-        assert!(matches!(Config::load(&env), Err(ConfigError::Invalid(_))));
+        assert!(matches!(Config::load(&env), Err(ConfigError::Invalid(_, _))));
     }
 
     #[test]

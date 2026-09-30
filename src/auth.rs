@@ -607,7 +607,7 @@ mod tests {
 
         let array_form = Claims {
             scope: Some(serde_json::json!(["assets:read"])),
-            ..string_form
+            ..string_form.clone()
         };
         assert_eq!(array_form.scope_list(), vec!["assets:read"]);
 
@@ -662,8 +662,8 @@ mod tests {
             kid: "k".into(),
             alg: "HS256".into(),
             kty: "oct".into(),
-            n: Some("n".into()),
-            e: Some("AQAB".into()),
+            n: Some(String::from("n")),
+            e: Some(String::from("AQAB")),
             crv: None,
             x: None,
             y: None,
@@ -678,10 +678,10 @@ mod tests {
             kid: "k".into(),
             alg: "RS256".into(),
             kty: "RSA".into(),
-            n: Some(
+            n: Some(String::from(
                 "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw",
-            ),
-            e: Some("AQAB".into()),
+            )),
+            e: Some(String::from("AQAB")),
             crv: None,
             x: None,
             y: None,

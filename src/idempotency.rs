@@ -340,7 +340,11 @@ mod tests {
             },
             {
                 let mut h = HeaderMap::new();
-                h.insert("idempotency-key", HeaderValue::from_static(&"x".repeat(256)));
+                let long = "x".repeat(256);
+                h.insert(
+                    "idempotency-key",
+                    HeaderValue::from_str(&long).expect("ascii header value"),
+                );
                 h
             },
         ];
