@@ -21,10 +21,10 @@ path = "src/main.rs"
 # network: the default build wires InMemoryObjectStore, and only the deployment
 # image turns this on. See AGENTS.md "The storage boundary".
 default = []
-s3 = ["dep:aws-sdk-s3", "dep:aws-config", "dep:aws-credential-types"]
+s3 = ["dep:aws-sdk-s3", "dep:aws-config"]
 # A development-only HMAC token verifier. Refuses to start outside
 # DARKROOM_ENV=development. See src/auth/mod.rs.
-dev-auth = ["dep:hmac", "dep:sha2"]
+dev-auth = ["dep:hmac"]
 
 [dependencies]
 # --- HTTP ---
@@ -48,8 +48,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # --- ids and time ---
 uuid = { version = "1", features = ["v4", "serde"] }
-time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
-time-fmt = { version = "0.3", features = ["formatting", "macros"] }
+# `time`, not `chrono`: sqlx's own `time` feature speaks it, the outbox envelope
+# needs RFC3339 UTC, and it is already in the tree for sqlx so it is not an
+# extra dependency. `serde-well-known` is what makes OffsetDateTime serialise as
+# an RFC3339 string instead of a struct.
+time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde-well-known"] }
 
 # --- database ---
 sqlx = { version = "0.8", default-features = false, features = [
@@ -84,18 +87,26 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 
 # --- s3 (feature = "s3") ---
+# aws-config supplies the credential chain (env, profile, IMDS, container
+# role) and aws-sdk-s3 the operations including presigning. Neither is a
+# default feature: the default build cannot construct a real S3 client at all,
+# which is what makes "tests never touch the network" a property of the
+# dependency graph rather than a promise.
 aws-config = { version = "1", optional = true, default-features = false, features = [
     "behavior-version-latest",
     "rt-tokio",
     "rustls",
 ] }
+# Presigning is not a feature: `PresigningConfig` is part of the client in
+# aws-sdk-s3 1.x, so a `presigning` feature name does not exist and asking for
+# it is a hard resolve error rather than a silent no-op. `sigv4a` is what lets
+# the bucket be a region placeholder and still presign correctly.
 aws-sdk-s3 = { version = "1", optional = true, default-features = false, features = [
     "rt-tokio",
     "rustls",
     "sigv4a",
-    "presigning",
+    "behavior-version-latest",
 ] }
-aws-credential-types = { version = "1", optional = true, features = ["http"] }
 
 # --- dev-auth feature ---
 hmac = { version = "0.12", optional = true }
