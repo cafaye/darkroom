@@ -57,12 +57,12 @@ lets an HTML document be stored at an image's key.
 `tests/signed_upload.rs` asserts all three, including that asset A's URL cannot
 be used to write at asset B's key.
 
-### The checksum is verified, not trusted
+### The checksum is verified by reading the object back, not trusted
 
 The client sends the sha256 at step 1. That value is a **claim**: it is written
 to the `assets` row as `pending` and is never what `complete` compares against.
-At step 3 the service computes sha256 over what storage actually holds and
-writes *that* to the row.
+At step 3 the service **reads the object back and hashes it**, and writes *that*
+to the row.
 
 A service that trusted the claim would let a client register an asset whose
 checksum describes bytes it never uploaded — and that checksum is what every
@@ -72,6 +72,7 @@ downstream dedupe and every future integrity check is keyed on.
 |---|---|---|
 | Bytes arrived, checksum matches | `200` | `ready` |
 | No object at complete time | `409` | `failed` |
+| Measured size ≠ declared size | `422` | `failed` |
 | Checksum does not match the stored bytes | `422` | `failed` |
 | Malformed checksum (not 64 hex) | `422` at **create** | nothing written |
 
@@ -80,6 +81,47 @@ downstream dedupe and every future integrity check is keyed on.
 checksum)` meaningful — a checksum that failed once cannot be quietly retried
 into a second attempt — and it means "pending older than the presign TTL" is a
 sweepable set with exactly one meaning.
+
+#### The read costs one request, and that is the point
+
+`complete` does `head` (existence, measured size) then `get` (the bytes) then
+hashes. **It never asks the backend what checksum it recorded**, and that used
+to be how it worked. The old path was:
+
+```rust
+put_object().checksum_algorithm(ChecksumAlgorithm::Sha256)  // ask S3 to record one
+head_object().checksum_mode(ChecksumMode::Enabled)          // ask for it back
+if let Some(recorded) = meta.checksum { compare(claim, recorded) }
+else { /* read the object and hash it — the "fallback" */ }
+```
+
+That is fine on AWS S3 and it is **not a property at all on Cloudflare R2**.
+R2's S3 compatibility table
+([`developers.cloudflare.com/r2/api/s3/api`](https://developers.cloudflare.com/r2/api/s3/api/))
+offers `FULL_OBJECT` for CRC-64/NVME only and `COMPOSITE` for SHA-256, so the
+`FULL_OBJECT` sha256 never comes back. A check whose presence depends on which
+bucket answered it is a check that can stop happening, which is the one failure
+mode this service exists to prevent. So the fallback became the only path, and
+`ObjectMeta` lost its `checksum` field so the dependency cannot be
+reintroduced by accident.
+
+**What it costs:** one read of the object per completed upload, in the API
+process, bounded by `MAX_UPLOAD_BYTES` (1 GiB). That is a real cost and it is
+paid on purpose. `tests/checksum_verification.rs` asserts the number is
+*exactly one*, so the trade cannot be quietly reversed into a header lookup by
+someone who finds the read expensive.
+
+**What it does not cost:** anything on the S3 path. S3 still verifies at
+complete, against what is stored rather than what was sent, which is the
+stronger of the two checks. What S3 loses is the bucket-side in-flight check
+that `x-amz-checksum-sha256` gave the presigned PUT — and with it, the
+requirement that a client send `x-amz-sdk-checksum-algorithm` on a header the
+presigner had put in the signature. `curl -T file "$upload_url"` works again.
+
+The SDK is also told not to add checksums on its own
+(`RequestChecksumCalculation::WhenRequired`), because its default attaches a
+CRC-32 — and CRC-64/NVME in current AWS SDK releases, which R2 rejects — to
+every `PutObject` and `UploadPart` that nobody asked about.
 
 ## Duplicate uploads: the existing asset, 201, not 409
 
@@ -179,6 +221,74 @@ Two implementations:
 Client uploads go through the presigned URL, never through `put` — `put` is the
 service's own path, used by variant generation to store a derived image. A test
 asserts the client's bytes do not increment it.
+
+### AWS, MinIO and Cloudflare R2 are one implementation
+
+There is no `R2ObjectStore`, and that is the point. The services differ in four
+ways, all of them *request shaping*, and request shaping is entirely below the
+trait:
+
+| | R2 | how darkroom handles it |
+|---|---|---|
+| region | `auto`; `us-east-1` and `""` alias to it, but SigV4 must be signed as `auto` | an R2 endpoint resolves to `auto` in `config.rs`; a real region is **refused at startup**, naming the variable and the value |
+| endpoint | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`, account-scoped, no global endpoint | always configuration, never a constant; `region=auto` with no endpoint is refused so a bucket-only config cannot resolve `s3.amazonaws.com` |
+| checksums | SHA-256 is `COMPOSITE` only; `FULL_OBJECT` is offered for CRC-64/NVME | darkroom never asks: `ObjectMeta` has no checksum field and `complete` reads the bytes back |
+| headers | no `x-amz-acl`, `x-amz-grant-*`, `x-amz-expected-bucket-owner`, no object lock | darkroom never sets them and has no configuration that could; a source-level invariant in `tests/contract.rs` says so |
+
+Addressing is forced path-style for an R2 endpoint (the account endpoint is the
+whole host), and the flag is still honoured for anything else.
+
+`tests/storage_backends.rs` runs **the same presign assertions against all of
+them** — one body, five configurations, no per-backend branch — and checks the
+region in the SigV4 credential scope, the signed-header list, and the absence of
+every header R2 rejects. The startup refusals are tested against the real
+binary, not only against the parser.
+
+### Running against R2
+
+Build with the feature, point the four variables at the bucket, and give the
+service an R2 API token. There is no secret in this repository: the token is
+read by the AWS SDK's own chain from the environment.
+
+```sh
+export DARKROOM_OBJECT_STORE=s3
+export DARKROOM_S3_BUCKET=darkroom-media
+export DARKROOM_S3_ENDPOINT=https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+# DARKROOM_S3_REGION is optional for R2 and defaults to `auto`.
+# Setting it to `us-east-1` is accepted (R2 aliases it) and signed as `auto`.
+# Setting it to anything else refuses startup.
+
+# Credentials: the AWS SDK's own chain. An R2 API token has an Access Key ID
+# and a Secret Access Key, so the environment pair is enough.
+export AWS_ACCESS_KEY_ID=<R2_ACCESS_KEY_ID>
+export AWS_SECRET_ACCESS_KEY=<R2_SECRET_ACCESS_KEY>
+
+cargo run --features s3
+```
+
+A real bucket is a **manual verification step** — no test in this repository
+talks to one, and none can. To confirm it works end to end:
+
+1. **Check the startup log.** It carries `object_store=r2` (not `s3`) and the
+   version. If it says `s3`, the endpoint is not an R2 host and R2's rules were
+   not applied.
+2. **Check a presigned URL.** `POST /v1/uploads` returns `upload_url`. It must
+   look like
+   `https://<ACCOUNT_ID>.r2.cloudflarestorage.com/darkroom-media/a/<id>/original?…X-Amz-Credential=…%2Fauto%2Fs3%2Faws4_request…&X-Amz-SignedHeaders=content-type%3Bhost…`.
+   `auto` in the credential scope and `content-type;host` as the *only* signed
+   headers are the two things that are easy to get wrong and impossible to fix
+   later.
+3. **Upload and complete.** `curl -X PUT --data-binary @file "$upload_url"`
+   with no extra headers — if that needs a checksum header, something is wrong.
+   Then `POST /v1/uploads/{id}/complete` with the same sha256: `200`, and
+   `GET /v1/assets/{id}` shows `status: ready` with the checksum you computed.
+4. **Derive a variant.** `POST /v1/assets/{id}/variants` exercises the service's
+   own `PutObject`, which is the operation the SDK's default checksum headers
+   break against R2. A `200` here is the evidence that
+   `RequestChecksumCalculation::WhenRequired` is doing its job.
+5. **In the R2 dashboard**, the object is there and its size matches. R2 does
+   not store a `FULL_OBJECT` SHA-256 for you, and darkroom no longer expects
+   one — the row's checksum came from reading the object back.
 
 ## Variants
 
@@ -333,9 +443,18 @@ The database tests are `#[ignore]`d, and **a skipped test proves nothing** —
 which is why `bin/prime --db` and the CI `test-with-database` job exist, and why
 the comment is in both.
 
+There is a third tier, `cargo test --features s3`, and it exists because
+`cargo test` does not compile the `s3` feature at all. Without it the R2
+configuration rules, the presigned-URL table and the startup refusals would
+compile in nobody's gate and prove nothing — the same "skipped test proves
+nothing" argument, one level up. `--db` runs the ignored suites with and without
+the feature, because the deployment build is a different build of the library.
+
 No test in this repository opens a socket to anything but the database named by
 the environment. HTTP tests drive the router with `tower::ServiceExt::oneshot`,
-which is a function call rather than a network round trip.
+which is a function call rather than a network round trip. The S3 backend's
+tests presign against the real SDK with static dummy credentials, which is a
+local operation — it builds a URI and a signature and sends nothing.
 
 No sleeps anywhere. The one test that needs an expired presign URL uses a
 zero-second TTL and asserts the fake refuses it — not a one-second sleep, which
@@ -343,6 +462,20 @@ would be a flake waiting for a loaded CI box.
 
 ## Not done, and why
 
+- **Streaming verification for large objects.** `complete` reads the object
+  through `ObjectStore::get` and hashes it, so a 1 GiB upload is buffered in the
+  API process at complete time. It is released as soon as it is hashed, and the
+  hash itself is already available in a streaming form
+  (`checksum::sha256_hex_streaming`, tested equivalent to the one-shot path), but
+  the trait hands over `Bytes` and the read is what it is. The honest options are
+  a sixth trait method that streams, or a lower `MAX_UPLOAD_BYTES`; both are
+  contract changes and neither belongs in the change that made R2 work.
+- **A live R2 integration test.** Nothing in this repository can reach a real
+  bucket, and adding something that could would put a credential in CI. What is
+  tested is configuration, the credential scope, the signed-header list and the
+  headers R2 rejects; what is not is R2 accepting them. The "Running against R2"
+  section above is the manual procedure, and the variant-generation step in it is
+  the one that catches an SDK-level default.
 - **The outbox publisher loop.** Needs a NATS client and a deployment. The
   table and the insert path — the half with the correctness guarantee — are
   here; a publisher loop that cannot publish is worse than an absent one.

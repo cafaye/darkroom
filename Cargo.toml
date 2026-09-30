@@ -101,7 +101,31 @@ aws-config = { version = "1", optional = true, default-features = false, feature
 # aws-sdk-s3 1.x, so a `presigning` feature name does not exist and asking for
 # it is a hard resolve error rather than a silent no-op. `sigv4a` is what lets
 # the bucket be a region placeholder and still presign correctly.
-aws-sdk-s3 = { version = "1", optional = true, default-features = false, features = [
+#
+# THE EXACT PIN IS LOAD-BEARING. Do not widen it to "1" without re-running
+# `cargo test --features s3` and reading the presigned-URL table in
+# tests/storage_backends.rs.
+#
+# Two SDK changes in this area have broken Cloudflare R2, and both are invisible
+# until a request reaches a bucket:
+#
+#   - Flexible checksums became `WhenSupported` by default, so the SDK attaches
+#     a CRC-32 (and, in recent releases, CRC-64/NVME) `x-amz-checksum-*` header
+#     to every PutObject and UploadPart whether or not the caller asked. R2's
+#     compatibility table does not implement `x-amz-checksum-algorithm` on the
+#     operations darkroom uses, and the equivalent change in
+#     `@aws-sdk/client-s3` broke PutObject against R2 outright. darkroom pins
+#     `RequestChecksumCalculation::WhenRequired` in
+#     src/objectstore/s3_impl.rs so the default cannot reach the wire, and a
+#     test asserts it on the built SdkConfig — but that test can only exist
+#     because the types it names exist in this version.
+#   - The checksum calculation internals moved around (`aws-smithy-checksums`,
+#     `AwsChunkedBodyOptions`), and a version that emits `aws-chunked` framing
+#     or a trailer for a presigned PUT produces a URL S3 and R2 both reject.
+#
+# A bump is fine. A bump without the table is how the next packet inherits this
+# one.
+aws-sdk-s3 = { version = "=1.150.0", optional = true, default-features = false, features = [
     "rt-tokio",
     "rustls",
     "sigv4a",

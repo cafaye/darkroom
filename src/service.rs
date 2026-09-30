@@ -305,16 +305,32 @@ impl Service {
 
     /// `POST /v1/uploads/:id/complete` — verify the object and mark it ready.
     ///
-    /// The verification is the whole point:
+    /// The verification is the whole point, and it has one input: **the bytes**.
     ///
     /// 1. `head` the key. Absent → the upload never landed → **409**, and the
-    ///    asset is marked `failed`.
-    /// 2. If the backend recorded a checksum, compare it to the client's claim.
-    /// 3. Otherwise **read the object and hash it**, and compare that. The
-    ///    client's claim is never what is compared against — that is the whole
-    ///    security property of the signed-upload pattern.
+    ///    asset is marked `failed`. The `head` is metadata only and is the cheap
+    ///    half: it answers "did it land, and how big" without downloading a
+    ///    gigabyte to find out the gigabyte is not there.
+    /// 2. The measured size against the declared size. A client that uploaded
+    ///    more than it said is a **422** — the object is there, it is just the
+    ///    wrong one.
+    /// 3. **Read the object back and hash it.** Not "ask the backend what
+    ///    checksum it recorded, and read the object only if it has none" — that
+    ///    ordering is the defect this was changed for. On AWS S3 the recorded
+    ///    `FULL_OBJECT` sha256 is real and comparing against it is cheaper; on
+    ///    Cloudflare R2 there is no `FULL_OBJECT` SHA-256 at all (its
+    ///    compatibility table offers `COMPOSITE` for SHA-256 and `FULL_OBJECT`
+    ///    for CRC-64/NVME only), so the same code path asks a question whose
+    ///    answer depends on the backend, and the honest answer — nothing, or a
+    ///    value that is not the object's sha256 — turns a check into a coin
+    ///    flip. A correctness property may not depend on which bucket answered
+    ///    it, so the bytes are read and hashed here on every backend.
     /// 4. Mark `ready` with the checksum **computed from the stored bytes**, and
     ///    enqueue `darkroom.asset.ready` in the same transaction.
+    ///
+    /// Step 3 costs one read per completed upload. It is a real cost, paid on
+    /// purpose, and `tests/checksum_verification.rs` asserts the number is
+    /// exactly one so the trade cannot be quietly reversed into a header lookup.
     pub async fn complete_upload(
         &self,
         tenant: &Tenant,
@@ -367,13 +383,11 @@ impl Service {
             Err(e) => return Err(e.into()),
         };
 
-        // --- 2/3. the checksum the client claimed vs what storage holds ----
-        // The measured size is checked against what the client declared. On
-        // the in-memory path the presigned PUT already refused an oversized
-        // object, so this never fires; on the S3 path the signature does not
-        // carry a length ceiling, so this is where a client that uploaded more
-        // than it declared is caught. It is a 422, not a 409: the object IS
-        // there, it is just the wrong size.
+        // --- 2. the measured size against the declared size ----------------
+        // The presigned PUT already refused an oversized object on the in-memory
+        // path; on the S3 path the signature does not carry a length ceiling, so
+        // this is where a client that uploaded more than it declared is caught.
+        // It is a 422, not a 409: the object IS there, it is just the wrong size.
         if meta.byte_size != asset.byte_size {
             self.fail_asset(tenant, asset_id, "size_mismatch").await?;
             return Err(Error::invalid_fields(
@@ -385,18 +399,17 @@ impl Service {
             ));
         }
 
-        let actual = match &meta.checksum {
-            Some(recorded) if !recorded.is_empty() => recorded.clone(),
-            _ => {
-                // The backend did not record one (a PUT that carried no
-                // checksum header). Read the object and compute it. This is
-                // the path the in-memory fake takes for a client that PUT
-                // through a URL it signed itself, and the path S3 takes when
-                // the client sent no `x-amz-checksum-sha256`.
-                let bytes = self.objects.get(&storage_key).await?;
-                checksum::sha256_hex(&bytes)
-            }
-        };
+        // --- 3. the checksum, computed from what storage actually holds -----
+        // One read, every backend, no exceptions and no fallback. The client's
+        // claim is never what is compared against — that is the whole security
+        // property of the signed-upload pattern — and neither is anything the
+        // backend says about its own bytes, because a backend that cannot be
+        // asked is indistinguishable from a backend that was never asked.
+        let bytes = self.objects.get(&storage_key).await?;
+        let actual = checksum::sha256_hex(&bytes);
+        // The buffer is dead the moment it is hashed. A 1 GiB upload would
+        // otherwise sit in this process's heap until the response is written.
+        drop(bytes);
 
         if !checksum::checksums_match(claimed_checksum, &actual) {
             // The bytes in storage are not the bytes the client said it would

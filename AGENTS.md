@@ -17,7 +17,7 @@ src/http.rs         routes, handlers, probes, auth middleware    (the wire)
 src/service.rs      the upload state machine, every decision      (the rules)
 src/domain.rs       assets, variants, enums                       (the vocabulary)
 src/auth.rs         token verification, Principal, Tenant         (who is calling)
-src/objectstore/    the storage trait, in-memory + s3             (where bytes live)
+src/objectstore/    the storage trait, in-memory + s3 (aws, r2)  (where bytes live)
 src/store.rs        sqlx, the outbox, the idempotency ledger      (persistence)
 src/outbox.rs       the event envelope                            (the contract)
 src/checksum.rs     sha256, and the rules about trusting it
@@ -26,7 +26,7 @@ src/storage_key.rs  opaque key generation
 migrations/         plain SQL, applied by a deploy step
 openapi/v1.yaml     what exposes.api points at
 bin/prime           the gate
-tests/              the database suites, all #[ignore]d
+tests/              the database suites, all #[ignore]d, plus the backend table
 ```
 
 Dependencies point downward only. `service.rs` knows nothing about axum;
@@ -55,8 +55,24 @@ indistinguishable_from_a_missing_one` is the regression guard.
 
 **The checksum is computed, never trusted.** The client's claim is written at
 create and compared against at complete; the row ends up carrying the computed
-value. Do not add a path that stores the claimed one. If the backend recorded
-no checksum, read the object and hash it — do not fall back to the claim.
+value. Do not add a path that stores the claimed one.
+
+**The checksum is computed from the bytes, never from a backend's claim about
+them.** `complete` reads the object back and hashes it, on every backend, and
+`ObjectStore` has no method that asks a backend what checksum it recorded. It
+used to, and the property it gave existed on AWS S3 and did not exist on
+Cloudflare R2 — R2 offers `FULL_OBJECT` for CRC-64/NVME only, so a `FULL_OBJECT`
+sha256 never came back and the check silently stopped happening. A correctness
+property may not depend on which bucket answered it. If you are tempted to make
+the read conditional on a cheaper answer existing, you are rebuilding the bug:
+`tests/checksum_verification.rs` asserts the read count is exactly one, and the
+one read is the trade stated in the README.
+
+**One `ObjectStore` implementation, several S3-compatible services.** R2 is not
+a variant, a feature or a second type: it is an endpoint, a region, and
+addressing. If a backend needs a *code* branch, the abstraction is wrong and
+fixing the abstraction is in scope — that is not a reason to add
+`R2ObjectStore`.
 
 **One way to emit an event.** `Outbox::enqueue` takes a `&mut Transaction`, and
 that is the entire design. A function without a transaction has no way to
@@ -148,6 +164,13 @@ Two structural reasons, not two promises:
 - HTTP tests drive the router with `tower::ServiceExt::oneshot` — a function
   call, not a round trip.
 
+The S3 backend's tests presign against the real SDK with static dummy
+credentials, which sends nothing: presigning builds a URI and a signature
+locally. That is what lets `tests/storage_backends.rs` assert what darkroom
+would put on the wire for AWS, MinIO and R2 — the credential scope, the signed
+headers, the absent headers — without a bucket. A real bucket is a manual
+verification step and the README says how.
+
 The in-memory store's presigned URLs are really signed and really scoped, so a
 bug in the scope or the TTL fails a test instead of shipping.
 
@@ -160,8 +183,8 @@ duplicate uses a real second request. None of them waits.
 ## Gates
 
 ```sh
-./bin/prime          # fmt, build, clippy, test
-./bin/prime --db     # + the ignored tests
+./bin/prime          # fmt, build, clippy, test, and test --features s3
+./bin/prime --db     # + the ignored tests against Postgres, both feature sets
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo build --all-targets --all-features   # the feature-gated paths
@@ -169,7 +192,10 @@ cargo build --all-targets --all-features   # the feature-gated paths
 
 All green before a commit lands. The `--all-features` build matters: `s3` and
 `dev-auth` are behind features, so a default build compiling clean says nothing
-about them.
+about them. **So does the `cargo test --features s3` tier**, for the same
+reason in the other direction: `cargo test` does not compile the R2
+configuration rules, the presigned-URL table or the startup refusals at all, and
+a test nobody's gate runs is a test that proves nothing.
 
 ## Adding an endpoint
 

@@ -136,10 +136,12 @@ async fn the_bytes_never_pass_through_the_service() {
         .await
         .expect("puts");
 
-    // Complete `head`s, and only falls back to a `get` when the backend
-    // recorded no checksum. The in-memory fake always records one, so the
-    // service never downloads the object to check it — a 1 GiB upload is
-    // verified from a checksum, not by streaming it back through the service.
+    // Complete `head`s for the metadata and then reads the object back once, to
+    // verify the checksum against the bytes storage actually holds. That read is
+    // the price of not asking the backend what checksum it recorded: on
+    // Cloudflare R2 there is no `FULL_OBJECT` SHA-256 to ask for, so a
+    // verification that trusted a header would silently stop verifying. See
+    // tests/checksum_verification.rs.
     let before = objects.stats();
     service
         .complete_upload(
@@ -156,8 +158,13 @@ async fn the_bytes_never_pass_through_the_service() {
         "complete probes the object's metadata"
     );
     assert_eq!(
-        after.gets, before.gets,
-        "but must not download the object when storage already recorded its checksum"
+        after.gets,
+        before.gets + 1,
+        "and reads the object exactly once, to verify the checksum from the bytes"
+    );
+    assert_eq!(
+        after.puts, before.puts,
+        "the client's upload is still never written through the service"
     );
 }
 

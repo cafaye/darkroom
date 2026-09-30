@@ -195,3 +195,117 @@ fn the_manifest_and_document_do_not_depend_on_a_concrete_object_store() {
     let store = darkroom::objectstore::InMemoryObjectStore::new();
     assert!(store.is_empty());
 }
+
+fn source(relative: &str) -> String {
+    fs::read_to_string(format!("{}/{}", env!("CARGO_MANIFEST_DIR"), relative))
+        .unwrap_or_else(|e| panic!("{relative} must be readable: {e}"))
+}
+
+/// darkroom never sets an ACL, a grant, an object-lock mode or a bucket owner,
+/// and Cloudflare R2 rejects all of them.
+///
+/// This is asserted against the source rather than against a captured request,
+/// because the only request that can be captured without a network is a
+/// presigned one, and `presign_put` is the one method where a caller could not
+/// add these headers anyway — `put`, `head`, `get` and `delete` are the
+/// operations that reach R2, and this is what says they are clean.
+///
+/// The cost is stated: this is a textual check, so it catches the call, not a
+/// future SDK that starts sending a header nobody asked for. That failure mode is
+/// covered from the other side by `RequestChecksumCalculation::WhenRequired` in
+/// `S3ObjectStore::configure` and by the pin in Cargo.toml.
+#[test]
+fn no_acl_grant_lock_or_bucket_owner_header_is_ever_asked_for() {
+    let s3 = source("src/objectstore/s3_impl.rs");
+    for forbidden in [
+        ".acl(",
+        ".grant_",
+        ".expected_bucket_owner(",
+        ".object_lock(",
+        ".request_payer(",
+        "x-amz-acl",
+        "x-amz-grant",
+        "x-amz-expected-bucket-owner",
+        "x-amz-request-payer",
+    ] {
+        assert!(
+            !s3.contains(forbidden),
+            "s3_impl.rs asks for {forbidden}, which R2 rejects. darkroom has one \
+             bucket and one key per tenant; ACLs and bucket-owner enforcement are \
+             the bucket's business, and setting them here is how a presigned URL \
+             ends up scoped to nothing."
+        );
+    }
+
+    // And there is no configuration that could turn one on later, which is the
+    // part a source scan of the client cannot see.
+    let config = source("src/config.rs");
+    for knob in [
+        "DARKROOM_S3_ACL",
+        "DARKROOM_S3_GRANT",
+        "DARKROOM_S3_BUCKET_OWNER",
+        "DARKROOM_S3_OBJECT_LOCK",
+    ] {
+        assert!(
+            !config.contains(knob),
+            "{knob} would be a way to add a header R2 rejects. The four things that \
+             differ between S3 and R2 are an endpoint, a region, addressing, and \
+             checksums; an ACL knob would be a fifth one that only one of them has."
+        );
+    }
+}
+
+/// The client never asks a backend for a checksum, on any backend.
+///
+/// The put used to ask for SHA-256 and the head used to ask for it back, which
+/// put `x-amz-sdk-checksum-algorithm` into the *signed headers* of every presigned
+/// URL — a two-step protocol for the client, and on R2 a question about a
+/// checksum type (`FULL_OBJECT` for SHA-256) that R2 does not implement. Now the
+/// checksum is computed from the bytes at complete time, and these two settings
+/// stop the SDK adding a header nobody asked for on its own.
+#[test]
+fn the_client_never_asks_a_backend_to_record_or_return_a_checksum() {
+    let s3 = source("src/objectstore/s3_impl.rs");
+    // Call syntax, with the leading dot, and only that: a bare type name would
+    // also match the comments explaining why the calls were removed, and a check
+    // that a comment can defeat is not a check.
+    for forbidden in [
+        ".checksum_algorithm(",
+        ".checksum_mode(",
+        ".checksum_sha256(",
+        ".object_lock(",
+    ] {
+        assert!(
+            !s3.contains(forbidden),
+            "s3_impl.rs calls {forbidden}: a correctness property may not depend \
+             on which bucket answered it. R2 offers FULL_OBJECT for CRC-64/NVME \
+             only, so a checksum read from a header is a different checksum on a \
+             different backend."
+        );
+    }
+
+    // ...and the two settings that replace it, in one place, unconditionally.
+    assert!(
+        s3.contains("RequestChecksumCalculation::WhenRequired"),
+        "the SDK attaches a CRC-32 — and CRC-64/NVME in current releases, which \
+         R2 rejects — to every PutObject unless the calculation is WhenRequired"
+    );
+    assert!(
+        s3.contains("ResponseChecksumValidation::WhenRequired"),
+        "and asks every read to return a checksum unless validation is WhenRequired"
+    );
+
+    // The service reads the bytes instead. If this ever stops being true, the
+    // removal of `ObjectMeta::checksum` is what has to be revisited.
+    let objectstore = source("src/objectstore/mod.rs");
+    assert!(
+        !objectstore.contains("checksum_sha256"),
+        "the storage trait must not be able to ask a backend for a checksum"
+    );
+    let service = source("src/service.rs");
+    assert!(
+        service.contains("self.objects.get(&storage_key)"),
+        "complete must read the object back: a checksum that was not verified is \
+         a checksum that was not checked"
+    );
+}

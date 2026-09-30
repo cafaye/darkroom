@@ -7,6 +7,16 @@
 //! cannot tell which one they ran against except by the `memory://` scheme in a
 //! presigned URL.
 //!
+//! ## One implementation, four S3-compatible services
+//!
+//! AWS S3, MinIO, Ceph and Cloudflare R2 are the same five operations with
+//! different dialects. `R2ObjectStore` would have been the wrong shape of answer
+//! — the packet that asked for it said so, and it was right: a second
+//! implementation is a second thing to keep correct, and the differences are all
+//! *request shaping*, which is entirely below the trait. So they are four
+//! statements in this file and in `config.rs`, and `tests/storage_backends.rs`
+//! runs the same presign assertions against each of them.
+//!
 //! ## Why the feature flag is off by default
 //!
 //! Not to keep the binary small. The AWS SDK is not in the default dependency
@@ -18,10 +28,11 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use aws_sdk_s3::config::{Credentials, Region};
+use aws_sdk_s3::config::{
+    Credentials, Region, RequestChecksumCalculation, ResponseChecksumValidation,
+};
 use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::types::ChecksumAlgorithm;
 use aws_sdk_s3::{error::SdkError, Client};
 
 use super::{ObjectMeta, ObjectStore, ObjectStoreError, PresignedPut};
@@ -42,9 +53,9 @@ impl S3ObjectStore {
     /// environment, profile, IMDS, container role — so none of them is a string
     /// in this repository or in this process's configuration.
     ///
-    /// `endpoint` and `path_style` exist for an S3-compatible service (MinIO,
-    /// Ceph): virtual-host addressing needs DNS for a bucket name under a
-    /// hostname that does not exist, so those services need path-style.
+    /// `region` and `endpoint` are the operator's business, validated and
+    /// normalised by `config::Config::load` before they get here: an R2 endpoint
+    /// arrives as region `auto` or not at all.
     pub async fn connect(
         bucket: &str,
         region: &str,
@@ -59,53 +70,98 @@ impl S3ObjectStore {
             .load()
             .await;
 
-        let mut builder = aws_sdk_s3::config::Builder::from(&shared)
-            .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest());
+        Ok(Self {
+            client: Client::from_conf(Self::configure(
+                aws_sdk_s3::config::Builder::from(&shared),
+                endpoint,
+                path_style,
+            )),
+            bucket: bucket.to_string(),
+        })
+    }
 
+    /// A client with credentials supplied by the caller, for a test that has to
+    /// presign against a real SDK.
+    ///
+    /// Presigning is a local operation — it builds a URI and a signature and
+    /// sends nothing — so this is how `tests/storage_backends.rs` asserts what
+    /// darkroom would actually put on the wire for AWS, MinIO and R2 without a
+    /// socket, a credential or a bucket. It is a static provider rather than the
+    /// SDK's chain because a test that could authenticate without being told how
+    /// is a test that would pass against the wrong bucket.
+    ///
+    /// It goes through the same [`S3ObjectStore::configure`] as [`connect`],
+    /// which is the point: the table must exercise the request shaping production
+    /// uses, not a parallel copy of it.
+    pub fn with_static_credentials(
+        bucket: &str,
+        region: &str,
+        endpoint: Option<String>,
+        path_style: bool,
+        access: &str,
+        secret: &str,
+    ) -> Self {
+        let conf = Self::configure(
+            aws_sdk_s3::config::Builder::new()
+                .region(Region::new(region.to_string()))
+                .credentials_provider(Credentials::new(
+                    access,
+                    secret,
+                    None,
+                    None,
+                    "darkroom-test",
+                )),
+            endpoint,
+            path_style,
+        );
+        Self {
+            client: Client::from_conf(conf),
+            bucket: bucket.to_string(),
+        }
+    }
+
+    /// The SDK configuration this store actually built. Public because "which
+    /// region is this client signing with, and is it asking for checksums?" is a
+    /// question an operator asks at 3am, and a question a test has to be able to
+    /// ask too.
+    pub fn sdk_config(&self) -> &aws_sdk_s3::Config {
+        self.client.config()
+    }
+
+    /// Every request-shaping decision darkroom makes, in one place, for every
+    /// S3-compatible service it talks to.
+    ///
+    /// The two checksum settings are the load-bearing ones and they are not
+    /// about R2. `RequestChecksumCalculation` defaults to `WhenSupported`, which
+    /// makes the SDK attach a checksum header to every `PutObject` and
+    /// `UploadPart` whether or not anyone asked for one — CRC-32 today, and
+    /// CRC-64/NVME in recent AWS SDK releases, which Cloudflare R2 rejects. A
+    /// service that verified correctly would still fail every variant write
+    /// against R2 for a header it never requested. `WhenRequired` means the SDK
+    /// adds one only where the operation demands it, and darkroom asks nowhere.
+    ///
+    /// `ResponseChecksumValidation` is the mirror: `WhenSupported` would put
+    /// `x-amz-checksum-mode: ENABLED` on every read, which is another
+    /// backend-specific header for a correctness property darkroom now owns.
+    ///
+    /// Neither setting is conditional on which bucket this is. The alternative —
+    /// a checksum policy per backend — is how the two paths came to disagree.
+    fn configure(
+        builder: aws_sdk_s3::config::Builder,
+        endpoint: Option<String>,
+        path_style: bool,
+    ) -> aws_sdk_s3::Config {
+        let mut builder = builder.behavior_version(aws_sdk_s3::config::BehaviorVersion::latest());
         if let Some(endpoint) = endpoint {
             builder = builder.endpoint_url(endpoint);
         }
         if path_style {
             builder = builder.force_path_style(true);
         }
-
-        Ok(Self {
-            client: Client::from_conf(builder.build()),
-            bucket: bucket.to_string(),
-        })
-    }
-
-    /// A client wired for tests against a local S3-compatible service. The
-    /// credentials are supplied by the caller, never defaulted — a test that
-    /// could authenticate without being told how is a test that would pass
-    /// against the wrong bucket.
-    pub fn for_local_testing(
-        endpoint: &str,
-        region: &str,
-        access: &str,
-        secret: &str,
-        bucket: &str,
-    ) -> Self {
-        // A static provider rather than the SDK's credential chain: a test that
-        // could authenticate without being told how is a test that would pass
-        // against the wrong bucket.
-        let conf = aws_sdk_s3::config::Builder::new()
-            .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
-            .region(Region::new(region.to_string()))
-            .endpoint_url(endpoint)
-            .force_path_style(true)
-            .credentials_provider(Credentials::new(
-                access,
-                secret,
-                None,
-                None,
-                "darkroom-local",
-            ))
-            .build();
-        Self {
-            client: Client::from_conf(conf),
-            bucket: bucket.to_string(),
-        }
+        builder
+            .request_checksum_calculation(RequestChecksumCalculation::WhenRequired)
+            .response_checksum_validation(ResponseChecksumValidation::WhenRequired)
+            .build()
     }
 }
 
@@ -133,10 +189,6 @@ impl ObjectStore for S3ObjectStore {
             .bucket(&self.bucket)
             .key(key)
             .content_type(content_type)
-            // Ask S3 to record and verify the client's checksum, so `head` can
-            // read back what the bucket itself validated rather than trusting
-            // the value the client will later claim in a JSON body.
-            .checksum_algorithm(ChecksumAlgorithm::Sha256)
             .presigned(
                 PresigningConfig::expires_in(ttl)
                     .map_err(|e| ObjectStoreError::Other(format!("presign ttl rejected: {e}")))?,
@@ -156,6 +208,27 @@ impl ObjectStore for S3ObjectStore {
         // `TooLarge` branch of the trait is what the S3 path returns if the
         // measured size ever exceeds what was declared, so a client that
         // uploaded more than it said is caught.
+        //
+        // ## No `x-amz-checksum-algorithm` here, on purpose
+        //
+        // This used to ask S3 to record and verify a SHA-256 (`checksum_algorithm
+        // (ChecksumAlgorithm::Sha256)`) so `head` could read back what the bucket
+        // validated. Two reasons it is gone, and neither is "R2 does not like
+        // it":
+        //
+        // 1. It made the presigned PUT a two-step protocol. The algorithm ends
+        //    up in the signed headers, so the client has to send
+        //    `x-amz-sdk-checksum-algorithm` and a base64 checksum or the request
+        //    is refused. `curl -T file "$url"` stops working, and a client that
+        //    PUTs through a plain HTTP client has to know about a darkroom
+        //    implementation detail.
+        // 2. It made correctness depend on a header the backend may not
+        //    implement. That is the defect, and it is in `service.rs`, not here.
+        //
+        // What it cost: S3 used to verify the bytes in flight as well as at
+        // complete. At complete it still does, by reading the object back and
+        // hashing it — which is a stronger check, because it is against what is
+        // stored rather than what was sent.
         Ok(PresignedPut {
             url: append_length_range(uri, max_bytes),
             key: key.to_string(),
@@ -166,13 +239,19 @@ impl ObjectStore for S3ObjectStore {
     /// Metadata for one key. S3's own `content-length` is the byte count, not
     /// the `byte_size` the client declared — the client's number is a claim and
     /// this is the measurement.
+    ///
+    /// `ChecksumMode::Enabled` used to be here so the sha256 would come back. It
+    /// is not, and neither is any other `x-amz-checksum-*` request: R2 does not
+    /// implement `FULL_OBJECT` for SHA-256, so the value that came back was a
+    /// different checksum type on a different bucket, and a correctness property
+    /// that changes shape with the backend is not a property. The bytes are read
+    /// through [`ObjectStore::get`] instead.
     async fn head(&self, key: &str) -> Result<ObjectMeta, ObjectStoreError> {
         let head = self
             .client
             .head_object()
             .bucket(&self.bucket)
             .key(key)
-            .checksum_mode(aws_sdk_s3::types::ChecksumMode::Enabled)
             .send()
             .await
             .map_err(map_s3_error)?;
@@ -182,16 +261,11 @@ impl ObjectStore for S3ObjectStore {
             .content_type()
             .unwrap_or("application/octet-stream")
             .to_string();
-        // `checksum_sha256` is base64, not hex. `checksums_match` compares hex,
-        // so it is converted here — at the boundary — rather than anywhere
-        // above, where a hex/base64 mix-up would be invisible.
-        let checksum = head.checksum_sha256().map(super::base64_to_hex);
 
         Ok(ObjectMeta {
             key: key.to_string(),
             byte_size,
             content_type,
-            checksum,
         })
     }
 
@@ -305,13 +379,6 @@ fn append_length_range(url: String, max_bytes: i64) -> String {
     format!("{url}&x-darkroom-max-bytes={max_bytes}")
 }
 
-/// Percent-encode a header name for the SDK's `signable_headers` list, which
-/// wants them sorted and semicolon-separated.
-#[allow(dead_code)]
-fn encode_query(name: &str, _value: &str) -> String {
-    format!("x-amz-checksum-sha256;{}", super::encode_key(name))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,5 +418,39 @@ mod tests {
         // measured-vs-declared size check at complete time.
         let url = append_length_range("https://b.s3.amazonaws.com/k?sig=x".into(), 1024);
         assert!(url.contains("x-darkroom-max-bytes=1024"), "{url}");
+    }
+
+    /// The SDK injects a checksum header on its own unless it is told not to.
+    ///
+    /// `RequestChecksumCalculation` defaults to `WhenSupported`, which attaches
+    /// CRC-32 to every `PutObject` and `UploadPart` and CRC-64/NVME in recent AWS
+    /// SDK releases — and R2 rejects the latter. darkroom asks for no checksum
+    /// anywhere, so "only where the operation requires it" is part of the
+    /// contract with every backend, not a workaround for one.
+    ///
+    /// Asserted on the configuration a real store built, rather than in a
+    /// comment, because this is a default that can change under us in any
+    /// dependency bump — and the pin in Cargo.toml is the only other guard.
+    #[test]
+    fn no_checksum_header_is_asked_for_on_any_backend() {
+        let store = S3ObjectStore::with_static_credentials(
+            "darkroom-media",
+            "auto",
+            Some("https://account-id.r2.cloudflarestorage.com".into()),
+            true,
+            "test-access-key",
+            "test-secret-key",
+        );
+
+        assert_eq!(
+            store.sdk_config().request_checksum_calculation(),
+            Some(&RequestChecksumCalculation::WhenRequired),
+            "the SDK must not add a request checksum nobody asked for"
+        );
+        assert_eq!(
+            store.sdk_config().response_checksum_validation(),
+            Some(&ResponseChecksumValidation::WhenRequired),
+            "nor ask the backend to start returning one"
+        );
     }
 }

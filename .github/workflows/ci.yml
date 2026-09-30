@@ -45,6 +45,14 @@ jobs:
       - name: test
         run: cargo test
 
+      - name: test with the s3 feature
+        # The R2 configuration rules, the presigned-URL table over AWS / MinIO /
+        # R2, and the startup refusals live behind `--features s3`. `cargo test`
+        # above does not compile them at all, so without this step they are
+        # decoration: a test nobody's gate runs proves nothing, which is the same
+        # argument that makes this job exist for the `#[ignore]`d ones.
+        run: cargo test --features s3
+
       - name: build with every feature
         # The `s3` and `dev-auth` code paths are behind features, so a default
         # build compiling clean says nothing about them. This is the job that
@@ -77,6 +85,12 @@ jobs:
         # The tests truncate the tables they touch, so they run one at a time.
         # That is a fixture-isolation requirement, not a race workaround.
         run: cargo test -- --ignored --test-threads=1
+      - name: run the ignored tests with the s3 feature
+        # The deployment build is a different build of the library: `S3ObjectStore`
+        # exists and `Config` has a second variant. The checksum table runs
+        # against whatever `ObjectStore` is wired, so the database tier is worth
+        # running against that build too.
+        run: cargo test --features s3 -- --ignored --test-threads=1
 
   contract:
     name: cafaye manifest
