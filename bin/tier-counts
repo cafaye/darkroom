@@ -79,16 +79,16 @@ clean="$(mktemp)"
 trap 'rm -f "$clean"' EXIT
 sed -e $'s/\x1b\\[[0-9;]*m//g' "$log" >"$clean"
 
-# Sum `passed` and `ignored` over every `test result:` line cargo printed,
-# optionally restricted to the tests that ran under one `==> ` step header or
-# inside one test binary.
+# Sum `passed` or `ignored` over the `test result:` lines cargo printed,
+# optionally restricted to one `==> ` step header and one test binary.
 #
-# Cargo prints two lines that must not be counted. `test result: ok. 0 passed;
-# 0 failed; 0 ignored` for a binary with nothing in it is real, and is worth
-# zero, but the `Running unittests src/main.rs` target and the `Doc-tests`
-# block are both always empty here — main.rs has no tests and the crate is
-# `publish = false` with no doctests — so counting them adds two lines that
-# mean nothing and a second place to look when a number moves.
+# Every binary's result is counted, including the two that are always empty:
+# `Running unittests src/main.rs` and the doc-test block. Both contribute zero
+# to every total — main.rs has no tests, the crate is `publish = false` and has
+# no doctests — so counting them changes no number. Restricting to named
+# binaries would hide a file that stopped compiling at all, and "a suite that
+# silently stopped running is the failure this script is here to catch" applies
+# to a test file exactly as it applies to a test.
 count() {
   local scope="${1:-}" pattern="${2:-.*}" field="$3"
   awk -v scope="$scope" -v pattern="$pattern" -v field="$field" '
