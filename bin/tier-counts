@@ -48,20 +48,61 @@
 #
 # | tier | command | expected |
 # |---|---|---|
-# | 4 | `cargo test` | 77 lib unit tests, 41 skipped for want of a database |
-# | 5 | `cargo test --features s3` | 89 lib unit tests, 9 backend-table rows |
+# | 4 | `cargo test` | 77 lib unit tests, 41 skipped for want of a database, 9 OpenAPI drift checks |
+# | 5 | `cargo test --features s3` | 89 lib unit tests, 9 backend-table rows, 9 OpenAPI drift checks |
 # | 6 | `cargo test -- --ignored` | 41 passed |
 # | 6 | `cargo test --features s3 -- --ignored` | 41 passed |
 #
 # The step labels below are the ones `bin/prime` prints. Rewording a step there
 # breaks this script, loudly and on the first run, which is the intended
 # coupling: the two files must agree about what the tiers are.
+#
+# ## A test file added in the default tier moves one of these numbers, and
+# ## which one is a question, not a matter of taste
+#
+# The rule above says to raise the number in the same commit. Following that
+# literally for `tests/openapi_document.rs` would have meant raising
+# `UNIT_TESTS` from 77 — and that would have made the number a lie, because
+# `UNIT_TESTS` is counted as `unittests src/lib.rs`, and a new file under
+# `tests/` is a *different binary* that `lib.rs`'s count does not include. 77 is
+# what `src/lib.rs` holds and it is still 77. The rule's purpose is "the
+# constant is a claim someone has to look at", and the way to serve that purpose
+# here is to pin the new file in its own right rather than to corrupt a constant
+# that means something else.
+#
+# So the new number is a new constant, and the four existing ones did not move.
+# Every one of them is still exactly true, which is checkable and was checked:
+#
+#   `UNIT_TESTS` and `S3_UNIT_TESTS` count `unittests src/lib.rs`, and this
+#     packet added no `#[cfg(test)]` test to the library — `OPERATIONS` in
+#     `src/http.rs` is a data table, not a test.
+#   `DB_TESTS` is the ignored count, and the new file has **no** `#[ignore]`d
+#     test: it needs neither `TEST_DATABASE_URL` nor a socket. It therefore adds
+#     0 to the default run's skips and 0 to tier 6's passes, and the identity
+#     below stays 41 == 41.
+#   `S3_TABLE_TESTS` is scoped to `tests/storage_backends.rs` and is untouched.
+#
+# That last point is the one worth stating plainly, because it is a gap this
+# script does **not** cover on its own: every constant above is either scoped to
+# a named binary or is a count of `#[ignore]`d tests, and a default-tier
+# integration file is neither. If `tests/openapi_document.rs` were emptied, or
+# its tests deleted one at a time, every number here would still read correctly
+# while the file reported `0 passed`. Pinning it — 9 rows, in the tier where it
+# runs — closes that, and is the same mechanism applied to a new file: a
+# constant somebody has to look at.
+
 set -euo pipefail
 
 DB_TESTS=41
 UNIT_TESTS=77
 S3_UNIT_TESTS=89
 S3_TABLE_TESTS=9
+# The default-tier integration files are in none of the four above: the first two
+# count `unittests src/lib.rs`, the third counts `#[ignore]`d tests, and the
+# fourth is scoped to `storage_backends.rs`. So each such file is pinned
+# separately, and one that stops running fails the gate instead of quietly
+# reporting zero.
+OPENAPI_DRIFT_TESTS=9
 
 usage() {
   echo "usage: bin/tier-counts <log-of-'bin/prime --db'>" >&2
@@ -150,6 +191,16 @@ default_ignored="$(count 'cargo test (no database)' '' ignored)"
 expect "tier 4  skipped for want of a database" \
   "$default_ignored" "$DB_TESTS"
 
+# The OpenAPI drift check is the file that would have caught a document that
+# drifted from the router, so a suite that reports zero here has removed the
+# only thing in the repository that notices. Pinned in both default tiers
+# because `cargo test` and `cargo test --features s3` are separate builds of
+# `src/http.rs` and a file that compiles and runs in one need not in the other.
+expect "tier 4  openapi drift checks" \
+  "$(count 'cargo test (no database)' 'tests/openapi_document.rs' passed)" "$OPENAPI_DRIFT_TESTS"
+expect "tier 4  openapi drift checks left ignored" \
+  "$(count 'cargo test (no database)' 'tests/openapi_document.rs' ignored)" "0"
+
 # --- tier 5: the s3 build ----------------------------------------------------
 # `cargo test` does not compile the s3 feature at all, so these two numbers are
 # the only evidence darkroom-02's R2 work is still tested by anything.
@@ -157,6 +208,8 @@ expect "tier 5  unit tests (s3 build)" \
   "$(count 'cargo test --features s3 (no database)' 'unittests src/lib.rs' passed)" "$S3_UNIT_TESTS"
 expect "tier 5  R2/S3 behaviour table rows" \
   "$(count 'cargo test --features s3 (no database)' 'tests/storage_backends.rs' passed)" "$S3_TABLE_TESTS"
+expect "tier 5  openapi drift checks (s3 build)" \
+  "$(count 'cargo test --features s3 (no database)' 'tests/openapi_document.rs' passed)" "$OPENAPI_DRIFT_TESTS"
 
 # --- tier 6: the database, both feature sets ---------------------------------
 # Two runs, not one. `cargo test -- --ignored` and
@@ -184,5 +237,5 @@ if [[ "$default_ignored" != "$DB_TESTS" ]]; then
     "the default run skipped $default_ignored tests and the database run passed $DB_TESTS; those are the same set and must be the same number"
 fi
 
-printf '\n\033[1m==> tier-counts ok\033[0m  %d unit, %d with s3, %d database x2, %d backend-table rows\n' \
-  "$UNIT_TESTS" "$S3_UNIT_TESTS" "$DB_TESTS" "$S3_TABLE_TESTS"
+printf '\n\033[1m==> tier-counts ok\033[0m  %d unit, %d with s3, %d database x2, %d backend-table rows, %d openapi drift x2\n' \
+  "$UNIT_TESTS" "$S3_UNIT_TESTS" "$DB_TESTS" "$S3_TABLE_TESTS" "$OPENAPI_DRIFT_TESTS"
