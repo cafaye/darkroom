@@ -134,24 +134,20 @@ impl fmt::Display for AssetKind {
 
 impl FromStr for AssetKind {
     type Err = Error;
+    /// A value the SQL check constraint already restricted. A failure here
+    /// means the database and this code disagree, which is a deploy error, and
+    /// the 500 it produces is the correct response — not a 422, which would
+    /// blame the client for a row this service wrote.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "image" => Ok(AssetKind::Image),
             "audio" => Ok(AssetKind::Audio),
             "video" => Ok(AssetKind::Video),
             "document" => Ok(AssetKind::Document),
-            other => Err(Error::internal("unknown asset kind in storage")),
+            _ => Err(Error::internal("unknown asset kind in storage")),
         }
-        .map_err(|e| {
-            let _ = other_unreachable(s);
-            e
-        })
     }
 }
-
-/// Never called; exists only so the `FromStr` error path above reads as a
-/// fallible conversion rather than an `unwrap`. Kept trivial.
-fn other_unreachable(_s: &str) {}
 
 /// The upload's lifecycle. Three states, and the transitions are the whole
 /// point: `pending` means a presigned URL was issued and nothing has been
@@ -241,11 +237,17 @@ impl VariantKind {
         }
     }
 
-    /// Output media type. Every variant is WebP: smaller than the source for
-    /// photographs, lossy-capable, and decodable by every browser that will
-    /// ever ask for a thumbnail.
+    /// Output media type. Every variant is JPEG.
+    ///
+    /// WebP would be the better format and it is deliberately *not* used: the
+    /// `image` crate's WebP encoder is lossless-only (its own docs say so, and
+    /// point at libwebp for lossy), and a lossless re-encode of a 256px
+    /// thumbnail saves little enough that it is not worth a C dependency and a
+    /// second codec's worth of failure modes. `image`'s JPEG encoder is lossy,
+    /// pure Rust, and decodable by everything that will ever request a
+    /// thumbnail. Revisit when lossy WebP is worth a dependency decision.
     pub fn content_type(self) -> &'static str {
-        "image/webp"
+        "image/jpeg"
     }
 }
 

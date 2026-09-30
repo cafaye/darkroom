@@ -62,11 +62,13 @@ where
         trace_id = %ctx.trace_id,
         path = %ctx.instance,
     );
-    // Entering a span is not `Send`; the guard is converted to a string-keyed
-    // Instrumented future so the span attaches to the poll, not the move.
-    let _guard = span.enter();
-    let fut = tracing::Instrument::instrument(fut, span);
-    SCOPED.scope(ctx, fut).await
+    // `Instrument` attaches the span to each *poll* of the future rather than to
+    // the stack. The alternative — `let _guard = span.enter()` around an `.await`
+    // — is the classic Rust logging bug: the guard is `!Send`, so the compiler
+    // would refuse it here, and even where it compiles it holds the span open
+    // across await points that belong to other tasks.
+    use tracing::Instrument as _;
+    SCOPED.scope(ctx, fut.instrument(span)).await
 }
 
 /// A fresh trace id: a UUIDv4, rendered hyphenated. Not the W3C `traceparent`
@@ -202,18 +204,13 @@ pub fn init_tracing(default_level: &str) {
                 fmt::layer()
                     .json()
                     .with_current_span(true)
-                    .with_span_list(false)
                     .with_target(true),
             )
             .try_init()
             .ok();
     } else {
         registry
-            .with(
-                fmt::layer()
-                    .with_target(true)
-                    .with_span_list(false),
-            )
+            .with(fmt::layer().with_target(true))
             .try_init()
             .ok();
     }

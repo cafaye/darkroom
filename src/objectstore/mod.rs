@@ -164,10 +164,15 @@ pub type SharedObjectStore = Arc<dyn ObjectStore>;
 /// would notice.
 #[derive(Debug, Clone)]
 struct SignedPut {
+    /// Retained for the audit trail in a debug dump and for any future check
+    /// that the signature covers this exact key. The verification path reads
+    /// the key back out of the URL instead, because the URL is what arrived.
+    #[allow(dead_code)]
     key: String,
     content_type: String,
     max_bytes: i64,
     expires_at: u64,
+    #[allow(dead_code)]
     signature: String,
 }
 

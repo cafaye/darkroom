@@ -26,14 +26,13 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use sqlx::postgres::{PgPool, PgPoolOptions};
-use sqlx::{PgExecutor, Postgres, Transaction};
+use sqlx::postgres::{PgConnection, PgPool, PgPoolOptions};
+use sqlx::{Executor, PgExecutor, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::auth::Tenant;
 use crate::domain::{Asset, AssetStatus, AssetVariant, VariantKind};
-use crate::outbox::NewEvent;
 
 /// Failures from the store. Two kinds, and the split matters: a caller-visible
 /// conflict versus a fault we did not expect.
@@ -135,412 +134,470 @@ impl Store {
 
     // ---------------------------------------------------------------- assets
 
-    /// Insert a new asset in `pending`.
-    ///
-    /// Returns `Err(StoreError::Conflict)` if the account already has an asset
-    /// with this checksum. The caller resolves that — see the duplicate-upload
-    /// decision in README.md and `service.rs::create_upload`.
-    pub async fn insert_asset<'e, E>(
-        executor: E,
-        asset: &Asset,
-    ) -> Result<Asset, StoreError>
-    where
-        E: PgExecutor<'e>,
-    {
-        let row = sqlx::query_as::<_, AssetRow>(
-            r#"
-            insert into assets (
-              id, account_id, owner_user_id, kind, original_filename,
-              content_type, byte_size, checksum, storage_key, status, metadata,
-              created_at, updated_at
-            )
-            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            returning id, account_id, owner_user_id, kind, original_filename,
-                      content_type, byte_size, checksum, status, metadata,
-                      created_at, updated_at, storage_key
-            "#,
-        )
-        .bind(asset.id)
-        .bind(asset.account_id)
-        .bind(asset.owner_user_id)
-        .bind(asset.kind.as_str())
-        .bind(&asset.original_filename)
-        .bind(&asset.content_type)
-        .bind(asset.byte_size)
-        .bind(&asset.checksum)
-        .bind(asset.storage_key())
-        .bind(asset.status.as_str())
-        .bind(&asset.metadata)
-        .bind(asset.created_at)
-        .bind(asset.updated_at)
-        .fetch_one(executor)
-        .await
-        .map_err(classify)?;
-
-        Ok(row.into_asset())
-    }
-
-    /// Find an asset by id **within the tenant**. `None` covers both "no such
-    /// asset" and "it belongs to someone else" — deliberately indistinguishable.
-    pub async fn find_asset<'e, E>(
-        executor: E,
-        tenant: &Tenant,
-        asset_id: Uuid,
-    ) -> Result<Option<(Asset, String)>, StoreError>
-    where
-        E: PgExecutor<'e>,
-    {
-        let row = sqlx::query_as::<_, AssetRow>(
-            r#"
-            select id, account_id, owner_user_id, kind, original_filename,
-                   content_type, byte_size, checksum, status, metadata,
-                   created_at, updated_at, storage_key
-              from assets
-             where id = $1 and account_id = $2
-            "#,
-        )
-        .bind(asset_id)
-        .bind(tenant.account_id())
-        .fetch_optional(executor)
-        .await
-        .map_err(classify)?;
-
-        Ok(row.map(|r| {
-            let key = r.storage_key.clone();
-            (r.into_asset(), key)
-        }))
-    }
-
-    /// The storage key for an asset in this tenant, without loading the row.
-    /// Used by the delete path, which needs the key to remove the object and
-    /// nothing else.
-    pub async fn find_storage_key<'e, E>(
-        executor: E,
-        tenant: &Tenant,
-        asset_id: Uuid,
-    ) -> Result<Option<String>, StoreError>
-    where
-        E: PgExecutor<'e>,
-    {
-        let key: Option<(String,)> = sqlx::query_as(
-            "select storage_key from assets where id = $1 and account_id = $2",
-        )
-        .bind(asset_id)
-        .bind(tenant.account_id())
-        .fetch_optional(executor)
-        .await
-        .map_err(classify)?;
-        Ok(key.map(|(k,)| k))
-    }
-
-    /// One page of assets for the tenant, newest first.
-    ///
-    /// Cursor pagination per core: `limit` defaults to 25 and caps at 100, the
-    /// cursor is opaque base64url, and the response is `data` + `page`. Offset
-    /// pagination cannot be stable while rows are being inserted, which is
-    /// exactly what an upload endpoint does constantly.
-    pub async fn list_assets<'e, E>(
-        executor: E,
-        tenant: &Tenant,
-        limit: i64,
-        cursor: Option<(OffsetDateTime, Uuid)>,
-    ) -> Result<Vec<(Asset, String)>, StoreError>
-    where
-        E: PgExecutor<'e>,
-    {
-        // Keyset pagination on (created_at, id) — the index's own ordering, so
-        // the planner walks the index rather than sorting.
-        let rows = sqlx::query_as::<_, AssetRow>(
-            r#"
-            select id, account_id, owner_user_id, kind, original_filename,
-                   content_type, byte_size, checksum, status, metadata,
-                   created_at, updated_at, storage_key
-              from assets
-             where account_id = $1
-               and ($2::timestamptz is null or (created_at, id) < ($2, $3))
-             order by created_at desc, id desc
-             limit $4
-            "#,
-        )
-        .bind(tenant.account_id())
-        .bind(cursor.as_ref().map(|(t, _)| *t))
-        .bind(cursor.as_ref().map(|(_, i)| *i).unwrap_or_else(Uuid::nil))
-        .bind(limit)
-        .fetch_all(executor)
-        .await
-        .map_err(classify)?;
-
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                let key = r.storage_key.clone();
-                (r.into_asset(), key)
-            })
-            .collect())
-    }
-
-    /// Transition an asset to `ready` with the checksum computed from the
-    /// stored bytes, scoped to the tenant. Returns the new row, or `None` if
-    /// the asset is not in this tenant or is not in `pending`.
-    ///
-    /// The `and status = 'pending'` is a compare-and-set: two concurrent
-    /// `complete` calls cannot both win, so the second sees `None` and the
-    /// idempotency layer answers with the stored response instead of emitting a
-    /// second `darkroom.asset.ready` for the same asset.
-    pub async fn mark_ready<'e, E>(
-        executor: E,
-        tenant: &Tenant,
-        asset_id: Uuid,
-        verified_checksum: &str,
-    ) -> Result<Option<(Asset, String)>, StoreError>
-    where
-        E: PgExecutor<'e>,
-    {
-        let row = sqlx::query_as::<_, AssetRow>(
-            r#"
-            update assets
-               set status = 'ready',
-                   checksum = $3,
-                   updated_at = now()
-             where id = $1 and account_id = $2 and status = 'pending'
-            returning id, account_id, owner_user_id, kind, original_filename,
-                      content_type, byte_size, checksum, status, metadata,
-                      created_at, updated_at, storage_key
-            "#,
-        )
-        .bind(asset_id)
-        .bind(tenant.account_id())
-        .bind(verified_checksum)
-        .fetch_optional(executor)
-        .await
-        .map_err(classify)?;
-
-        Ok(row.map(|r| {
-            let key = r.storage_key.clone();
-            (r.into_asset(), key)
-        }))
-    }
-
-    /// Move an asset to `failed`. Used by both failure paths: the object never
-    /// arrived, and the checksum did not match. The row is kept rather than
-    /// deleted so the upload is a permanent record of "this was attempted and
-    /// did not succeed" and so the UNIQUE (account_id, checksum) constraint
-    /// stops a second bad attempt.
-    pub async fn mark_failed<'e, E>(
-        executor: E,
-        tenant: &Tenant,
-        asset_id: Uuid,
-        reason: &str,
-    ) -> Result<Option<Asset>, StoreError>
-    where
-        E: PgExecutor<'e>,
-    {
-        let row = sqlx::query_as::<_, AssetRow>(
-            r#"
-            update assets
-               set status = 'failed',
-                   metadata = metadata || jsonb_build_object('failure_reason', $3::text),
-                   updated_at = now()
-             where id = $1 and account_id = $2 and status = 'pending'
-            returning id, account_id, owner_user_id, kind, original_filename,
-                      content_type, byte_size, checksum, status, metadata,
-                      created_at, updated_at, storage_key
-            "#,
-        )
-        .bind(asset_id)
-        .bind(tenant.account_id())
-        .bind(reason)
-        .fetch_optional(executor)
-        .await
-        .map_err(classify)?;
-
-        Ok(row.map(|r| r.into_asset()))
-    }
-
-    /// An asset in `pending` for longer than `older_than`, for the sweeper that
-    /// fails uploads whose presigned URL was issued and never used. Not wired
-    /// to a scheduler in this packet — see README "Not done" — but the query
-    /// exists and is tested, because a query with no caller is a query nobody
-    /// has ever run.
-    pub async fn find_stale_pending<'e, E>(
-        executor: E,
-        older_than: OffsetDateTime,
-        limit: i64,
-    ) -> Result<Vec<Asset>, StoreError>
-    where
-        E: PgExecutor<'e>,
-    {
-        let rows = sqlx::query_as::<_, AssetRow>(
-            r#"
-            select id, account_id, owner_user_id, kind, original_filename,
-                   content_type, byte_size, checksum, status, metadata,
-                   created_at, updated_at, storage_key
-              from assets
-             where status = 'pending' and created_at < $1
-             order by created_at
-             limit $2
-            "#,
-        )
-        .bind(older_than)
-        .bind(limit)
-        .fetch_all(executor)
-        .await
-        .map_err(classify)?;
-        Ok(rows.into_iter().map(|r| r.into_asset()).collect())
-    }
-
-    /// Delete the asset row. Variants go with it via `on delete cascade`, and
-    /// their storage objects are removed by the caller before this runs.
-    ///
-    /// Scoped to the tenant, so a `delete` cannot remove another account's row.
-    /// Returns `false` when the row is not in this tenant, which the handler
-    /// turns into 404.
-    pub async fn delete_asset<'e, E>(
-        executor: E,
-        tenant: &Tenant,
-        asset_id: Uuid,
-    ) -> Result<bool, StoreError>
-    where
-        E: PgExecutor<'e>,
-    {
-        let result = sqlx::query("delete from assets where id = $1 and account_id = $2")
-            .bind(asset_id)
-            .bind(tenant.account_id())
-            .execute(executor)
-            .await
-            .map_err(classify)?;
-        Ok(result.rows_affected() == 1)
-    }
-
-    /// Every storage key belonging to an asset: the original plus each
-    /// variant. Read before the delete so the storage objects can be removed
-    /// with the keys still known.
-    pub async fn list_storage_keys<'e, E>(
-        executor: E,
-        tenant: &Tenant,
-        asset_id: Uuid,
-    ) -> Result<Vec<String>, StoreError>
-    where
-        E: PgExecutor<'e>,
-    {
-        let keys: Vec<(String,)> = sqlx::query_as(
-            r#"
-            select storage_key from assets where id = $1 and account_id = $2
-            union all
-            select storage_key from asset_variants where asset_id = $1 and account_id = $2
-            "#,
-        )
-        .bind(asset_id)
-        .bind(tenant.account_id())
-        .fetch_all(executor)
-        .await
-        .map_err(classify)?;
-        Ok(keys.into_iter().map(|(k,)| k).collect())
-    }
-
     // -------------------------------------------------------------- variants
 
-    /// Insert or replace a variant. `on conflict (asset_id, kind) do update` is
-    /// what makes "re-request a kind" idempotent rather than accumulating rows.
-    pub async fn upsert_variant<'e, E>(
-        executor: E,
-        variant: &AssetVariant,
-        storage_key: &str,
-    ) -> Result<AssetVariant, StoreError>
-    where
-        E: PgExecutor<'e>,
-    {
-        let row = sqlx::query_as::<_, VariantRow>(
-            r#"
-            insert into asset_variants (
-              id, asset_id, account_id, kind, content_type, byte_size,
-              storage_key, width, height, metadata, created_at, updated_at
-            )
-            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-            on conflict (asset_id, kind) do update
-               set content_type = excluded.content_type,
-                   byte_size    = excluded.byte_size,
-                   storage_key  = excluded.storage_key,
-                   width        = excluded.width,
-                   height       = excluded.height,
-                   metadata     = excluded.metadata,
-                   updated_at   = now()
-            returning id, asset_id, account_id, kind, content_type, byte_size,
-                      storage_key, width, height, metadata, created_at, updated_at
-            "#,
-        )
-        .bind(variant.id)
-        .bind(variant.asset_id)
-        .bind(variant.account_id)
-        .bind(variant.kind.as_str())
-        .bind(&variant.content_type)
-        .bind(variant.byte_size)
-        .bind(storage_key)
-        .bind(variant.width)
-        .bind(variant.height)
-        .bind(&variant.metadata)
-        .bind(variant.created_at)
-        .bind(variant.updated_at)
-        .fetch_one(executor)
-        .await
-        .map_err(classify)?;
-        Ok(row.into_variant())
-    }
-
-    /// The storage key of a variant, for the delete path.
-    pub async fn find_variant_storage_key<'e, E>(
-        executor: E,
-        tenant: &Tenant,
-        asset_id: Uuid,
-        kind: VariantKind,
-    ) -> Result<Option<String>, StoreError>
-    where
-        E: PgExecutor<'e>,
-    {
-        let key: Option<(String,)> = sqlx::query_as(
-            "select storage_key from asset_variants
-              where asset_id = $1 and account_id = $2 and kind = $3",
-        )
-        .bind(asset_id)
-        .bind(tenant.account_id())
-        .bind(kind.as_str())
-        .fetch_optional(executor)
-        .await
-        .map_err(classify)?;
-        Ok(key.map(|(k,)| k))
-    }
-
-    /// Variants of an asset, scoped to the tenant.
-    pub async fn list_variants<'e, E>(
-        executor: E,
-        tenant: &Tenant,
-        asset_id: Uuid,
-    ) -> Result<Vec<AssetVariant>, StoreError>
-    where
-        E: PgExecutor<'e>,
-    {
-        // Both the asset_id and the account_id are in the where clause. The
-        // asset_id alone would be enough *if* the caller had already been
-        // authorised against the asset — but the authorisation check and this
-        // read are separate statements, and a row that exists under another
-        // account must not be reachable by guessing the asset id.
-        let rows = sqlx::query_as::<_, VariantRow>(
-            r#"
-            select id, asset_id, account_id, kind, content_type, byte_size,
-                   storage_key, width, height, metadata, created_at, updated_at
-              from asset_variants
-             where asset_id = $1 and account_id = $2
-             order by created_at desc, id desc
-            "#,
-        )
-        .bind(asset_id)
-        .bind(tenant.account_id())
-        .fetch_all(executor)
-        .await
-        .map_err(classify)?;
-        Ok(rows.into_iter().map(|r| r.into_variant()).collect())
-    }
 }
+
+// ------------------------------------------------ repository functions
+//
+// These take the executor as their first argument so a caller can pass
+// either the pool (a read outside a transaction) or `&mut *tx` (a write that
+// must be atomic with something else). They are module functions, not
+// methods, so the executor is explicit at every call site rather than
+// being `self.pool()` by default and a transaction only sometimes.
+
+/// Insert a new asset in `pending`, with the storage key chosen by the caller.
+///
+/// The key is a parameter rather than being generated here because
+/// [`crate::storage_key::StorageKey`] is the only thing that may construct one,
+/// and it does so from the account id plus 128 random bits. A free `&str` here
+/// would let any caller of this function — including a future one — pass a
+/// client-supplied key into a column that has a unique index on it.
+///
+/// Returns `Err(StoreError::Conflict)` if `(account_id, checksum)` already
+/// exists. The caller resolves that; see `service.rs::create_upload`.
+pub async fn insert_asset_keyed<'e, E>(
+    executor: E,
+    asset: &Asset,
+    storage_key: &str,
+) -> Result<Asset, StoreError>
+where
+    E: PgExecutor<'e>,
+{
+    let row = sqlx::query_as::<_, AssetRow>(
+        r#"
+        insert into assets (
+          id, account_id, owner_user_id, kind, original_filename,
+          content_type, byte_size, checksum, storage_key, status, metadata,
+          created_at, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        returning id, account_id, owner_user_id, kind, original_filename,
+                  content_type, byte_size, checksum, status, metadata,
+                  created_at, updated_at, storage_key
+        "#,
+    )
+    .bind(asset.id)
+    .bind(asset.account_id)
+    .bind(asset.owner_user_id)
+    .bind(asset.kind.as_str())
+    .bind(&asset.original_filename)
+    .bind(&asset.content_type)
+    .bind(asset.byte_size)
+    .bind(&asset.checksum)
+    .bind(storage_key)
+    .bind(asset.status.as_str())
+    .bind(&asset.metadata)
+    .bind(asset.created_at)
+    .bind(asset.updated_at)
+    .fetch_one(executor)
+    .await
+    .map_err(classify)?;
+
+    Ok(row.into_asset())
+}
+
+/// Find an asset by checksum **within the tenant**, with its storage key.
+///
+/// This is the duplicate-upload pre-check. The unique constraint
+/// `(account_id, checksum)` is still the authority — two concurrent duplicates
+/// can both miss here — but a pre-check turns the common case into an indexed
+/// read instead of a failed transaction, and it is what makes the *response*
+/// (the existing asset, not a 500) possible.
+///
+/// The `account_id` is in the where clause and not merely in the index
+/// selection: a checksum shared by two accounts is two assets, and returning
+/// the wrong one would hand a caller another tenant's file.
+pub async fn find_asset_by_checksum<'e, E>(
+    executor: E,
+    tenant: &Tenant,
+    checksum: &str,
+) -> Result<Option<(Asset, String)>, StoreError>
+where
+    E: PgExecutor<'e>,
+{
+    let row = sqlx::query_as::<_, AssetRow>(
+        r#"
+        select id, account_id, owner_user_id, kind, original_filename,
+               content_type, byte_size, checksum, status, metadata,
+               created_at, updated_at, storage_key
+          from assets
+         where account_id = $1 and checksum = $2
+         limit 1
+        "#,
+    )
+    .bind(tenant.account_id())
+    .bind(checksum)
+    .fetch_optional(executor)
+    .await
+    .map_err(classify)?;
+
+    Ok(row.map(|r| {
+        let key = r.storage_key.clone();
+        (r.into_asset(), key)
+    }))
+}
+
+/// Find an asset by id **within the tenant**. `None` covers both "no such
+/// asset" and "it belongs to someone else" — deliberately indistinguishable.
+pub async fn find_asset<'e, E>(
+    executor: E,
+    tenant: &Tenant,
+    asset_id: Uuid,
+) -> Result<Option<(Asset, String)>, StoreError>
+where
+    E: PgExecutor<'e>,
+{
+    let row = sqlx::query_as::<_, AssetRow>(
+        r#"
+        select id, account_id, owner_user_id, kind, original_filename,
+               content_type, byte_size, checksum, status, metadata,
+               created_at, updated_at, storage_key
+          from assets
+         where id = $1 and account_id = $2
+        "#,
+    )
+    .bind(asset_id)
+    .bind(tenant.account_id())
+    .fetch_optional(executor)
+    .await
+    .map_err(classify)?;
+
+    Ok(row.map(|r| {
+        let key = r.storage_key.clone();
+        (r.into_asset(), key)
+    }))
+}
+
+/// The storage key for an asset in this tenant, without loading the row.
+/// Used by the delete path, which needs the key to remove the object and
+/// nothing else.
+pub async fn find_storage_key<'e, E>(
+    executor: E,
+    tenant: &Tenant,
+    asset_id: Uuid,
+) -> Result<Option<String>, StoreError>
+where
+    E: PgExecutor<'e>,
+{
+    let key: Option<(String,)> = sqlx::query_as(
+        "select storage_key from assets where id = $1 and account_id = $2",
+    )
+    .bind(asset_id)
+    .bind(tenant.account_id())
+    .fetch_optional(executor)
+    .await
+    .map_err(classify)?;
+    Ok(key.map(|(k,)| k))
+}
+
+/// One page of assets for the tenant, newest first.
+///
+/// Cursor pagination per core: `limit` defaults to 25 and caps at 100, the
+/// cursor is opaque base64url, and the response is `data` + `page`. Offset
+/// pagination cannot be stable while rows are being inserted, which is
+/// exactly what an upload endpoint does constantly.
+pub async fn list_assets<'e, E>(
+    executor: E,
+    tenant: &Tenant,
+    limit: i64,
+    cursor: Option<(OffsetDateTime, Uuid)>,
+) -> Result<Vec<(Asset, String)>, StoreError>
+where
+    E: PgExecutor<'e>,
+{
+    // Keyset pagination on (created_at, id) — the index's own ordering, so
+    // the planner walks the index rather than sorting.
+    let rows = sqlx::query_as::<_, AssetRow>(
+        r#"
+        select id, account_id, owner_user_id, kind, original_filename,
+               content_type, byte_size, checksum, status, metadata,
+               created_at, updated_at, storage_key
+          from assets
+         where account_id = $1
+           and ($2::timestamptz is null or (created_at, id) < ($2, $3))
+         order by created_at desc, id desc
+         limit $4
+        "#,
+    )
+    .bind(tenant.account_id())
+    .bind(cursor.as_ref().map(|(t, _)| *t))
+    .bind(cursor.as_ref().map(|(_, i)| *i).unwrap_or_else(Uuid::nil))
+    .bind(limit)
+    .fetch_all(executor)
+    .await
+    .map_err(classify)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let key = r.storage_key.clone();
+            (r.into_asset(), key)
+        })
+        .collect())
+}
+
+/// Transition an asset to `ready` with the checksum computed from the
+/// stored bytes, scoped to the tenant. Returns the new row, or `None` if
+/// the asset is not in this tenant or is not in `pending`.
+///
+/// The `and status = 'pending'` is a compare-and-set: two concurrent
+/// `complete` calls cannot both win, so the second sees `None` and the
+/// idempotency layer answers with the stored response instead of emitting a
+/// second `darkroom.asset.ready` for the same asset.
+pub async fn mark_ready<'e, E>(
+    executor: E,
+    tenant: &Tenant,
+    asset_id: Uuid,
+    verified_checksum: &str,
+) -> Result<Option<(Asset, String)>, StoreError>
+where
+    E: PgExecutor<'e>,
+{
+    let row = sqlx::query_as::<_, AssetRow>(
+        r#"
+        update assets
+           set status = 'ready',
+               checksum = $3,
+               updated_at = now()
+         where id = $1 and account_id = $2 and status = 'pending'
+        returning id, account_id, owner_user_id, kind, original_filename,
+                  content_type, byte_size, checksum, status, metadata,
+                  created_at, updated_at, storage_key
+        "#,
+    )
+    .bind(asset_id)
+    .bind(tenant.account_id())
+    .bind(verified_checksum)
+    .fetch_optional(executor)
+    .await
+    .map_err(classify)?;
+
+    Ok(row.map(|r| {
+        let key = r.storage_key.clone();
+        (r.into_asset(), key)
+    }))
+}
+
+/// Move an asset to `failed`. Used by both failure paths: the object never
+/// arrived, and the checksum did not match. The row is kept rather than
+/// deleted so the upload is a permanent record of "this was attempted and
+/// did not succeed" and so the UNIQUE (account_id, checksum) constraint
+/// stops a second bad attempt.
+pub async fn mark_failed<'e, E>(
+    executor: E,
+    tenant: &Tenant,
+    asset_id: Uuid,
+    reason: &str,
+) -> Result<Option<Asset>, StoreError>
+where
+    E: PgExecutor<'e>,
+{
+    let row = sqlx::query_as::<_, AssetRow>(
+        r#"
+        update assets
+           set status = 'failed',
+               metadata = metadata || jsonb_build_object('failure_reason', $3::text),
+               updated_at = now()
+         where id = $1 and account_id = $2 and status = 'pending'
+        returning id, account_id, owner_user_id, kind, original_filename,
+                  content_type, byte_size, checksum, status, metadata,
+                  created_at, updated_at, storage_key
+        "#,
+    )
+    .bind(asset_id)
+    .bind(tenant.account_id())
+    .bind(reason)
+    .fetch_optional(executor)
+    .await
+    .map_err(classify)?;
+
+    Ok(row.map(|r| r.into_asset()))
+}
+
+/// An asset in `pending` for longer than `older_than`, for the sweeper that
+/// fails uploads whose presigned URL was issued and never used. Not wired
+/// to a scheduler in this packet — see README "Not done" — but the query
+/// exists and is tested, because a query with no caller is a query nobody
+/// has ever run.
+pub async fn find_stale_pending<'e, E>(
+    executor: E,
+    older_than: OffsetDateTime,
+    limit: i64,
+) -> Result<Vec<Asset>, StoreError>
+where
+    E: PgExecutor<'e>,
+{
+    let rows = sqlx::query_as::<_, AssetRow>(
+        r#"
+        select id, account_id, owner_user_id, kind, original_filename,
+               content_type, byte_size, checksum, status, metadata,
+               created_at, updated_at, storage_key
+          from assets
+         where status = 'pending' and created_at < $1
+         order by created_at
+         limit $2
+        "#,
+    )
+    .bind(older_than)
+    .bind(limit)
+    .fetch_all(executor)
+    .await
+    .map_err(classify)?;
+    Ok(rows.into_iter().map(|r| r.into_asset()).collect())
+}
+
+/// Delete the asset row. Variants go with it via `on delete cascade`, and
+/// their storage objects are removed by the caller before this runs.
+///
+/// Scoped to the tenant, so a `delete` cannot remove another account's row.
+/// Returns `false` when the row is not in this tenant, which the handler
+/// turns into 404.
+pub async fn delete_asset<'e, E>(
+    executor: E,
+    tenant: &Tenant,
+    asset_id: Uuid,
+) -> Result<bool, StoreError>
+where
+    E: PgExecutor<'e>,
+{
+    let result = sqlx::query("delete from assets where id = $1 and account_id = $2")
+        .bind(asset_id)
+        .bind(tenant.account_id())
+        .execute(executor)
+        .await
+        .map_err(classify)?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Every storage key belonging to an asset: the original plus each
+/// variant. Read before the delete so the storage objects can be removed
+/// with the keys still known.
+pub async fn list_storage_keys<'e, E>(
+    executor: E,
+    tenant: &Tenant,
+    asset_id: Uuid,
+) -> Result<Vec<String>, StoreError>
+where
+    E: PgExecutor<'e>,
+{
+    let keys: Vec<(String,)> = sqlx::query_as(
+        r#"
+        select storage_key from assets where id = $1 and account_id = $2
+        union all
+        select storage_key from asset_variants where asset_id = $1 and account_id = $2
+        "#,
+    )
+    .bind(asset_id)
+    .bind(tenant.account_id())
+    .fetch_all(executor)
+    .await
+    .map_err(classify)?;
+    Ok(keys.into_iter().map(|(k,)| k).collect())
+}
+
+/// Insert or replace a variant. `on conflict (asset_id, kind) do update` is
+/// what makes "re-request a kind" idempotent rather than accumulating rows.
+pub async fn upsert_variant<'e, E>(
+    executor: E,
+    variant: &AssetVariant,
+    storage_key: &str,
+) -> Result<AssetVariant, StoreError>
+where
+    E: PgExecutor<'e>,
+{
+    let row = sqlx::query_as::<_, VariantRow>(
+        r#"
+        insert into asset_variants (
+          id, asset_id, account_id, kind, content_type, byte_size,
+          storage_key, width, height, metadata, created_at, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        on conflict (asset_id, kind) do update
+           set content_type = excluded.content_type,
+               byte_size    = excluded.byte_size,
+               storage_key  = excluded.storage_key,
+               width        = excluded.width,
+               height       = excluded.height,
+               metadata     = excluded.metadata,
+               updated_at   = now()
+        returning id, asset_id, account_id, kind, content_type, byte_size,
+                  storage_key, width, height, metadata, created_at, updated_at
+        "#,
+    )
+    .bind(variant.id)
+    .bind(variant.asset_id)
+    .bind(variant.account_id)
+    .bind(variant.kind.as_str())
+    .bind(&variant.content_type)
+    .bind(variant.byte_size)
+    .bind(storage_key)
+    .bind(variant.width)
+    .bind(variant.height)
+    .bind(&variant.metadata)
+    .bind(variant.created_at)
+    .bind(variant.updated_at)
+    .fetch_one(executor)
+    .await
+    .map_err(classify)?;
+    Ok(row.into_variant())
+}
+
+/// The storage key of a variant, for the delete path.
+pub async fn find_variant_storage_key<'e, E>(
+    executor: E,
+    tenant: &Tenant,
+    asset_id: Uuid,
+    kind: VariantKind,
+) -> Result<Option<String>, StoreError>
+where
+    E: PgExecutor<'e>,
+{
+    let key: Option<(String,)> = sqlx::query_as(
+        "select storage_key from asset_variants
+          where asset_id = $1 and account_id = $2 and kind = $3",
+    )
+    .bind(asset_id)
+    .bind(tenant.account_id())
+    .bind(kind.as_str())
+    .fetch_optional(executor)
+    .await
+    .map_err(classify)?;
+    Ok(key.map(|(k,)| k))
+}
+
+/// Variants of an asset, scoped to the tenant.
+pub async fn list_variants<'e, E>(
+    executor: E,
+    tenant: &Tenant,
+    asset_id: Uuid,
+) -> Result<Vec<AssetVariant>, StoreError>
+where
+    E: PgExecutor<'e>,
+{
+    // Both the asset_id and the account_id are in the where clause. The
+    // asset_id alone would be enough *if* the caller had already been
+    // authorised against the asset — but the authorisation check and this
+    // read are separate statements, and a row that exists under another
+    // account must not be reachable by guessing the asset id.
+    let rows = sqlx::query_as::<_, VariantRow>(
+        r#"
+        select id, asset_id, account_id, kind, content_type, byte_size,
+               storage_key, width, height, metadata, created_at, updated_at
+          from asset_variants
+         where asset_id = $1 and account_id = $2
+         order by created_at desc, id desc
+        "#,
+    )
+    .bind(asset_id)
+    .bind(tenant.account_id())
+    .fetch_all(executor)
+    .await
+    .map_err(classify)?;
+    Ok(rows.into_iter().map(|r| r.into_variant()).collect())
+}
+
+
 
 // ------------------------------------------------------------- idempotency
 
@@ -563,19 +620,22 @@ pub struct IdempotencyRecord {
 /// `(endpoint, principal, key)` and two replicas must agree on it — an
 /// in-memory "have I seen this key" set is wrong the moment there is a second
 /// instance, which is the same argument core makes for consumer dedupe.
-pub async fn reserve_idempotency_key<'e, E>(
-    executor: E,
+pub async fn reserve_idempotency_key(
+    executor: &mut PgConnection,
     key: &str,
     endpoint: &str,
     principal_key: &str,
     request_hash: &str,
-) -> Result<IdempotencyOutcome, StoreError>
-where
-    E: PgExecutor<'e>,
-{
+) -> Result<IdempotencyOutcome, StoreError> {
     // The insert is the lock. Two concurrent replays race here and exactly one
     // wins; the loser reads the row the winner is about to write and returns
     // the stored response once it lands.
+    //
+    // A concrete `&mut PgConnection` rather than a generic `PgExecutor`: the
+    // insert and the read below are two statements that must be on the SAME
+    // connection, and a generic `E` would let a caller pass the pool to each and
+    // run them on different connections — which would turn "reserve, then read"
+    // into two unrelated queries.
     let inserted = sqlx::query(
         r#"
         insert into idempotency_keys (key, endpoint, principal_key, request_hash, status_code, response_body)
@@ -587,7 +647,7 @@ where
     .bind(endpoint)
     .bind(principal_key)
     .bind(request_hash)
-    .execute(executor)
+    .execute(&mut *executor)
     .await
     .map_err(classify)?;
 
@@ -608,7 +668,7 @@ where
     .bind(key)
     .bind(endpoint)
     .bind(principal_key)
-    .fetch_optional(executor)
+    .fetch_optional(&mut *executor)
     .await
     .map_err(classify)?;
 
@@ -619,7 +679,7 @@ where
             // again, which is the only safe reading.
             Ok(IdempotencyOutcome::Reserved)
         }
-        Some((stored_hash, status_code, response_body)) if stored_hash != request_hash => {
+        Some((stored_hash, _, _)) if stored_hash != request_hash => {
             Ok(IdempotencyOutcome::BodyMismatch)
         }
         // status_code 0 is the reservation marker: the row is claimed but the
@@ -761,6 +821,10 @@ struct VariantRow {
     kind: String,
     content_type: String,
     byte_size: i64,
+    /// Selected so a delete can find an object's key, never serialised. The
+    /// delete path reads it via `find_variant_storage_key`, which selects only
+    /// that column; this is here because `returning` names it.
+    #[allow(dead_code)]
     storage_key: String,
     width: Option<i32>,
     height: Option<i32>,

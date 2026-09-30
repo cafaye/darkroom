@@ -112,15 +112,15 @@ impl NewEvent {
 }
 
 /// The outbox writer. Constructed per transaction, so it cannot outlive one.
-pub struct Outbox<'a> {
-    executor: &'a mut Transaction<'_, Postgres>,
+pub struct Outbox<'tx, 'conn> {
+    executor: &'tx mut Transaction<'conn, Postgres>,
 }
 
-impl<'a> Outbox<'a> {
+impl<'tx, 'conn> Outbox<'tx, 'conn> {
     /// Bind the outbox to a transaction. Taking `&mut Transaction` — not
     /// `&PgPool` — is the whole design: the only way to enqueue is inside a
     /// transaction that has not committed yet.
-    pub fn new(executor: &'a mut Transaction<'_, Postgres>) -> Self {
+    pub fn new(executor: &'tx mut Transaction<'conn, Postgres>) -> Self {
         Self { executor }
     }
 

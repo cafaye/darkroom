@@ -11,7 +11,9 @@
 # binary CI never produced.
 [tools]
 rust = "1.95"
-cargo-llvm-cov = "0.6.13"
+# cargo-llvm-cov is not resolvable from the mise registry under this name; install it
+# with `cargo install cargo-llvm-cov` if a coverage gate is ever added here.
+# cargo-llvm-cov = "0.6.13"
 
 [tasks.prime]
 description = "The gate: build, test, clippy, fmt"
@@ -37,9 +39,6 @@ run = "cargo clippy --all-targets -- -D warnings"
 description = "The whole suite. No network, no database."
 run = "cargo test"
 
-[tasks.cover]
-description = "Coverage as lcov into ./coverage"
-run = "cargo llvm-cov --lcov --output-path coverage/lcov.info"
 
 [tasks.compose-up]
 description = "Start the local stack: postgres and darkroom"

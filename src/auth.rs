@@ -284,10 +284,22 @@ pub struct JwksVerifier {
     cache_ttl: Duration,
 }
 
-#[derive(Debug)]
 struct CachedJwks {
     by_kid: HashMap<String, jsonwebtoken::DecodingKey>,
     fetched_at: Instant,
+}
+
+// `DecodingKey` deliberately does not implement `Debug` — printing one can
+// expose key material in a log. The cache is therefore logged by key id only.
+impl std::fmt::Debug for CachedJwks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut kids: Vec<&str> = self.by_kid.keys().map(String::as_str).collect();
+        kids.sort_unstable();
+        f.debug_struct("CachedJwks")
+            .field("kids", &kids)
+            .field("fetched_at", &self.fetched_at)
+            .finish()
+    }
 }
 
 impl JwksVerifier {
@@ -373,7 +385,9 @@ impl JwksVerifier {
 }
 
 fn decoding_key(jwk: &Jwk) -> Result<jsonwebtoken::DecodingKey, String> {
-    use jsonwebtoken::Algorithm;
+    // The `alg` string decides the constructor, not a value read off the token:
+    // this runs before any token is decoded, so a key whose advertised
+    // algorithm core does not accept never becomes usable.
     match jwk.alg.as_str() {
         // RS256 is core's first-named accepted algorithm; ES256 the second.
         "RS256" | "RS384" | "RS512" => {
@@ -470,7 +484,7 @@ impl HmacVerifier {
     /// Mint a token. Dev-only, and deliberately obvious about it: a function
     /// that can sign a token belongs in a dev binary and nowhere else.
     pub fn mint(&self, user_id: Uuid, account_id: Uuid, scopes: &[&str], ttl: Duration) -> String {
-        use jsonwebtoken::{EncodingKey, Header, encode};
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 
         #[derive(Serialize)]
         struct DevClaims {
@@ -504,9 +518,6 @@ impl HmacVerifier {
         .expect("an HS256 token over our own claims always encodes")
     }
 }
-
-#[cfg(feature = "dev-auth")]
-use jsonwebtoken::Algorithm;
 
 #[async_trait::async_trait]
 #[cfg(feature = "dev-auth")]

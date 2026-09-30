@@ -261,6 +261,17 @@ impl IntoResponse for Error {
     }
 }
 
+impl From<sqlx::Error> for Error {
+    fn from(err: sqlx::Error) -> Self {
+        // The outbox and the idempotency helpers return `sqlx::Error` directly
+        // because they are small and generic over the executor. Everything else
+        // in the service returns `StoreError`, which already classifies. This
+        // arm funnels the former into the same classification so an outbox
+        // failure and a domain write failure produce the same status.
+        Error::from(crate::store::StoreError::from(err))
+    }
+}
+
 impl From<crate::store::StoreError> for Error {
     fn from(err: crate::store::StoreError) -> Self {
         match err {
