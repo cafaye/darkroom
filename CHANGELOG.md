@@ -11,7 +11,62 @@ and only `info.version` moves otherwise
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+**The checksum is verified by reading the object back, on every backend.**
+`POST /v1/uploads/{id}/complete` used to ask the backend what checksum it had
+recorded — `put_object().checksum_algorithm(SHA256)` on the way in,
+`head_object().checksum_mode(ENABLED)` on the way out — and compare the client's
+claim against that answer, reading the object only when the backend had none to
+give. That answer exists on AWS S3. It does not exist on Cloudflare R2, whose S3
+compatibility table offers `FULL_OBJECT` for CRC-64/NVME only and `COMPOSITE`
+for SHA-256, so on R2 the `FULL_OBJECT` sha256 never came back and the
+correctness property silently stopped being enforced.
+
+`complete` now always reads the object and hashes it, and `ObjectStore` never
+asks a backend for a checksum. This costs one read per completed upload and
+buys a verification that does not depend on which bucket answered; the count is
+pinned at exactly one by a test so the trade cannot be reversed quietly.
+
+The wire also changes, deliberately:
+
+- The presigned PUT no longer carries `x-amz-checksum-algorithm` in its signed
+  headers, so `curl -T file "$upload_url"` works again. A client no longer has to
+  send a checksum header to use the URL.
+- The S3 client sets `RequestChecksumCalculation::WhenRequired` and
+  `ResponseChecksumValidation::WhenRequired`, so the SDK stops attaching
+  CRC-32 — and CRC-64/NVME in current AWS SDK releases, which R2 rejects — to
+  `PutObject` and `UploadPart` that nobody asked about.
+
+`aws-sdk-s3` is now pinned to `=1.150.0`, with the reason in `Cargo.toml`.
+
+### Removed
+
+**`ObjectMeta::checksum`.** A library-type contract change, not a wire change:
+the OpenAPI document is untouched and `info.version` does not move. The field
+was the sha256 "the backend itself recorded", and a field that is `Some` on one
+backend and `None` on another is a field whose absence silently disables a
+check. Removing it makes the regression unexpressible rather than merely
+discouraged. `objectstore::base64_to_hex` went with it, and the in-memory
+store's stored checksum.
+
+### Added
+
+**Cloudflare R2 as configuration.** One `ObjectStore` implementation, one
+client, two shapes of the same five operations. An R2 endpoint resolves to
+region `auto` (with `us-east-1` and the empty value normalised to it), forces
+path-style addressing, and **refuses startup** if paired with a real region or
+if `auto` is configured without an endpoint — both with a message naming the
+variable and the fix. `Config::describe()` reports `r2` rather than `s3` so the
+startup log says which bucket is being signed for.
+
+`tests/storage_backends.rs` runs one presign assertion body over AWS S3, an
+S3-compatible endpoint and three R2 configurations, and asserts the SigV4
+credential scope, the signed-header list, and the absence of every header R2
+rejects. The startup refusals are asserted against the real binary.
+
+`bin/prime` gains a `cargo test --features s3` tier: the default `cargo test` does
+not compile the feature at all, so without it the R2 tests were decoration.
 
 ## [0.1.0] — 2026-09-30
 
