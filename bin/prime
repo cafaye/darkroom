@@ -33,6 +33,13 @@ cargo clippy --all-targets --all-features -- -D warnings
 step "cargo test (no database)"
 cargo test
 
+# A third tier, and the reason it exists: `cargo test` above does not compile the
+# `s3` feature at all, so the R2 configuration rules, the presigned-URL table
+# and the startup refusals are decoration unless something runs them. The
+# default build is not enough, and "it compiles" is not "it is tested".
+step "cargo test --features s3 (no database)"
+cargo test --features s3
+
 if [[ "${1:-}" == "--db" ]]; then
   : "${TEST_DATABASE_URL:?--db needs TEST_DATABASE_URL, e.g. postgres://darkroom:darkroom@localhost:5432/darkroom_test?sslmode=disable}"
   step "cargo test --ignored (against TEST_DATABASE_URL)"
@@ -40,6 +47,12 @@ if [[ "${1:-}" == "--db" ]]; then
   # tables it touches, and two tests truncating concurrently would delete each
   # other's fixtures mid-assert.
   cargo test -- --ignored --test-threads=1
+  # The same suites with the feature on. It is a different build of the library
+  # — `S3ObjectStore` exists, `Config` has a second variant — and the checksum
+  # table runs against whatever `ObjectStore` is wired, so it is worth the
+  # seconds to know the deployment build still passes the database tier.
+  step "cargo test --features s3 --ignored (against TEST_DATABASE_URL)"
+  cargo test --features s3 -- --ignored --test-threads=1
 fi
 
 step "ok"
