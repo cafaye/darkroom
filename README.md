@@ -693,3 +693,13 @@ would be a flake waiting for a loaded CI box.
 - **Contract tests against a running instance.** The document-shape and
   event-declaration checks are here; `caf contract test` against a live
   darkroom is not wired into CI because there is no deployed instance yet.
+
+## License
+
+MIT. See [LICENSE](LICENSE). `Cargo.toml` declares the same thing in its
+`license` field.
+
+darkroom is a platform a consumer depends on rather than reads, so the licence
+has to leave the consumer's own situation alone. MIT does; a copyleft licence
+would make every downstream inherit an obligation, which is the opposite of
+what a service registry is for.

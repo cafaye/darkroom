@@ -13,6 +13,18 @@ and only `info.version` moves otherwise
 
 ### Added
 
+- **`LICENSE`: darkroom is MIT.** The repository shipped no licence file, which
+  is not "unlicensed, therefore free" — it is **all rights reserved**, the
+  default copyright position when a public repository grants nothing.
+
+  `Cargo.toml` already declared `license = "MIT"` and is now backed by the grant
+  itself. darkroom is a platform a consumer depends on rather than reads, so the
+  licence has to leave the consumer's own situation alone: MIT does, and
+  copyleft would not.
+
+  The copyright line matches the three repositories that already shipped a
+  licence exactly: `Copyright (c) 2026 cafaye`.
+
 **Fixed: three guards that could not fire, and a test that failed on half of all
 runs.** The isolation work below was recovered from an OOM restart and did not
 pass as it stood. Re-running it found four defects, all of the same family — a
