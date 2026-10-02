@@ -1,0 +1,11 @@
+# The kit ref this repository runs. One line: a 40-character commit
+# sha, or a v<semver> tag. NEVER a branch.
+#
+# THIS IS origin/master's sha AND NOT kit's local HEAD, and the difference is the
+# whole reason the value was taken the way it was. kit's checkout on this machine
+# was AHEAD of its remote when this was written, so pinning local HEAD would name
+# a commit that exists on exactly one laptop: every other developer's `git fetch`
+# of that sha fails, and the failure names a sha rather than a ref, which is the
+# worst way for a pin to break. A pin whose value is not fetchable is not a pin;
+# it is a claim about a machine.
+d3d56f7a2e781186d46cdd8fcf735712940dcc97

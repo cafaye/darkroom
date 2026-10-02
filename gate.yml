@@ -151,10 +151,50 @@ external:
         command: [cargo, fetch]
         unmet: cargo build --all-targets fails naming a crate in Cargo.lock, with a network or download error
     - kind: database
-      name: Postgres 17 reachable at $TEST_DATABASE_URL, and it may be EMPTY
+      name: Postgres reachable at $TEST_DATABASE_URL on kit's shared cluster, and it may be EMPTY
       satisfy:
-        command: [docker, compose, up, -d, postgres]
-        unmet: bin/prime --db exits 1 at "cargo test --ignored" with a panic that names TEST_DATABASE_URL
+        # AND WHAT SATISFIES IT CHANGED, which is why this block was rewritten
+        # rather than left alone. It used to say `[docker, compose, up, -d,
+        # postgres]`, and that argv named a service this repository no longer
+        # has: darkroom adopted kit's stack, and a service that adopts kit's
+        # stack owns no container of its own. A `satisfy` command that no longer
+        # runs is worse than a missing one — it is a gate declaration reporting
+        # a satisfied operator while describing a repository that does not
+        # exist.
+        #
+        # It is still a BARE `docker`, so core's checker warns rather than
+        # verifies, and that is the right shape here: this argv needs the pinned
+        # stack's path, and the pinned stack's path is what `kit.ref` decides.
+        # A repository-relative file would let the checker verify it, at the
+        # price of hard-coding a kit path into this file — a second place for a
+        # pin to live, which is the defect `kit.ref` exists to remove.
+        #
+        # `KIT_COMPOSE_DIR` is NOT optional and the failure is silent. Without it
+        # compose resolves kit's initdb bind mount against THIS repository and
+        # Docker creates the missing directory as an empty one: the cluster comes
+        # up HEALTHY, having provisioned no role and no database. Measured, on
+        # the merged config:
+        #
+        #   without it: source: <darkroom>/postgres/initdb
+        #   with it:    source: <kit>/templates/compose/postgres/initdb
+        command:
+          - docker
+          - compose
+          - --project-directory
+          - .
+          - -f
+          - ../kit/templates/compose/docker-compose.yml
+          - -f
+          - ./docker-compose.yml
+          - up
+          - -d
+          - --wait
+        unmet: >-
+          bin/prime --db exits 1 at "cargo test --ignored" with a panic that
+          names TEST_DATABASE_URL, or with `role "darkroom" does not exist`,
+          which reads like a missing migration and is a cluster that was never
+          told this database exists — KIT_POSTGRES_DATABASES is read by an init
+          script that runs ONCE PER VOLUME
       # "and it may be EMPTY" is the sharp part of this requirement, and it is
       # not a hope — it is what `tests/common/mod.rs:63` does. `test_store()`
       # calls `sqlx::migrate!("./migrations")` and runs it against the pool it

@@ -367,7 +367,14 @@ expect_red 'a gate that calls itself self-contained while naming three things it
 
 breakages=$((breakages + 1))
 eleven="$(fresh_copy requirement-path-missing)"
-edit "$eleven/gate.yml" 'command: [docker, compose, up, -d, postgres]' 'command: [bin/compose-up]'
+# The head of the database requirement's argv, which is a bare `docker` today.
+# Only the HEAD is rewritten: core's checker keys the "is this in this
+# repository" verdict on `satisfy.command[0]` alone, so replacing the whole
+# argv would still fire the finding for a reason that has nothing to do with
+# what this breakage is about.
+edit "$eleven/gate.yml" '          - docker
+          - compose' '          - bin/compose-up
+          - compose'
 expect_red 'a requirement satisfied by a file this repository does not have' \
   'gate.requirement-path-missing' "$eleven"
 

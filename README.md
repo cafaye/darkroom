@@ -241,11 +241,20 @@ which present as code defects and are not:
 - **These suites truncate the tables they touch.** Two checkouts pointed at one
   database will delete each other's fixtures mid-assert, and the failures look
   like real ones — `left: 2, right: 1` from `tests/api.rs` during this work was
-  another worktree's run, not a leak. Give each worktree its own Postgres.
-- **Port 5432 may already be taken.** `docker compose up -d postgres` will then
-  start a container whose documented URL connects to a *different* database, and
-  the suite fails with `role "darkroom" does not exist`, which reads like a
-  missing migration. Check what owns the port before reading that error.
+  another worktree's run, not a leak. Give each worktree its own **database**.
+- **The host port is `KIT_POSTGRES_PORT` (15500), not 5432.** darkroom joined
+  kit's shared postgres rather than running its own, and the published port
+  belongs to kit. It moves with its VARIABLE and with nothing else: a `ports:`
+  entry in a service's compose file is APPENDED to the fetched stack's rather
+  than substituted for it, so writing `5432:5432` leaves postgres listening on
+  15500 *and* 5432. If the suite fails with `role "darkroom" does not exist`,
+  check `KIT_POSTGRES_PORT` before reading it as a missing migration — you are
+  probably connected to a different database.
+- **The cluster provisions ONCE PER VOLUME.** `KIT_POSTGRES_DATABASES` is read
+  by an init script that runs only against a fresh `postgres-data` volume, so a
+  developer who already has one gets a healthy cluster that has never been told
+  `darkroom` exists. `bin/dev db grant darkroom`, or one volume recreation, is
+  the fix; nothing shorter applies a new name.
 
 ## The storage boundary
 
@@ -475,10 +484,23 @@ try to build a URL from it.
 
 ## Running it
 
+darkroom's `docker-compose.yml` is an OVERRIDE, not a copy. It is merged with
+the stack that `kit.ref` pins, and the `postgres:` service it used to carry
+lives in that stack now — this repository names its own database and its own
+NOSUPERUSER role in one key and nothing else.
+
 ```sh
 mise install
 cp .env.example .env          # no secrets in this repo
-docker compose up -d postgres
+
+# bring up kit's stack with darkroom's file merged over it.
+# KIT_COMPOSE_DIR is NOT optional — without it compose resolves kit's initdb
+# mount against THIS repository and silently provisions no databases at all.
+KIT_COMPOSE_DIR=<kit>/templates/compose \
+docker compose --project-directory . \
+  -f <kit>/templates/compose/docker-compose.yml \
+  -f ./docker-compose.yml up -d --wait
+
 psql "$DATABASE_URL" -f migrations/0001_assets.sql
 psql "$DATABASE_URL" -f migrations/0002_outbox_events.sql
 psql "$DATABASE_URL" -f migrations/0003_idempotency_keys.sql
@@ -486,6 +508,12 @@ psql "$DATABASE_URL" -f migrations/0003_idempotency_keys.sql
 cargo run                                     # in-memory object store
 cargo run --features dev-auth                 # + the HMAC token verifier
 ```
+
+`$DATABASE_URL` in that shell is the one from `.env`, which is the HOST-side
+URL — `localhost` and `KIT_POSTGRES_PORT` (15500). The service's own
+`DATABASE_URL`, inside the compose network, uses the service name `postgres`
+instead. See `docker-compose.yml` for why the two differ and what the password
+now is.
 
 Migrations are a **deploy step, not a boot step**. Nothing in `main` applies
 one, because two replicas racing to deploy would deadlock on `CREATE TABLE`.

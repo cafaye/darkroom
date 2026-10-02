@@ -41,7 +41,13 @@ step "cargo test --features s3 (no database)"
 cargo test --features s3
 
 if [[ "${1:-}" == "--db" ]]; then
-  : "${TEST_DATABASE_URL:?--db needs TEST_DATABASE_URL, e.g. postgres://darkroom:darkroom@localhost:5432/darkroom_test?sslmode=disable}"
+  # No apostrophes anywhere in this message: bash parses quotes inside the
+  # `${VAR:?word}` expansion, so a single apostrophe below — `kit's`, the word
+  # this sentence used to contain — turns the whole script into a syntax error
+  # at parse time, before a single test runs, and the failure names line 44
+  # rather than the mistake. Nothing in this repository's prime run does
+  # `bash -n`, so the word is kept out of the string on purpose.
+  : "${TEST_DATABASE_URL:?--db needs TEST_DATABASE_URL, e.g. postgres://darkroom:cafaye@localhost:15500/darkroom?sslmode=disable -- that URL is the HOST side of the shared cluster kit ships, so the port is KIT_POSTGRES_PORT (15500), not 5432. See .env.example}"
   step "cargo test --ignored (against TEST_DATABASE_URL)"
   # --test-threads=1 is not a workaround for a race: each test truncates the
   # tables it touches, and two tests truncating concurrently would delete each

@@ -152,10 +152,28 @@ fake that looks finished. README's "Not done" is the source of truth.
 integration suites are `#[ignore]`d and need `TEST_DATABASE_URL`:
 
 ```sh
-docker compose up -d postgres
-TEST_DATABASE_URL="postgres://darkroom:darkroom@localhost:5432/darkroom_test?sslmode=disable" \
-  cargo test -- --ignored --test-threads=1
+# the database is kit's shared cluster, brought up with this repository's
+# compose file merged over the pinned stack. See README "Running it".
+KIT_COMPOSE_DIR=<kit>/templates/compose \
+docker compose --project-directory . \
+  -f <kit>/templates/compose/docker-compose.yml \
+  -f ./docker-compose.yml up -d --wait
+
+cargo test -- --ignored --test-threads=1
 ```
+
+`TEST_DATABASE_URL` comes from `.env` (see `.env.example`): the host side,
+`localhost` and `KIT_POSTGRES_PORT` — **15500, not 5432** — the `darkroom`
+database, and the CLUSTER's password. All three changed when darkroom joined the
+shared cluster, and all three are consequences of kit's defaults rather than
+choices. The service's own `DATABASE_URL`, inside the compose network, uses the
+service name `postgres` in place of `localhost`.
+
+These tests run against the SAME database the service uses, so the service's
+per-role connection limit is spent by the service's own pool before a test
+connects. `docker-compose.yml` raises `KIT_POSTGRES_ROLE_CONNECTIONS` to 20 for
+that reason, and that value is applied by an init script which runs ONCE PER
+VOLUME — an existing volume keeps the old limit.
 
 `--test-threads=1` is a fixture-isolation requirement, not a race workaround:
 each test truncates the tables it touches, and two tests truncating

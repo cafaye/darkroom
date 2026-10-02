@@ -1,43 +1,302 @@
-# The local stack: postgres and darkroom. This is what a worktree runs against
-# and what the ignored integration tests need.
+# darkroom's own compose file — an OVERRIDE, not a copy.
 #
-#   docker compose up -d postgres
-#   TEST_DATABASE_URL="postgres://darkroom:darkroom@localhost:5432/darkroom_test?sslmode=disable" \
-#     cargo test -- --ignored --test-threads=1
+#   KIT_COMPOSE_DIR=<kit>/templates/compose \
+#   docker compose --project-directory . \
+#     -f <kit>/templates/compose/docker-compose.yml \
+#     -f ./docker-compose.yml up -d --wait
 #
-# The service runs with the in-memory object store by default. That is on
-# purpose: a local stack that needs a bucket credential is a local stack nobody
-# starts, and every byte uploaded in development is lost on restart anyway.
-# DARKROOM_OBJECT_STORE=s3 switches to the real thing.
+#   courier, identity and billing run that with a one-word wrapper, `bin/dev`,
+#   which fetches the stack at the ref in `kit.ref` and sets `KIT_COMPOSE_DIR`
+#   for you. THIS REPOSITORY DOES NOT SHIP `bin/dev` YET, and that is stated
+#   here rather than left to be discovered: the two lines above are the whole of
+#   the procedure today, and a reader who types `bin/dev` gets "no such file".
+#   Dropping kit's `templates/bin/dev.sh` in as `bin/dev` is the same file the
+#   other three carry, byte for byte, and it is a separate change from this one
+#   because it brings its own opinions about `.env` and about `db grant`.
+#
+# `KIT_COMPOSE_DIR` is not optional and omitting it is silent. kit's compose file
+# resolves its own build context and its initdb bind mount through
+# `${KIT_COMPOSE_DIR:-.}`, and compose resolves a relative path against the
+# PROJECT DIRECTORY — which `--project-directory .` sets to darkroom's root. Drop
+# the variable and the postgres initdb mount resolves to `<darkroom>/postgres/
+# initdb`, a directory that does not exist, which Docker creates as an empty one.
+# Measured on courier after the same mistake:
+#
+#   $ docker compose --project-directory . -f <kit>/… -f ./docker-compose.yml config
+#       source: /Users/…/courier-27/postgres/initdb        <- courier's tree
+#   $ KIT_COMPOSE_DIR=<kit>/templates/compose docker compose … config
+#       source: /Users/kaka/.cache/cafaye/kit/…/templates/compose/postgres/initdb
+#
+# The cluster comes up healthy either way, holding none of the fleet's
+# databases: initdb ran nothing, no role was created, and no
+# `REVOKE CONNECT … FROM PUBLIC` was applied — the whole provisioning contract,
+# absent behind a green health check. `bin/dev` sets the variable for exactly
+# that reason.
+#
+# WHY THERE IS NO `postgres:` CONTAINER HERE ANY MORE, and it is the first thing a
+# reader will look for. kit's stack already ships a postgres:17-alpine, and a
+# second copy is two postgres majors to upgrade and a port collision for the
+# second developer on the machine. Pointing at kit's is an ENVIRONMENT override,
+# which is the one kind compose merges correctly.
+#
+# WHAT THIS FILE MAY NOT DO, and the collector is the reason
+#
+#   It may not touch `otel-collector`. Not its image, not its command, and above
+#   all not the `volumes:` entry that mounts `otel-collector.yml`. That file
+#   carries the redaction allowlist, which kit DERIVES from core's schemas; a
+#   service that owned it would be shipping a telemetry boundary nobody derived,
+#   and an upload's bytes or a customer's email would leave the process inside
+#   it. kit's `tests/fleet_check.py` fails this repository over any of the three,
+#   and the moment `kit.ref` exists below, that failure has no discretion left
+#   in it.
+#
+# WHY THERE IS NO `depends_on: otel-collector`, and it is load-bearing
+#
+#   Nothing but the collector may be in a readiness path. A service that waits for
+#   the collector serves no traffic while the collector is down, which is strictly
+#   worse than serving traffic with no traces — and it teaches people to switch
+#   telemetry off, which is the opposite of what this packet is for. kit's gate
+#   fails on a `depends_on` naming the collector, and its
+#   tests/no_telemetry_in_readiness.sh proves the property against a real
+#   collector by killing it and showing the service still serving.
+
 services:
+  # THE ONLY THING THIS FILE SAYS ABOUT POSTGRES, and it is one variable.
+  #
+  # `KIT_POSTGRES_DATABASES` is the single place darkroom's database AND its role
+  # come from — one entry here becomes one `CREATE ROLE … LOGIN NOSUPERUSER
+  # NOCREATEDB` and one `CREATE DATABASE … OWNER` in kit's
+  # `templates/compose/postgres/initdb/10-cluster.sh`, on a fresh volume, with
+  # `REVOKE ALL ON DATABASE … FROM PUBLIC` applied to every database in the
+  # cluster. Everything else about the cluster belongs to kit.
+  #
+  # It is `${…:-darkroom}` and NOT a committed literal, and the `:-` is the part
+  # that matters. This is the ONE key anybody has to extend to put a second
+  # service on this cluster, and it is a LIST. A literal `darkroom` here could
+  # only be extended by editing this file and re-reviewing it, which would make
+  # "one shared cluster, nine services" a description rather than something a
+  # stack could do.
+  #
+  # WHY POSTGRES_USER / POSTGRES_DB / POSTGRES_PASSWORD ARE NOT HERE ANY MORE.
+  # They were — all three, one line each, at the top of this file — and they are
+  # named here rather than merely deleted because they are the override kit's own
+  # gate used to RECOMMEND, which is the reason the next reader is one `grep`
+  # away from putting them back.
+  #
+  #   POSTGRES_USER  the official image creates that role as a SUPERUSER, and
+  #                  `10-cluster.sh`'s closing sweep grants CONNECT on every
+  #                  database in the cluster to `current_user` — so a service
+  #                  whose POSTGRES_USER is its own name becomes a role that can
+  #                  open every other service's database. Isolation by privilege
+  #                  is what makes one shared cluster safe; isolation by
+  #                  superuser is the absence of it, wearing the same green
+  #                  health check.
+  #
+  #                  And it never gets that far. This file's three old keys
+  #                  restored on top of the pinned ref, with
+  #                  `KIT_POSTGRES_DATABASES=darkroom` set so that the test
+  #                  isolates them rather than tripping over the missing
+  #                  declaration:
+  #
+  #                    $ docker logs <container>
+  #                    running /docker-entrypoint-initdb.d/10-cluster.sh
+  #                      [cluster] provisioning darkroom
+  #                    ERROR:  role "darkroom" already exists
+  #                    STATEMENT:  CREATE ROLE "darkroom" LOGIN NOSUPERUSER
+  #                              NOCREATEDB NOCREATEROLE NOREPLICATION …
+  #                    $ docker ps -a --filter name=<container>
+  #                    Exited (3)
+  #
+  #                  The image created that role before any init script was
+  #                  sourced, so `CREATE ROLE` collides with it and
+  #                  `ON_ERROR_STOP=1` turns the collision into a cluster that
+  #                  will not finish initdb.
+  #
+  #   POSTGRES_DB     the cluster's ADMINISTRATION database — it holds cluster
+  #                  administration state and no service's rows. The image
+  #                  creates it before any init script is sourced, for the same
+  #                  reason as the role above, so `CREATE DATABASE darkroom`
+  #                  finds it already there. That one is the reasoning rather
+  #                  than the measurement: in the run above `CREATE ROLE` is what
+  #                  fails first.
+  #
+  #   POSTGRES_PASSWORD  it is the credential of EVERY role `10-cluster.sh`
+  #                  creates, so a per-service value is a claim about two things
+  #                  at once. It is the only one of the three that does not stop
+  #                  the cluster starting — what it does is make one service's
+  #                  file decide a credential every other service on the cluster
+  #                  authenticates with. kit already exposes it as
+  #                  `KIT_POSTGRES_PASSWORD` in `.env`, which is where an
+  #                  operator sets it, and `DATABASE_URL` below interpolates that
+  #                  same variable instead of hard-coding a pair.
+  #
+  # kit's `tests/fleet_check.py` fails this repository over any of the three.
   postgres:
-    image: postgres:17-alpine
     environment:
-      POSTGRES_USER: darkroom
-      POSTGRES_PASSWORD: darkroom
-      POSTGRES_DB: darkroom_test
-    ports:
-      - "5432:5432"
-    volumes:
-      - darkroom-pg:/var/lib/postgresql/data
-    healthcheck:
-      # The service waits for this, so `docker compose up` returns only when
-      # the database can actually accept a connection.
-      test: ["CMD-SHELL", "pg_isready -U darkroom"]
-      interval: 2s
-      timeout: 3s
-      retries: 20
+      KIT_POSTGRES_DATABASES: ${KIT_POSTGRES_DATABASES:-darkroom}
+
+      # darkroom's SHARE OF THE CLUSTER'S CONNECTIONS, raised above kit's
+      # default of 10, and the arithmetic is ARITHMETIC READ OUT OF THIS
+      # REPOSITORY rather than a measurement taken on a live cluster — the
+      # machine this was written on had no Docker daemon, so nothing below has
+      # been reproduced against a running postgres and is labelled as what it
+      # is rather than dressed up as a transcript:
+      #
+      #   the service's own pool   DARKROOM_DB_MAX_CONNECTIONS, default 10
+      #                             (src/config.rs), and a pool holds its
+      #                             ceiling open rather than its working set
+      #   one test binary          PgPoolOptions::max_connections(5)
+      #                             (tests/common/mod.rs)
+      #
+      # `docker compose up` brings the service up, and a developer then runs
+      # `cargo test -- --ignored` against the SAME cluster — which is what this
+      # file arranged with its own container and what `TEST_DATABASE_URL` in
+      # `.env.example` still points at. 10 + 5 is 15 against a limit of 10, so
+      # the per-role budget is spent by the service's own pool before a single
+      # test connects, and the symptom reads like a code defect and is not:
+      #
+      #   FATAL 53300 (too many connections for role "darkroom")
+      #
+      # 20 rather than 15 because this is a ceiling rather than a setting: 15 is
+      # what this repository needs TODAY, and the failure mode of being one
+      # connection short is a suite that cannot run at all. The fleet arithmetic
+      # still closes — one database at 20 is 23 against kit's
+      # `KIT_POSTGRES_MAX_CONNECTIONS` of 200 — but a genuinely shared local
+      # cluster carrying every service at 20 would need that raised alongside
+      # it, which belongs where the fleet is declared rather than here.
+      #
+      # IT IS APPLIED AT INITDB AND NOWHERE ELSE. `10-cluster.sh` runs from
+      # `docker-entrypoint-initdb.d`, which runs once per volume, so a developer
+      # with an existing `postgres-data` volume keeps `CONNECTION LIMIT 10` after
+      # pulling this and will meet the error above. The fix is kit's
+      # `bin/dev db grant darkroom`, once this repository has a `bin/dev` (see
+      # the top of this file), or one volume recreation —
+      # `docker compose … down -v && … up`. kit's
+      # templates/database/README.md says the same about every other value in
+      # this block. It is stated here rather than left to be discovered, because
+      # the value looks like it took effect and did not.
+      KIT_POSTGRES_ROLE_CONNECTIONS: ${KIT_POSTGRES_ROLE_CONNECTIONS:-20}
+
+    # THERE IS NO `command:` HERE, AND THAT IS A DECISION RATHER THAN AN
+    # OMISSION. Compose REPLACES rather than merges `command`, and it replaces
+    # the whole value whatever shape that value has — so a scalar added here
+    # would not add an argument to kit's command, it would DELETE kit's command.
+    # Two things would go with it, and the second is the dangerous one:
+    #
+    #   1. `postgres` — the entrypoint argument the image needs to start in
+    #      server mode rather than printing usage and exiting.
+    #   2. `-c max_connections=${KIT_POSTGRES_MAX_CONNECTIONS:-200}` — the
+    #      connection budget kit raises precisely so that ONE cluster can carry
+    #      the whole fleet. Losing it reverts the cluster to Postgres's default
+    #      100, silently, and only for whichever service overrides `command` at
+    #      all. The budget for the fleet does NOT fit inside 100.
+    #
+    # So this block declares an environment and nothing else. If kit's command
+    # ever needs changing, it changes in kit.
+    #
+    # THERE IS NO `ports:` HERE, and there WAS one. `ports:` is a LIST, and a
+    # second compose file's list is APPENDED rather than substituted — so the
+    # `5432:5432` this file used to carry left postgres listening on kit's 15500
+    # AND on 5432, which collides with the second developer's stack on the
+    # machine and with a Homebrew postgres. The documented way to move a
+    # published port is its VARIABLE, in `.env`:
+    #
+    #   KIT_POSTGRES_PORT=15500
+    #
+    # and a variable REPLACES where a list APPENDS. So the block is gone rather
+    # than rewritten, and `docker compose config` on the merged file shows
+    # exactly one host port on postgres: the one kit published. The consequence
+    # is stated rather than hidden — every URL that reached `localhost:5432`
+    # reaches `localhost:${KIT_POSTGRES_PORT:-15500}` now, and `.env.example`
+    # has been updated to say so rather than leaving a URL that can only fail.
 
   darkroom:
     build:
       context: .
       dockerfile: docker/Dockerfile
+    # ON KIT'S `platform` NETWORK, and this line is not optional tidiness.
+    #
+    # kit puts every service it ships on a network called `platform`. A service
+    # in the SECOND compose file that declares no `networks:` lands on the
+    # project's `default` network instead, and `default` and `platform` are two
+    # different networks in two different DNS domains — so `postgres` stops
+    # resolving the moment this container starts. Measured, from
+    # `docker compose config` on courier's merged file:
+    #
+    #     courier:         networks: {default: null}
+    #     postgres:        networks: {platform: null}
+    #
+    # and the symptom there was not a DNS error at all, which is why it was worth
+    # chasing rather than assuming: courier's `syslog` log driver resolves
+    # `otel-collector` itself, so the container fails to START
+    #
+    #     failed to initialize logging driver: dial tcp: lookup otel-collector
+    #     on 0.250.250.200:53: no such host
+    #
+    # darkroom has no syslog driver, so the same defect presents as its ordinary
+    # shape instead: the service boots, `/healthz` answers, and the first query
+    # that touches storage fails on a lookup of `postgres`. That is the worse of
+    # the two presentations, because a container that starts looks like a
+    # container that works.
+    networks:
+      - platform
+    # A literal, and NOT a `${KIT_*:default}` — this is darkroom's OWN port, not
+    # one of kit's. kit's port block is a statement about the shared
+    # infrastructure; 8080 is darkroom's own historical port and its documented
+    # one, and moving it is a change to a published contract rather than a
+    # compose edit.
+    ports:
+      - "8080:8080"
     depends_on:
+      # The database, and ONLY the database. Not the collector, for the reason at
+      # the top of this file.
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://darkroom:darkroom@postgres:5432/darkroom_test?sslmode=disable
+      # Over the compose network, by service name. The host mapping above is for
+      # the developer and the host-side test suite, and is not how the service
+      # reaches its own database.
+      #
+      # The role is `darkroom`, NOT the cluster's administrator:
+      # `KIT_POSTGRES_DATABASES: darkroom` above provisioned it
+      # `LOGIN NOSUPERUSER` and made it the owner of the `darkroom` database.
+      # That is the whole of darkroom's credential on this cluster, and it is
+      # also the credential that is refused at the door of every other service's
+      # database. Isolation here is by privilege and never by secret, which is
+      # why the boundary can be demonstrated by anyone holding this file.
+      #
+      # `postgres://` and NOT `postgresql://`. Both spellings are the same scheme
+      # to sqlx, and this file does not get to restate a URL to agree with
+      # another service's file. `sslmode=disable` is unchanged from the URL it
+      # replaces: this is a development cluster on a compose network that is not
+      # a network Postgres speaks TLS on, and a self-hoster putting it behind a
+      # proxy sets it in their own deployment.
+      #
+      # The DATABASE NAME CHANGED, from `darkroom_test` to `darkroom`, and that
+      # is not tidying. `KIT_POSTGRES_DATABASES` creates the database NAMED by
+      # its entry, so this service asking for `darkroom` in the list and
+      # connecting to `darkroom_test` is refused for a database nobody declared:
+      #
+      #   FATAL:  database "darkroom_test" does not exist
+      #
+      # One name, and it is the one in the list.
+      #
+      # The password is INTERPOLATED, and it used to be the literal `darkroom` to
+      # match a `POSTGRES_PASSWORD: darkroom` this file no longer sets. Every
+      # role `10-cluster.sh` creates takes the cluster's `POSTGRES_PASSWORD`, so
+      # that role's password is now kit's `${KIT_POSTGRES_PASSWORD:-cafaye}` and
+      # the pair in this URL would be a credential no role holds. A cluster
+      # password changed in `.env` cannot leave this file authenticating as a
+      # password that no longer exists. (A password containing `@` or `/` will
+      # not survive URL interpolation unescaped; that is the cost of a URL
+      # string, and it is not worth a percent-encoder to keep a development
+      # default out of a comment.)
+      DATABASE_URL: postgres://darkroom:${KIT_POSTGRES_PASSWORD:-cafaye}@postgres:5432/darkroom?sslmode=disable
       PORT: "8080"
+      # The in-memory object store by default, and it stays that way: a local
+      # stack that needs a bucket credential is a local stack nobody starts, and
+      # every byte uploaded in development is lost on restart anyway.
+      # DARKROOM_OBJECT_STORE=s3 switches to the real thing.
       DARKROOM_OBJECT_STORE: memory
       DARKROOM_LOG_FORMAT: human
       DARKROOM_JWKS_URL: https://identity.cafaye.com/.well-known/jwks.json
@@ -46,8 +305,3 @@ services:
       # Production default. Set to `development` for the HMAC verifier, which
       # only exists behind --features dev-auth.
       DARKROOM_ENV: development
-    ports:
-      - "8080:8080"
-
-volumes:
-  darkroom-pg:

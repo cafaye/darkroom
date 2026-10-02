@@ -9,10 +9,19 @@
 //! and `.github/workflows/ci.yml`) or the tenant-isolation suite is decoration.
 //!
 //! ```sh
-//! docker compose up -d postgres
-//! TEST_DATABASE_URL="postgres://darkroom:darkroom@localhost:5432/darkroom_test?sslmode=disable" \
-//!   cargo test -- --ignored --test-threads=1
+//! # the shared cluster, brought up with darkroom's compose file merged over
+//! # kit's pinned stack. See README "Running it" and .env.example.
+//! KIT_COMPOSE_DIR=<kit>/templates/compose \
+//! docker compose --project-directory . \
+//!   -f <kit>/templates/compose/docker-compose.yml \
+//!   -f ./docker-compose.yml up -d --wait
+//! cargo test -- --ignored --test-threads=1
 //! ```
+//!
+//! `TEST_DATABASE_URL` is the HOST-side URL — `localhost` and
+//! `KIT_POSTGRES_PORT` (15500, not 5432). It names the same `darkroom` database
+//! the service uses and the CLUSTER's password rather than a per-service one,
+//! because both changed when this repository joined kit's shared cluster.
 //!
 //! `--test-threads=1` is not a workaround for a race; each test truncates the
 //! tables it touches, and two tests truncating concurrently would delete each
