@@ -42,10 +42,17 @@ and only `info.version` moves otherwise
   `tests/schema_isolation.rs` holds the property, and splits it so the half that
   needs no database runs on a bare machine: the name's alphabet, the check on the
   two statements that interpolate one, and the stamp a `drop schema` may only act
-  on. `DB_TESTS` 54 → 58, with two new constants for the new file's two halves.
+  on. `DB_TESTS` 54 → 59, with two new constants for the new file's two halves.
   Every test that needs the database was isolated; **nothing needed its own
   exclusion**, and re-adding a suite-wide flag would undo the isolation for the
-  other fifty-seven.
+  other fifty-eight.
+
+  The fifth database case in that file exists because a planted divergence found
+  a `truncate` nothing was holding: rewritten to name `public.assets`, the whole
+  tier stayed green, because every store is created empty and a `public` truncate
+  cannot reach into another schema. The guard asserts both halves — one test's
+  `truncate` empties its own schema and leaves another's rows alone — since the
+  first half alone is satisfied by a `truncate` that does nothing at all.
 
 ### Added
 
