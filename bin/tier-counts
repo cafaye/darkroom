@@ -11,7 +11,7 @@
 # code is a claim, and this repository has three ways to make a false one.
 #
 #   1. Tier 6 does not run at all — someone calls `bin/prime` instead of
-#      `bin/prime --db`, and the 58 database tests report as `ignored` while
+#      `bin/prime --db`, and the 59 database tests report as `ignored` while
 #      the suite still exits 0. darkroom is a service whose entire job is
 #      putting bytes in a database.
 #   2. Tier 6 runs but touches nothing — `TEST_DATABASE_URL` is unset, every
@@ -31,8 +31,8 @@
 # database run *passes*. Those are the same set of tests, so the two counts
 # agreeing is a real identity and not two numbers that happen to be plausible:
 #
-#   default `cargo test`      77 passed, 58 ignored
-#   `cargo test -- --ignored` 58 passed,  0 ignored
+#   default `cargo test`      77 passed, 59 ignored
+#   `cargo test -- --ignored` 59 passed,  0 ignored
 #
 # A test that is `#[ignore]`d without the database tier running it breaks the
 # identity. A test that is added and never `#[ignore]`d breaks it the other
@@ -48,10 +48,10 @@
 #
 # | tier | command | expected |
 # |---|---|---|
-# | 4 | `cargo test` | 77 lib unit tests, 58 skipped for want of a database, 9 OpenAPI drift checks, 12 tenant-scoping checks, 4 schema-isolation checks |
+# | 4 | `cargo test` | 77 lib unit tests, 59 skipped for want of a database, 9 OpenAPI drift checks, 12 tenant-scoping checks, 4 schema-isolation checks |
 # | 5 | `cargo test --features s3` | 89 lib unit tests, 9 backend-table rows, 9 OpenAPI drift checks, 12 tenant-scoping checks, 4 schema-isolation checks |
-# | 6 | `cargo test -- --ignored` | 58 passed, 7 of them query-scoping, 4 of them schema-isolation |
-# | 6 | `cargo test --features s3 -- --ignored` | 58 passed |
+# | 6 | `cargo test -- --ignored` | 59 passed, 7 of them query-scoping, 5 of them schema-isolation |
+# | 6 | `cargo test --features s3 -- --ignored` | 59 passed |
 #
 # The step labels below are the ones `bin/prime` prints. Rewording a step there
 # breaks this script, loudly and on the first run, which is the intended
@@ -108,7 +108,15 @@
 # `#[ignore]`d ones that need a database. So it adds a new constant of each
 # kind, `SCHEMA_ISOLATION_TESTS` and `SCHEMA_ISOLATION_DB_TESTS`, and moves
 # `DB_TESTS` 54 -> 58, with both sides of the identity moving together: the
-# default run skips 58 and the database run passes 58.
+# default run skipped 58 and the database run passed 58.
+#
+# Then a FIFTH `#[ignore]`d case arrived in that file, and it is the one worth
+# reading: it was not a new property but a guard for a `truncate` the other four
+# did not hold. Rewriting `truncate` to name `public.assets` left the entire
+# database tier green, because every store is created empty and a `public`
+# truncate cannot reach into another schema — so `SCHEMA_ISOLATION_DB_TESTS` is
+# 5 and `DB_TESTS` 59. A count that moves because a guard turned out to be
+# missing is the count doing the job the header says it does.
 #
 # The split is not bookkeeping tidiness. The four default-tier tests are the ones
 # that CAN run on a machine with no Postgres, and they are the ones that hold the
@@ -121,7 +129,7 @@
 
 set -euo pipefail
 
-DB_TESTS=58
+DB_TESTS=59
 UNIT_TESTS=77
 S3_UNIT_TESTS=89
 S3_TABLE_TESTS=9
@@ -190,7 +198,7 @@ QUERY_SCOPING_TESTS=7
 # separately for `QUERY_SCOPING_TESTS`'s reason, since a count that covers seven
 # files cannot say which one went quiet.
 SCHEMA_ISOLATION_TESTS=4
-SCHEMA_ISOLATION_DB_TESTS=4
+SCHEMA_ISOLATION_DB_TESTS=5
 
 usage() {
   echo "usage: bin/tier-counts <log-of-'bin/prime --db'>" >&2
@@ -272,7 +280,7 @@ do
 done
 
 # --- tier 4: the default run -------------------------------------------------
-# 58 skipped here is not a problem; it is the accounting identity's left side.
+# 59 skipped here is not a problem; it is the accounting identity's left side.
 expect "tier 4  unit tests" \
   "$(count 'cargo test (no database)' 'unittests src/lib.rs' passed)" "$UNIT_TESTS"
 default_ignored="$(count 'cargo test (no database)' '' ignored)"

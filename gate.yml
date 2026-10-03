@@ -31,8 +31,8 @@ gate:
   #
   # `bin/prime` has three tiers — 4, 5 and 6 in `bin/tier-counts`'s numbering,
   # after fmt, build and clippy — and tier 6 is the one behind the flag. Its
-  # tests are `#[ignore]`d, so `./bin/prime` reports all 58 of them as `ignored`,
-  # runs everything else, prints `==> ok` and exits 0 — a green badge over 58
+  # tests are `#[ignore]`d, so `./bin/prime` reports all 59 of them as `ignored`,
+  # runs everything else, prints `==> ok` and exits 0 — a green badge over 59
   # tests that never executed. That is the `cafaye-rb` defect wearing a Rust
   # hat, and declaring `[bin/prime]` here would write it down.
   #
@@ -113,7 +113,7 @@ gate:
     # `tests/tenant_isolation.rs`; `tests/schema_isolation.rs` sorts before it
     # and did not move this.
     #
-    # It is NOT the suite total — 58 database tests, 77 lib unit tests — because
+    # It is NOT the suite total — 59 database tests, 77 lib unit tests — because
     # the gate does not print a total. The suite-wide counts are
     # `bin/tier-counts`'s constants, pinned in the same repository, and the two
     # must not be confused: this one is a line the gate prints, that one is an
@@ -203,7 +203,7 @@ external:
       # not a hope — it is what `tests/common/mod.rs:63` does. `test_store()`
       # calls `sqlx::migrate!("./migrations")` and runs it against the pool it
       # just opened, with the migration files embedded at compile time. So the
-      # 41 database tests cannot pass against a schema nobody applied, and this
+      # 59 database tests cannot pass against a schema nobody applied, and this
       # repository is not identity: a green database tier here is a green
       # database tier against a migrated schema.
       #

@@ -331,6 +331,50 @@ async fn one_tests_truncate_cannot_delete_anothers_rows() {
     );
 }
 
+/// `truncate` points at THIS test's schema — the half of the property that is
+/// easy to lose and that nothing else in the tree was holding.
+///
+/// Found by planting the divergence, not by reading this file. With `truncate`
+/// rewritten to name `public.assets` and its three siblings, **the entire
+/// database tier stayed green**: the cross-test guard above still passes (a
+/// `public` truncate cannot reach into another schema), every test gets a fresh
+/// empty schema anyway, and `test_store`'s own truncate deletes nothing because
+/// the schema it is called on was created empty a line earlier. A `truncate`
+/// that quietly empties the SERVICE's tables is the sharpest edge in this test
+/// suite and it had no guard at all.
+///
+/// So: A writes, B writes, `truncate(&a)`, and A's rows are gone while B's are
+/// not. Both directions, because the first half alone cannot tell "truncate does
+/// nothing" from "truncate empties the right schema" — a `truncate` that
+/// silently did nothing would satisfy it too.
+#[tokio::test]
+#[ignore = "needs TEST_DATABASE_URL; see tests/common/mod.rs"]
+async fn truncate_empties_this_tests_schema_and_only_that() {
+    let a = test_store().await;
+    let b = test_store().await;
+    seed_one_ready_asset(&a).await;
+    seed_one_ready_asset(&b).await;
+    assert_eq!(asset_rows(&a).await, 1, "A wrote a row");
+    assert_eq!(asset_rows(&b).await, 1, "B wrote a row");
+
+    truncate(&a).await;
+
+    assert_eq!(
+        asset_rows(&a).await,
+        0,
+        "truncate did not empty this test's own schema. Either it names \
+         something other than this test's tables — public.assets being the one \
+         that matters, since that is the service's own database — or it does \
+         nothing, which leaves a test that reuses its store across steps reading \
+         the rows it wrote in the previous step."
+    );
+    assert_eq!(
+        asset_rows(&b).await,
+        1,
+        "truncate reached into a schema it does not own"
+    );
+}
+
 /// What the janitor drops and what it leaves.
 ///
 /// Four schemas, four answers. The one with no comment and the one whose name
@@ -350,10 +394,18 @@ async fn the_janitor_drops_a_schema_no_run_can_be_using_and_leaves_everything_el
     let stale = fresh_schema();
     let uncommented = fresh_schema();
     // Matches the janitor's candidate query (`^t_`) and is refused by
-    // `is_plain_identifier`. Quoted here by hand because `quoted` would panic —
-    // which is the point: the harness could never have created this one, so the
-    // janitor has to be the thing that notices.
-    let not_ours = format!("{SCHEMA_PREFIX}zzzz");
+    // `is_plain_identifier`, because `z` is not a hex digit. Quoted here by hand
+    // because `quoted` would panic — which is the point: the harness could never
+    // have created this one, so the janitor has to be the thing that notices.
+    //
+    // Unique per run even though the prefix is not: a fixed name here is a
+    // planted schema that outlives a FAILED run of this test, because the
+    // cleanup below it never executes, and the next run then dies on
+    // `42P06 schema already exists` — which is how this was found.
+    let not_ours = format!(
+        "{SCHEMA_PREFIX}zzzz{}",
+        &Uuid::new_v4().simple().to_string()[..4]
+    );
     let eight_hours_ago = now_millis().saturating_sub(8 * 60 * 60 * 1000);
 
     plant(

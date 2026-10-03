@@ -104,7 +104,7 @@ jobs:
       # It measures less than it looks like it does, deliberately stated rather
       # than implied: kit runs `cargo llvm-cov` with default features, so the
       # s3 build is in the denominator and out of the numerator, and it runs
-      # the same `cargo test` that ignores the 58 database tests, so
+      # the same `cargo test` that ignores the 59 database tests, so
       # `store.rs` sits at 0.54%. What this number catches is the default suite
       # ceasing to run at all.
       coverage-fail-under: '50'
@@ -177,7 +177,7 @@ jobs:
         # The gate exits zero when it is happy, and `cargo test` exits zero when
         # it ignored everything it could. Those are the same exit code, so this
         # reads the counts: 77 unit, 89 with s3, 9 R2/S3 behaviour-table rows,
-        # and 58 database tests in each feature set. Without it a green badge
+        # and 59 database tests in each feature set. Without it a green badge
         # is a claim about a run that may never have happened.
         run: ./bin/tier-counts "$RUNNER_TEMP/prime.log"
 

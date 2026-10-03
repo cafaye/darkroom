@@ -189,9 +189,18 @@ characters from a fixed alphabet, and a `drop schema` that can only fire on a
 schema this harness made and that no run can still be using.
 
 **A test that cannot be isolated does not get the flag back.** Re-adding
-`--test-threads=1` to `bin/prime` undoes the isolation for the other fifty-seven
+`--test-threads=1` to `bin/prime` undoes the isolation for the other fifty-eight
 and hides the one test that needed it; such a test gets its own exclusion, named,
 with a comment saying what it shares with whom. Nothing has needed one.
+
+**A `truncate` that quietly points somewhere else is the sharpest edge in this
+suite, and the guard for it exists because the divergence was planted rather than
+imagined.** With `truncate` rewritten to name `public.assets` and its three
+siblings, the entire database tier stayed green — the schemas hide it, because
+every store is created empty and a `public` truncate cannot reach into another
+schema. `tests/schema_isolation.rs` asserts both halves now: one test's
+`truncate` empties its own schema AND leaves another test's rows alone, because
+the first half on its own is satisfied by a `truncate` that does nothing at all.
 
 A skip is honest; a test that silently passes without proving anything is not.
 **If you add a `#[ignore]`, add the job that runs it** — CI's `gate` job calls
@@ -209,12 +218,12 @@ counts instead, with `bin/tier-counts`:
 ./bin/tier-counts /tmp/prime.log
 ```
 
-It asserts 77 unit / 89 with s3 / 9 behaviour-table rows / 58 database twice /
+It asserts 77 unit / 89 with s3 / 9 behaviour-table rows / 59 database twice /
 12 tenant-scoping twice / 7 query-scoping, **and** one identity: the count the
 default run skips equals the count the database run passes, because they are the
 same tests. **Adding a test means raising the number in `bin/tier-counts` in the
 same commit** — that is the point of the constant, and a CI red that says
-`expected 58, got 61` is the mechanism working, not failing.
+`expected 59, got 62` is the mechanism working, not failing.
 
 **A query's tenant predicate is checked as a property of the source, not by
 convention.** `tests/tenant_scoping.rs` reads `src/store.rs` with
@@ -305,7 +314,7 @@ cargo llvm-cov --fail-under-lines 50       # the coverage floor, and only this
 
 **`./bin/prime --db` is the gate, and `mise run prime` is not.** `gate.yml`
 declares the former, and the flag is in the declaration rather than implied by
-it: without `--db` the 58 database tests report as `ignored` and the run still
+it: without `--db` the 59 database tests report as `ignored` and the run still
 prints `==> ok` and exits 0. If you are landing a change, run the declared gate.
 `gate.yml` is core's format — read it before changing it, and read what it says
 about this repository's own requirements.

@@ -555,10 +555,10 @@ left to read:
 
 | tier | command | what it must report |
 |---|---|---|
-| 4 | `cargo test` | 77 lib unit tests, 58 skipped for want of a database, 9 OpenAPI drift checks, 12 tenant-scoping checks, 4 schema-isolation checks |
+| 4 | `cargo test` | 77 lib unit tests, 59 skipped for want of a database, 9 OpenAPI drift checks, 12 tenant-scoping checks, 4 schema-isolation checks |
 | 5 | `cargo test --features s3` | 89 lib unit tests, 9 R2/S3 behaviour-table rows, 9 OpenAPI drift checks, 12 tenant-scoping checks |
-| 6 | `cargo test -- --ignored` | 58 passed, 0 left ignored, 7 of them query-scoping, 4 of them schema-isolation |
-| 6 | `cargo test --features s3 -- --ignored` | 58 passed, 0 left ignored |
+| 6 | `cargo test -- --ignored` | 59 passed, 0 left ignored, 7 of them query-scoping, 5 of them schema-isolation |
+| 6 | `cargo test --features s3 -- --ignored` | 59 passed, 0 left ignored |
 
 One of those is an identity rather than a constant: **the count the default run
 skips must equal the count the database run passes**, because they are the same
@@ -687,7 +687,7 @@ Three things it does not measure, stated rather than implied:
 - the `--features s3` build, because kit's coverage step runs with default
   features — so `objectstore/s3_impl.rs` is not in the picture at all;
 - the database tier, because `cargo llvm-cov` runs the same `cargo test` that
-  ignores the 58 database tests — which is why `store.rs` reports 0.54%;
+  ignores the 59 database tests — which is why `store.rs` reports 0.54%;
 - `main.rs`, at 0%, because a binary's `main` is never called by a test.
 
 What it does catch is the default suite ceasing to run: the only tests
