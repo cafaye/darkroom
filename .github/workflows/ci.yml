@@ -28,13 +28,23 @@
 # ## The thing this file exists to prevent
 #
 # `bin/prime` has three tiers and the third one does not run by default. Tier 6
-# is `cargo test -- --ignored --test-threads=1` against `TEST_DATABASE_URL`,
-# and its tests are `#[ignore]`d, so a plain `cargo test` reports them as
-# ignored and exits zero. A CI run that stops at tier 5 is a run that has never
-# touched a database, and darkroom is a service whose entire job is putting
-# bytes in one. So `gate` sets the environment and calls `bin/prime --db`, and
-# `bin/tier-counts` reads the counts afterwards so a green run has to mean the
-# 41 database tests actually passed rather than merely did not fail.
+# is `cargo test -- --ignored` against `TEST_DATABASE_URL`, and its tests are
+# `#[ignore]`d, so a plain `cargo test` reports them as ignored and exits zero.
+# A CI run that stops at tier 5 is a run that has never touched a database, and
+# darkroom is a service whose entire job is putting bytes in one. So `gate` sets
+# the environment and calls `bin/prime --db`, and `bin/tier-counts` reads the
+# counts afterwards so a green run has to mean the database tests actually
+# passed rather than merely did not fail.
+#
+# Tier 6 runs in PARALLEL, with no `--test-threads=1`, because each test applies
+# the migrations into a schema of its own — see `tests/common/mod.rs` and
+# `tests/schema_isolation.rs`. The flag used to be there because the suites
+# shared one set of tables and each truncated them; the schemas are why it is
+# not. That distinction matters for this file: `gate` provisions ONE postgres
+# service for the whole job, so a suite that had quietly gone back to sharing
+# tables would pass locally on a developer's eight cores and fail here for
+# reasons this file cannot report, and a `--test-threads=1` reappearing in
+# `bin/prime` would hide it. The tier-counts check below is what notices.
 name: ci
 
 on:
@@ -94,7 +104,7 @@ jobs:
       # It measures less than it looks like it does, deliberately stated rather
       # than implied: kit runs `cargo llvm-cov` with default features, so the
       # s3 build is in the denominator and out of the numerator, and it runs
-      # the same `cargo test` that ignores the 41 database tests, so
+      # the same `cargo test` that ignores the 58 database tests, so
       # `store.rs` sits at 0.54%. What this number catches is the default suite
       # ceasing to run at all.
       coverage-fail-under: '50'
@@ -167,7 +177,7 @@ jobs:
         # The gate exits zero when it is happy, and `cargo test` exits zero when
         # it ignored everything it could. Those are the same exit code, so this
         # reads the counts: 77 unit, 89 with s3, 9 R2/S3 behaviour-table rows,
-        # and 41 database tests in each feature set. Without it a green badge
+        # and 58 database tests in each feature set. Without it a green badge
         # is a claim about a run that may never have happened.
         run: ./bin/tier-counts "$RUNNER_TEMP/prime.log"
 

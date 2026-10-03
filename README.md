@@ -235,13 +235,17 @@ a guard that hangs or passes on broken source as a finding about the guard.**
 The full enumeration, the counts per operation kind, and the five tripwires proven
 able to fire are in `REPORT-darkroom-09-isolation.md`.
 
-Two things to know before running the database tier on a busy machine, both of
+Three things to know before running the database tier on a busy machine, all of
 which present as code defects and are not:
 
-- **These suites truncate the tables they touch.** Two checkouts pointed at one
-  database will delete each other's fixtures mid-assert, and the failures look
-  like real ones — `left: 2, right: 1` from `tests/api.rs` during this work was
-  another worktree's run, not a leak. Give each worktree its own **database**.
+- **These suites write to the database they are pointed at.** Each test applies
+  the migrations into a schema of its own and truncates only that schema, so two
+  tests — or two checkouts — no longer destroy each other's fixtures: that used
+  to happen, and the `left: 2, right: 1` from `tests/api.rs` recorded during
+  darkroom-09 was another worktree's run rather than a leak. What is left is that
+  the schemas are created in, and reaped from, the database `TEST_DATABASE_URL`
+  names, so a run against a database holding data you want leaves a schema per
+  test beside it. Point it at a database you are happy to have that in.
 - **The host port is `KIT_POSTGRES_PORT` (15500), not 5432.** darkroom joined
   kit's shared postgres rather than running its own, and the published port
   belongs to kit. It moves with its VARIABLE and with nothing else: a `ports:`
@@ -551,10 +555,10 @@ left to read:
 
 | tier | command | what it must report |
 |---|---|---|
-| 4 | `cargo test` | 77 lib unit tests, 54 skipped for want of a database, 9 OpenAPI drift checks, 12 tenant-scoping checks |
+| 4 | `cargo test` | 77 lib unit tests, 58 skipped for want of a database, 9 OpenAPI drift checks, 12 tenant-scoping checks, 4 schema-isolation checks |
 | 5 | `cargo test --features s3` | 89 lib unit tests, 9 R2/S3 behaviour-table rows, 9 OpenAPI drift checks, 12 tenant-scoping checks |
-| 6 | `cargo test -- --ignored` | 54 passed, 0 left ignored, 7 of them query-scoping |
-| 6 | `cargo test --features s3 -- --ignored` | 54 passed, 0 left ignored |
+| 6 | `cargo test -- --ignored` | 58 passed, 0 left ignored, 7 of them query-scoping, 4 of them schema-isolation |
+| 6 | `cargo test --features s3 -- --ignored` | 58 passed, 0 left ignored |
 
 One of those is an identity rather than a constant: **the count the default run
 skips must equal the count the database run passes**, because they are the same
@@ -574,6 +578,43 @@ made that number a lie, so each default-tier file is pinned in its own right
 instead: `OPENAPI_DRIFT_TESTS=9`, asserted in tiers 4 and 5. Without that pin a
 file whose tests were deleted one at a time would report `0 passed` while every
 other number still read correctly.
+
+### One schema per test, which is why tier 6 runs in parallel
+
+There is no `--test-threads=1` anywhere in this repository, and there was one in
+`bin/prime` until each `test_store()` started giving its test a schema of its
+own. `tests/common/mod.rs` creates `t_` plus eight hex characters of a fresh
+uuid, applies `sqlx::migrate!("./migrations")` **into that schema**, and builds
+the pool with `set search_path to <that schema>` in `after_connect`, so every
+connection the test gets is inside it. `truncate` still runs, and still names its
+tables unqualified — that is the isolation, not an oversight: the names resolve
+through the search path, so it empties this test's tables and cannot reach
+another's.
+
+Three reasons it is a schema and not something else, because all three were
+available:
+
+- **Not a database per test.** `TEST_DATABASE_URL` names one database, and
+  changing its shape is a different decision than this one.
+- **Not a transaction rolled back per test.** `Service` holds a transaction open
+  across an `await` on object storage — that is the outbox rule — so a test's own
+  writes are not visible inside one, which a rollback-based harness cannot do.
+- **Not a mutex.** That is `--test-threads=1` under another name, and it costs
+  the whole suite to protect one test.
+
+The search path is the one schema and **not** `t_<hex>, public`, and the reason
+was measured rather than reasoned about: the fallback does not break the
+migrations (unqualified DDL targets the first schema on the path, and
+`if not exists` is checked there). What it costs is quieter — a table this
+schema does not have but `public` does resolves to `public`'s copy, so the same
+query returns `relation does not exist` without the fallback and another test's
+rows with it.
+
+`tests/schema_isolation.rs` holds all of it, and splits it so the half that
+needs no Postgres runs on a bare machine: the name's alphabet, the check on the
+two statements that interpolate one, and the stamp a `drop schema` is only
+allowed to act on. The counts and the proofs are in
+`REPORT-darkroom-hermetic-db-01.md`.
 
 ### `openapi/v1.yaml` and the router, held to each other
 
@@ -646,7 +687,7 @@ Three things it does not measure, stated rather than implied:
 - the `--features s3` build, because kit's coverage step runs with default
   features — so `objectstore/s3_impl.rs` is not in the picture at all;
 - the database tier, because `cargo llvm-cov` runs the same `cargo test` that
-  ignores the 54 database tests — which is why `store.rs` reports 0.54%;
+  ignores the 58 database tests — which is why `store.rs` reports 0.54%;
 - `main.rs`, at 0%, because a binary's `main` is never called by a test.
 
 What it does catch is the default suite ceasing to run: the only tests

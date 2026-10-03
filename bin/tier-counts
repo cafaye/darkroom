@@ -11,7 +11,7 @@
 # code is a claim, and this repository has three ways to make a false one.
 #
 #   1. Tier 6 does not run at all — someone calls `bin/prime` instead of
-#      `bin/prime --db`, and the 54 database tests report as `ignored` while
+#      `bin/prime --db`, and the 58 database tests report as `ignored` while
 #      the suite still exits 0. darkroom is a service whose entire job is
 #      putting bytes in a database.
 #   2. Tier 6 runs but touches nothing — `TEST_DATABASE_URL` is unset, every
@@ -86,7 +86,7 @@
 # pattern worth a paragraph. `tests/tenant_scoping.rs` is another default-tier
 # file in none of the four constants, so it is pinned as `TENANT_SCOPE_TESTS`
 # for the same reason. It also added 13 `#[ignore]`d tests, so `DB_TESTS` did
-# move — 41 to 54 — and the identity below is now 54 == 54. The split is
+# move — 41 to 54 — and the identity below became 54 == 54. The split is
 # exactly the one the rule describes: a default-tier file adds a new constant and
 # leaves the others alone; `#[ignore]`d tests move the one constant that counts
 # them, and both sides of the identity move together, which is the mechanism
@@ -272,7 +272,7 @@ do
 done
 
 # --- tier 4: the default run -------------------------------------------------
-# 54 skipped here is not a problem; it is the accounting identity's left side.
+# 58 skipped here is not a problem; it is the accounting identity's left side.
 expect "tier 4  unit tests" \
   "$(count 'cargo test (no database)' 'unittests src/lib.rs' passed)" "$UNIT_TESTS"
 default_ignored="$(count 'cargo test (no database)' '' ignored)"
