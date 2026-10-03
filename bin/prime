@@ -19,6 +19,11 @@ cd "$(dirname "$0")/.."
 # target someone ran with `make -k`.
 set -o pipefail
 
+# `./bin/prime --db` is the gate. Tiers 4, 5 and 6, and tier 6 runs the ignored
+# database tests IN PARALLEL — each test owns a schema, so there is nothing left
+# for `--test-threads=1` to protect. The step headers below are the ones
+# `bin/tier-counts` matches on; rewording one breaks that script loudly, which
+# is the intended coupling.
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
 step "cargo fmt --check"
@@ -49,16 +54,28 @@ if [[ "${1:-}" == "--db" ]]; then
   # `bash -n`, so the word is kept out of the string on purpose.
   : "${TEST_DATABASE_URL:?--db needs TEST_DATABASE_URL, e.g. postgres://darkroom:cafaye@localhost:15500/darkroom?sslmode=disable -- that URL is the HOST side of the shared cluster kit ships, so the port is KIT_POSTGRES_PORT (15500), not 5432. See .env.example}"
   step "cargo test --ignored (against TEST_DATABASE_URL)"
-  # --test-threads=1 is not a workaround for a race: each test truncates the
-  # tables it touches, and two tests truncating concurrently would delete each
-  # other's fixtures mid-assert.
-  cargo test -- --ignored --test-threads=1
+  # NO --test-threads=1, and that is the second half of a change whose first half
+  # is in `tests/common/mod.rs`: every test now gets a schema of its own, with
+  # the migrations applied into it and `truncate` emptying only that schema. The
+  # flag was there because the suites shared tables, and the shared tables were
+  # the reason. Six parallel runs before that change went red every time, with
+  # `NotFound { detail: "asset not found" }` on a test that had created the
+  # asset two lines earlier; three after it, green. Four runs are not evidence
+  # for a concurrency claim and six are closer, so the counts are in
+  # REPORT-darkroom-hermetic-db-01.md rather than here.
+  #
+  # If a test ever turns out that cannot be isolated, it does NOT get this flag
+  # back — that flag is a suite-wide serialisation and re-adding it undoes the
+  # isolation for the other fifty. Such a test gets its own `#[ignore]` with a
+  # comment saying what it shares with whom, and the count in `bin/tier-counts`
+  # moves with it.
+  cargo test -- --ignored
   # The same suites with the feature on. It is a different build of the library
   # — `S3ObjectStore` exists, `Config` has a second variant — and the checksum
   # table runs against whatever `ObjectStore` is wired, so it is worth the
   # seconds to know the deployment build still passes the database tier.
   step "cargo test --features s3 --ignored (against TEST_DATABASE_URL)"
-  cargo test --features s3 -- --ignored --test-threads=1
+  cargo test --features s3 -- --ignored
 fi
 
 step "ok"

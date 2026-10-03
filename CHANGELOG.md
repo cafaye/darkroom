@@ -11,6 +11,49 @@ and only `info.version` moves otherwise
 
 ## [Unreleased]
 
+### Changed
+
+- **The database tier runs in parallel. `--test-threads=1` is gone from
+  `bin/prime`, and the reason it was there is gone with it.**
+
+  Every `test_store()` now creates a schema named `t_` plus eight hex characters
+  of a fresh uuid, applies the migrations **into that schema**, and builds its
+  pool with `set search_path to <that schema>` in `after_connect`. `truncate`
+  still runs and still names its tables unqualified — that is the isolation: the
+  names resolve through the search path, so it empties this test's tables and
+  cannot reach another's.
+
+  The flag was a real constraint rather than caution. Six parallel runs on the
+  tree before this change went red every time, and the symptom was the worst kind
+  to debug — an assertion about rows that genuinely were not created, e.g.
+  `NotFound { detail: "asset not found" }` on a test that had created the asset
+  two lines earlier, and `left: 4, right: 2` from a test counting rows another
+  test had deleted. Three runs after it went green, in both feature sets, with
+  the serial run still green.
+
+  Two properties were measured rather than assumed, and one of them corrected an
+  assumption this work started with: `sqlx::migrate!` creates
+  `_sqlx_migrations` unqualified, so it lands in the per-test schema — one ledger
+  per schema, confirmed from the catalog — while `search_path = t_<hex>, public`
+  would **not** have made the migrations no-ops, as intended. What the fallback
+  would cost is quieter: a table the test's schema lacks but `public` has
+  resolves to `public`'s copy, so the path is one schema and nothing else.
+
+  `tests/schema_isolation.rs` holds the property, and splits it so the half that
+  needs no database runs on a bare machine: the name's alphabet, the check on the
+  two statements that interpolate one, and the stamp a `drop schema` may only act
+  on. `DB_TESTS` 54 → 59, with two new constants for the new file's two halves.
+  Every test that needs the database was isolated; **nothing needed its own
+  exclusion**, and re-adding a suite-wide flag would undo the isolation for the
+  other fifty-eight.
+
+  The fifth database case in that file exists because a planted divergence found
+  a `truncate` nothing was holding: rewritten to name `public.assets`, the whole
+  tier stayed green, because every store is created empty and a `public` truncate
+  cannot reach into another schema. The guard asserts both halves — one test's
+  `truncate` empties its own schema and leaves another's rows alone — since the
+  first half alone is satisfied by a `truncate` that does nothing at all.
+
 ### Added
 
 - **`LICENSE`: darkroom is MIT.** The repository shipped no licence file, which

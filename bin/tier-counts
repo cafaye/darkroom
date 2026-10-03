@@ -11,7 +11,7 @@
 # code is a claim, and this repository has three ways to make a false one.
 #
 #   1. Tier 6 does not run at all — someone calls `bin/prime` instead of
-#      `bin/prime --db`, and the 54 database tests report as `ignored` while
+#      `bin/prime --db`, and the 59 database tests report as `ignored` while
 #      the suite still exits 0. darkroom is a service whose entire job is
 #      putting bytes in a database.
 #   2. Tier 6 runs but touches nothing — `TEST_DATABASE_URL` is unset, every
@@ -31,8 +31,8 @@
 # database run *passes*. Those are the same set of tests, so the two counts
 # agreeing is a real identity and not two numbers that happen to be plausible:
 #
-#   default `cargo test`      77 passed, 54 ignored
-#   `cargo test -- --ignored` 54 passed,  0 ignored
+#   default `cargo test`      77 passed, 59 ignored
+#   `cargo test -- --ignored` 59 passed,  0 ignored
 #
 # A test that is `#[ignore]`d without the database tier running it breaks the
 # identity. A test that is added and never `#[ignore]`d breaks it the other
@@ -48,10 +48,10 @@
 #
 # | tier | command | expected |
 # |---|---|---|
-# | 4 | `cargo test` | 77 lib unit tests, 54 skipped for want of a database, 9 OpenAPI drift checks, 12 tenant-scoping checks |
-# | 5 | `cargo test --features s3` | 89 lib unit tests, 9 backend-table rows, 9 OpenAPI drift checks, 12 tenant-scoping checks |
-# | 6 | `cargo test -- --ignored` | 54 passed, 7 of them query-scoping |
-# | 6 | `cargo test --features s3 -- --ignored` | 54 passed |
+# | 4 | `cargo test` | 77 lib unit tests, 59 skipped for want of a database, 9 OpenAPI drift checks, 12 tenant-scoping checks, 4 schema-isolation checks |
+# | 5 | `cargo test --features s3` | 89 lib unit tests, 9 backend-table rows, 9 OpenAPI drift checks, 12 tenant-scoping checks, 4 schema-isolation checks |
+# | 6 | `cargo test -- --ignored` | 59 passed, 7 of them query-scoping, 5 of them schema-isolation |
+# | 6 | `cargo test --features s3 -- --ignored` | 59 passed |
 #
 # The step labels below are the ones `bin/prime` prints. Rewording a step there
 # breaks this script, loudly and on the first run, which is the intended
@@ -86,7 +86,7 @@
 # pattern worth a paragraph. `tests/tenant_scoping.rs` is another default-tier
 # file in none of the four constants, so it is pinned as `TENANT_SCOPE_TESTS`
 # for the same reason. It also added 13 `#[ignore]`d tests, so `DB_TESTS` did
-# move — 41 to 54 — and the identity below is now 54 == 54. The split is
+# move — 41 to 54 — and the identity below became 54 == 54. The split is
 # exactly the one the rule describes: a default-tier file adds a new constant and
 # leaves the others alone; `#[ignore]`d tests move the one constant that counts
 # them, and both sides of the identity move together, which is the mechanism
@@ -100,10 +100,36 @@
 # while the file reported `0 passed`. Pinning it — 9 rows, in the tier where it
 # runs — closes that, and is the same mechanism applied to a new file: a
 # constant somebody has to look at.
+#
+# darkroom-hermetic-db-01 is the fourth such file and the first one with tests on
+# both sides of the line. `tests/schema_isolation.rs` holds four tests in the
+# DEFAULT tier — the shape of a generated schema name, the check on the two
+# statements that interpolate one, and the stamp the janitor reads — and four
+# `#[ignore]`d ones that need a database. So it adds a new constant of each
+# kind, `SCHEMA_ISOLATION_TESTS` and `SCHEMA_ISOLATION_DB_TESTS`, and moves
+# `DB_TESTS` 54 -> 58, with both sides of the identity moving together: the
+# default run skipped 58 and the database run passed 58.
+#
+# Then a FIFTH `#[ignore]`d case arrived in that file, and it is the one worth
+# reading: it was not a new property but a guard for a `truncate` the other four
+# did not hold. Rewriting `truncate` to name `public.assets` left the entire
+# database tier green, because every store is created empty and a `public`
+# truncate cannot reach into another schema — so `SCHEMA_ISOLATION_DB_TESTS` is
+# 5 and `DB_TESTS` 59. A count that moves because a guard turned out to be
+# missing is the count doing the job the header says it does.
+#
+# The split is not bookkeeping tidiness. The four default-tier tests are the ones
+# that CAN run on a machine with no Postgres, and they are the ones that hold the
+# harness's two safety rules — a name that cannot escape an identifier, and a
+# `drop schema` that only ever fires on a schema this harness made and that no
+# run can still be using. Neither rule is anything to do with isolation levels or
+# search paths, so neither should need a database to check, and putting them in
+# the database tier would mean the cheapest checks in the tree are the ones a
+# developer without Docker never runs.
 
 set -euo pipefail
 
-DB_TESTS=54
+DB_TESTS=59
 UNIT_TESTS=77
 S3_UNIT_TESTS=89
 S3_TABLE_TESTS=9
@@ -154,6 +180,25 @@ TENANT_SCOPE_TESTS=12
 # most. Seven: four operation kinds, the shared-checksum case, the cursor, and
 # the sweep.
 QUERY_SCOPING_TESTS=7
+
+# `tests/schema_isolation.rs` is the file that holds the per-test schema harness
+# in place, and it is the fourth default-tier file this script pins separately —
+# pinned in the default tier for `OPENAPI_DRIFT_TESTS`'s reason, because a new
+# integration binary is in none of the four constants above.
+#
+# Four of the eight tests in that file need no database, which is the half that
+# matters most: they hold the two rules standing between this harness and a
+# `drop schema` of somebody else's table. A name that is only ever
+# `t_` + eight lowercase hex characters, and a `drop` that fires only on a schema
+# carrying a stamp older than six hours. Neither rule involves Postgres, so both
+# are checked on a machine that has none — which is where most runs of this
+# repository's default tier happen.
+#
+# The other four are `#[ignore]`d and are counted in `DB_TESTS` above; pinned
+# separately for `QUERY_SCOPING_TESTS`'s reason, since a count that covers seven
+# files cannot say which one went quiet.
+SCHEMA_ISOLATION_TESTS=4
+SCHEMA_ISOLATION_DB_TESTS=5
 
 usage() {
   echo "usage: bin/tier-counts <log-of-'bin/prime --db'>" >&2
@@ -235,7 +280,7 @@ do
 done
 
 # --- tier 4: the default run -------------------------------------------------
-# 54 skipped here is not a problem; it is the accounting identity's left side.
+# 59 skipped here is not a problem; it is the accounting identity's left side.
 expect "tier 4  unit tests" \
   "$(count 'cargo test (no database)' 'unittests src/lib.rs' passed)" "$UNIT_TESTS"
 default_ignored="$(count 'cargo test (no database)' '' ignored)"
@@ -265,6 +310,15 @@ do
     "$(count "$step" 'tests/tenant_scoping.rs' passed)" "$TENANT_SCOPE_TESTS"
   expect "tier 4/5  tenant-scoping checks left ignored ($label)" \
     "$(count "$step" 'tests/tenant_scoping.rs' ignored)" "0"
+  expect "tier 4/5  schema-isolation checks ($label)" \
+    "$(count "$step" 'tests/schema_isolation.rs' passed)" "$SCHEMA_ISOLATION_TESTS"
+  # Not zero, and deliberately: this is the only file in the tree whose ignored
+  # count is a constant rather than a failure. Half of it needs a database and
+  # half does not, so the number that must hold here is the split — a fifth test
+  # quietly marked `#[ignore]` would run nowhere, and one quietly un-marked would
+  # run on a machine with no Postgres.
+  expect "tier 4/5  schema-isolation checks needing a database ($label)" \
+    "$(count "$step" 'tests/schema_isolation.rs' ignored)" "$SCHEMA_ISOLATION_DB_TESTS"
 done
 
 # --- tier 5: the s3 build ----------------------------------------------------
@@ -284,6 +338,14 @@ expect "tier 5  openapi drift checks (s3 build)" \
 # report here would be a green badge over it.
 expect "tier 6  query-scoping cases" \
   "$(count 'cargo test --ignored (against TEST_DATABASE_URL)' 'tests/query_scoping.rs' passed)" "$QUERY_SCOPING_TESTS"
+# The other half of `tests/schema_isolation.rs`: the four that genuinely need a
+# database, and the four in the default tier this same file runs without one.
+# Both numbers, because a harness that stopped isolating would leave the second
+# half red and a harness that stopped existing would leave both zero.
+expect "tier 6  schema-isolation cases" \
+  "$(count 'cargo test --ignored (against TEST_DATABASE_URL)' 'tests/schema_isolation.rs' passed)" "$SCHEMA_ISOLATION_DB_TESTS"
+expect "tier 6  schema-isolation cases left ignored" \
+  "$(count 'cargo test --ignored (against TEST_DATABASE_URL)' 'tests/schema_isolation.rs' ignored)" "0"
 
 # --- tier 6: the database, both feature sets ---------------------------------
 # Two runs, not one. `cargo test -- --ignored` and
@@ -311,6 +373,6 @@ if [[ "$default_ignored" != "$DB_TESTS" ]]; then
     "the default run skipped $default_ignored tests and the database run passed $DB_TESTS; those are the same set and must be the same number"
 fi
 
-printf '\n\033[1m==> tier-counts ok\033[0m  %d unit, %d with s3, %d database x2, %d backend-table rows, %d openapi drift x2, %d tenant scoping x2, %d query scoping\n' \
+printf '\n\033[1m==> tier-counts ok\033[0m  %d unit, %d with s3, %d database x2, %d backend-table rows, %d openapi drift x2, %d tenant scoping x2, %d query scoping, %d schema isolation x2\n' \
   "$UNIT_TESTS" "$S3_UNIT_TESTS" "$DB_TESTS" "$S3_TABLE_TESTS" "$OPENAPI_DRIFT_TESTS" \
-  "$TENANT_SCOPE_TESTS" "$QUERY_SCOPING_TESTS"
+  "$TENANT_SCOPE_TESTS" "$QUERY_SCOPING_TESTS" "$SCHEMA_ISOLATION_TESTS"
