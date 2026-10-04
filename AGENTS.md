@@ -34,6 +34,9 @@ src/storage_key.rs  opaque key generation
 
 internal/darkroomdb/       the Go seam to PostgreSQL. InTx, InAccountTx
 internal/darkroomdb/pgtest one schema per test, migrations applied into it
+internal/objectstore/      the object storage boundary: Store, Memory, S3
+internal/checksum/         sha256, one-shot and streaming, and the trust rules
+internal/storagekey/       the only two constructors for a storage key
 migrations/embed.go        the SQL, compiled in (go:embed cannot reach ../)
 migrations/                plain SQL, applied by a deploy step
 openapi/v1.yaml            what exposes.api points at
@@ -384,10 +387,20 @@ go vet ./...          # not golangci-lint: a linter is a dep to version and argu
 ./bin/gate-self-test  # is gate.yml still true of this repository
 ```
 
-**BOTH TREES ARE IN `bin/prime` WHILE BOTH EXIST.** Five cargo steps and five Go
+**BOTH TREES ARE IN `bin/prime` WHILE BOTH EXIST.** Five cargo steps and six Go
 steps. A gate that runs only the older of two implementations stopped checking
 the newer one the day the newer one appeared, and `go build`, `go vet` and
-fourteen database tests were in that state until this rewrite added them.
+fifteen database tests were in that state until this rewrite added them.
+
+**AND A GO SUITE THAT LOSES ITS TESTS IS STILL GREEN, WHICH IS WHY ONE GO STEP
+IS NOT `go test`.** `go test` prints `ok` for a package with no test files and
+discards the count from a package that passes, so an emptied file or a build tag
+that stopped matching is a green gate reporting zero. `bin/prime`'s last Go step
+enumerates each suite with `go test -list` and fails below a floor —
+objectstore 21, checksum 6, storagekey 4, pgtest 15. Adding a test means raising
+the number in the same commit, which is the point of the constant: *"a security
+check that reports zero is worse than one that is absent: it looks like
+coverage."*
 
 **`./bin/prime --db` is the gate, and `mise run prime` is not.** `gate.yml`
 declares the former, and the flag is in the declaration rather than implied by
