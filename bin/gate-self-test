@@ -429,8 +429,8 @@ expect_red 'a requirement satisfied by a file this repository does not have' \
 
 breakages=$((breakages + 1))
 twelve="$(fresh_copy proof-uncompilable)"
-edit "$twelve/gate.yml" "internal/service[ \t]'" "internal/service[ \t('" \
-  "internal/service[ \t('" 
+edit "$twelve/gate.yml" "internal/service[ \t]([0-9]+)s'" "internal/service[ \t([0-9]+)('" \
+  "internal/service[ \t([0-9]+)('"  
 expect_red 'a proof whose pattern does not compile, which would otherwise read as "no proof required"' \
   'gate.schema' "$twelve"
 
@@ -543,7 +543,7 @@ expect_red --prove 'a gate that outlived the budget its own declaration gave it'
 breakages=$((breakages + 1))
 unmeasurable="$(fresh_copy proof-unmeasurable-prove)"
 standin_gate "$unmeasurable/bin/prime" 900
-edit "$unmeasurable/gate.yml" 'ok[ \t]+github\.com' 'ok[ \t]+githubxcom'
+edit "$unmeasurable/gate.yml" 'service[ \t]([0-9]+)s' 'service[ \t][0-9]+s'
 expect_red_prove 'a floor with no capture group, against a gate that ran and printed its proof' \
   'gate.proof-invalid' "$unmeasurable"
 

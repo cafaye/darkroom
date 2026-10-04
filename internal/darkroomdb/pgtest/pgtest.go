@@ -264,6 +264,35 @@ func newIn(t *testing.T, base string) *Test {
 	if err != nil {
 		t.Fatalf("pgtest.New(%s): beginning: %v", schema, err)
 	}
+	// A POSTGRES ADVISORY LOCK, and `migrateMu` above is not enough on its own.
+	//
+	// `migrateMu` is a process-local mutex, so it serialises the tests in ONE
+	// `go test` binary. It does not serialise `go test ./...`, which builds and
+	// runs several packages as separate processes: `internal/service` and
+	// `internal/httpapi` each open their own schemas and apply 0004 at the same
+	// time, and 0004 is full of `create or replace function cafaye.*`. Those are
+	// unqualified names resolved through each connection's `search_path`, so
+	// every schema gets its own copy and no two tests write the same row — but
+	// inserting into `pg_proc`/`pg_namespace` still contends on catalog pages, and
+	// under load Postgres resolves that contention by failing one writer:
+	//
+	//   ERROR:  tuple concurrently updated  (SQLSTATE XX000)
+	//
+	// It is intermittent, it appears only on a loaded machine, and it is exactly
+	// the kind of failure that is invisible on a laptop and red in CI. Six
+	// consecutive full-suite runs on an idle machine pass and a seventh under
+	// load fails, which is the measurement that identified it.
+	//
+	// `pg_advisory_xact_lock` is scoped to the TRANSACTION, so it is released by
+	// the commit or the rollback above with nothing to leak and nothing to clean
+	// up on the failure path — which matters here because every failure path in
+	// this function is a `t.Fatalf` that skips the rest of the test. The key is
+	// a constant because every caller wants the SAME lock: two different keys
+	// would be two locks and the contention would return.
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('darkroom.pgtest.migrate'))`); err != nil {
+		_ = tx.Rollback(context.WithoutCancel(ctx))
+		t.Fatalf("pgtest.New(%s): taking the migration advisory lock: %v", schema, err)
+	}
 	// The migration runs INSIDE a transaction, which is safe here and unsafe in a
 	// deploy, and the difference is in `migrations.Apply`'s comment. Safe here: this
 	// schema is dropped either way, so a rollback loses nothing a caller wanted.
