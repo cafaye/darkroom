@@ -123,6 +123,13 @@ func countFor(t *testing.T, tt *pgtest.Test, account string) int {
 // is the half that is easy to get wrong: a harness where every schema is the same
 // schema satisfies "I wrote my row" and fails "I see one row".
 func TestTheHarnessGivesEachTestItsOwnSchema(t *testing.T) {
+	// IN THIS TEST'S OWN GOROUTINE, before anything is spawned, and NOT inside the
+	// six cases. `t.Skip` calls `runtime.Goexit`, so a skip inside a goroutine ends
+	// that goroutine at the skip and the parent then asserts against zero-valued
+	// fields — which reported six phantom schema COLLISIONS on a machine with no
+	// PostgreSQL at all. `pgtest.Require`'s comment has the transcript.
+	pgtest.Require(t)
+
 	const cases = 6
 	ids := make([]string, cases)
 	for i := range ids {

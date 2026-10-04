@@ -189,6 +189,47 @@ func New(t *testing.T) *Test {
 	if reason != "" {
 		t.Skip(reason)
 	}
+	return newIn(t, base)
+}
+
+// Require skips `t` unless there is a database to run against, and returns
+// nothing else. It is what a test calls BEFORE spawning goroutines.
+//
+// # WHY IT EXISTS, and the bug it fixes
+//
+// `New` calls `t.Skip`, and `t.Skip` — like `t.Fatal` — calls `runtime.Goexit`
+// rather than returning. Inside a goroutine that ends the goroutine at the skip,
+// which is the right behaviour and is what `New` was written for. It is the wrong
+// behaviour for a test that spawns its own goroutines and joins them with a
+// `WaitGroup`, and the bug is worth recording because the failure looks like
+// something else entirely:
+//
+//   $ go test ./internal/darkroomdb/…        # on a machine with no PostgreSQL
+//   case 3 and case 4 both got the schema ""
+//   case 5 (schema "") saw 0 rows, want 1: two tests share a schema
+//   FAIL
+//
+// Every case reported a COLLISION, on a run where no case ran at all. The
+// goroutines died at the skip, the parent joined them, and the assertions after
+// the join ran against zero-valued fields: six empty schema names and six zero
+// counts. A harness that skips correctly in one place and misreports in another is
+// worse than one that fails loudly, because the message names a false cause —
+// and `AGENTS.md` is direct about the cost of that direction:
+//
+//	"A test that silently passes without proving anything is not [honest]. A
+//	skip is honest."
+//
+// So a test that spawns goroutines skips in ITS OWN goroutine, before spawning,
+// and every case is then a case that actually ran.
+func Require(t *testing.T) {
+	t.Helper()
+	if _, reason := databaseURL(); reason != "" {
+		t.Skip(reason)
+	}
+}
+
+func newIn(t *testing.T, base string) *Test {
+	t.Helper()
 
 	schema := SchemaPrefix + uniqueSuffix(t)
 	ctx, cancel := context.WithTimeout(context.Background(), migrateTimeout)
