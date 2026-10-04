@@ -369,7 +369,7 @@ func uniqueSuffix(t *testing.T) string {
 // fire on a schema this harness made."
 func dropSchema(t *testing.T, base, schema string) {
 	t.Helper()
-	if !strings.HasPrefix(schema, SchemaPrefix) || len(schema) != len(SchemaPrefix)+SchemaSuffixLen {
+	if !droppable(schema) {
 		t.Errorf("pgtest: REFUSING to drop %q: it is not a schema this harness made (want %q + %d hex). A drop that reaches anything else is the failure this check exists for.",
 			schema, SchemaPrefix, SchemaSuffixLen)
 		return
@@ -391,6 +391,41 @@ func dropSchema(t *testing.T, base, schema string) {
 	if _, err := conn.Exec(ctx, `drop schema `+quoteIdent(schema)+` cascade`); err != nil {
 		t.Errorf("pgtest: dropping %s: %v", schema, err)
 	}
+}
+
+// droppable reports whether `schema` is a name this harness made and may therefore
+// drop.
+//
+// IT IS A SEPARATE, EXPORTED-BY-CONVENTION PURE FUNCTION rather than an inline
+// `if`, and the reason is that an inline condition cannot be tested without
+// arranging a schema it would refuse — which means the guard ships unproven.
+// `AGENTS.md` on `tests/schema_isolation.rs` splits the same guard in two for
+// the same reason: "the half that needs no database runs on a bare machine: a name
+// that can only be twelve characters from a fixed alphabet, and a `drop schema`
+// that can only fire on a schema this harness made and that no run can still be
+// using."
+//
+// It is strict rather than lenient on purpose. Postgres unquoted identifiers fold to
+// lower case, so a name that merely LOOKS like ours could be a different schema, and
+// a lenient guard that drops `T_1234ABCD5678` on a case-insensitive filesystem or a
+// future fold is a guard that deletes something. Everything this harness builds is
+// lower-case hex after a fixed prefix, so the strict check costs nothing and a
+// refusal is always a bug worth failing on rather than a name worth accommodating.
+func droppable(schema string) bool {
+	if !strings.HasPrefix(schema, SchemaPrefix) {
+		return false
+	}
+	suffix := schema[len(SchemaPrefix):]
+	if len(suffix) != SchemaSuffixLen {
+		return false
+	}
+	for i := 0; i < len(suffix); i++ {
+		c := suffix[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 // sha is four bytes of the test's own name, so the schema name says which test

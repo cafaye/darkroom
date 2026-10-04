@@ -295,6 +295,58 @@ func TestTheAppRoleIsNotAMemberOfTheOwnerRole(t *testing.T) {
 	}
 }
 
+// TestTheLoginRoleCanWriteEveryTableTheServiceWrites is the other half of the
+// grant story, and it is here because the half that is tested is the one that gets
+// attention.
+//
+// The boundary tests above establish that `darkroom_app` cannot see across accounts
+// and cannot weaken the policies. This establishes that it can still DO THE
+// SERVICE, which is the failure the grants in `0004_account_isolation.sql` exist to
+// prevent and which no boundary test would have caught:
+//
+//	has_table_privilege('darkroom_app','outbox_events','INSERT')  ->  false
+//
+// measured on the shared cluster before those grants were added. `protect_table`
+// grants DML only as part of PROTECTING a table, and these two tables are not
+// protected, so an application that adopted the substrate and stopped there came up
+// with a login role that could read its account-scoped tables and write nothing at
+// all — failing at the first upload rather than at boot, because `Open` pings
+// successfully.
+//
+// `darkroom_app` is impersonated rather than connected as, because the harness has
+// no credential for it and does not need one: `10-cluster.sh` grants
+// `<svc>_app` TO `<svc>` precisely so the owner can become the weaker role.
+func TestTheLoginRoleCanWriteEveryTableTheServiceWrites(t *testing.T) {
+	tt := pgtest.New(t)
+	ctx := context.Background()
+
+	for _, table := range []string{"assets", "asset_variants", "outbox_events", "idempotency_keys"} {
+		for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "DELETE"} {
+			var has bool
+			row := tt.AsRole(ctx, "darkroom_app",
+				`select has_table_privilege(current_user, $1, $2)`, table, priv)
+			if err := row.Scan(&has); err != nil {
+				t.Fatalf("asking whether darkroom_app holds %s on %s: %v", priv, table, err)
+			}
+			if !has {
+				t.Errorf("darkroom_app does not hold %s on %s. The service cannot write that table at all.", priv, table)
+			}
+		}
+	}
+
+	// And the grants stay NARROW, which is the property `all` would have broken.
+	// TRUNCATE is the case that matters: it is not subject to RLS, so a role that
+	// held it could empty a tenant table with no policy consulted at all.
+	var truncate bool
+	if err := tt.AsRole(ctx, "darkroom_app",
+		`select has_table_privilege(current_user, 'assets', 'TRUNCATE')`).Scan(&truncate); err != nil {
+		t.Fatalf("asking whether darkroom_app holds TRUNCATE on assets: %v", err)
+	}
+	if truncate {
+		t.Error("darkroom_app holds TRUNCATE on assets. The grants say DML and DML is four privileges, not `all` — and TRUNCATE is not subject to RLS, so it would empty a tenant table with no policy consulted.")
+	}
+}
+
 // TestTheMigrationsProtectedExactlyTheAccountScopedTables makes the count in
 // migrations/0004's header auditable.
 //
