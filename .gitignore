@@ -5,3 +5,10 @@
 !.env.example
 *.local
 .DS_Store
+
+# The Go rewrite. Two entries, both for the same reason: a compiled artefact is not
+# source and `go build ./...` will make one in every directory that has a `main`.
+/darkroom
+/darkroomdb
+*.test
+*.out
