@@ -62,9 +62,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CORE="${CAFAYE_CORE:-$ROOT/../core}"
 CHECK="$CORE/harness/bin/gate-check"
 
-# The proving cases need a build directory. Reusing one is a convenience and
-# never a dependency: unset it and the run is slower, not different.
-export CARGO_TARGET_DIR="${DARKROOM_GATE_TARGET_DIR:-$ROOT/target}"
+# The proving cases compile and run the real gate, and `go` puts its build and
+# test caches in GOCACHE — outside this repository, shared with every other Go
+# module on the machine. There is deliberately no `CARGO_TARGET_DIR` here any
+# more: it pointed at `$ROOT/target`, which after the rewrite was not a build
+# directory at all but 4.3 GB of cargo output from the Rust service, gitignored,
+# never copied into a case, and never read by anything.
 
 # --------------------------------------------------------------------------
 # preconditions, reported rather than guessed at
@@ -114,9 +117,11 @@ can_prove=1
 #
 # The file list comes from git: tracked plus untracked-but-not-ignored, so a
 # developer can run this while editing `gate.yml` and the copy carries the edit.
-# `target/` is gitignored and therefore never copied — the static breakages do
-# not need it, and the proving ones would otherwise spend minutes writing into a
-# tree they are about to throw away.
+# Nothing needs excluding for build output: `go` builds into GOCACHE, which is
+# outside the repository, so a copy carries no cache and pays the compile again
+# exactly once per case. The static breakages never needed a build directory and
+# the proving ones would otherwise spend minutes writing into a tree they are
+# about to throw away.
 fresh_copy() {
   copy_name="$1"
   local dst="$WORK/$copy_name"
@@ -207,19 +212,40 @@ for step in \\
 do
   printf '\n==> %s\n' "\$step"
 done
-# The countable lines the two floors match, in the shape `go test -v` prints them:
-# a `--- PASS:` row per test and then `ok <import-path>\t<time>`. The SAME package
-# appears under more than one step on purpose — `go test ./...` prints it too —
-# because a checker that only saw each package once would not be reading a real
-# log.
-# `'%s\n'` and NOT `printf '--- ...'`, and that is a correction rather than a
-# style: bash's builtin printf reads a leading `--` as an OPTION, so on the bash
+# The countable lines the two floors match, in the shape 'go test -v' prints them:
+# a '--- PASS:' row per test and then 'ok <import-path>' followed by a tab and the
+# elapsed time. The SAME package appears under more than one step on purpose —
+# 'go test ./...' prints it too — because a checker that only saw each package
+# once would not be reading a real log.
+# The format string '%s\n' AND NOT a bare '--- ...' template, and that is a
+# correction rather than a style: bash's builtin printf reads a leading '--' as
+# an OPTION, so on the bash
 # 3.2 that ships with macOS every one of these lines printed
 # "printf: --: invalid option" to stderr and NO test row to stdout — and a
 # checker counting rows then sees zero, which is a green gate over nothing.
 for _ in \$(seq 1 "${count}"); do printf '%s\n' '--- PASS: TestSomething (0.00s)'; done
-printf 'ok  \tgithub.com/cafaye/darkroom/internal/service\t0.0${count}s\n'
-printf 'ok  \tgithub.com/cafaye/darkroom/internal/variants\t0.0${count}s\n'
+# ${count}.000s AND NOT 0.0${count}s, because the capture group reads the
+# INTEGER part of the elapsed time and 0.0${count}s makes that integer a
+# literal zero for every count. The floor is minimum: 1, so a stand-in whose
+# capture is always 0 can never satisfy it, and the case that was supposed to
+# prove a floor catches a too-small number instead proved that the floor is
+# unreachable. A real 'go test -v' line reads like 5.912s, where the integer is
+# the number of whole seconds — so putting the count there is both the shape a
+# real log has and the only one where the floor means anything.
+#
+# NO BACKTICKS IN THIS HEREDOC, and that is not a style note: this heredoc is
+# UNQUOTED, so a backtick pair is a command substitution and bash RUNS it.
+# Comments above naming 'go test -v' in backticks ran the real suite — three
+# times per stand-in, once for each backticked phrase — and spliced its output
+# into the middle of this comment block, so every line the real suite printed
+# past the first landed in the stand-in as a bare, un-commented line of script.
+# The case that then went red was 'a floor with no capture group', which
+# reported gate.nonzero and gate.proof-missing for both proofs instead of
+# gate.proof-invalid: the honest-sounding report about the wrong problem, caused
+# by a self-test that was broken while testing the checker. Quote the phrase
+# instead.
+printf 'ok  \tgithub.com/cafaye/darkroom/internal/service\t${count}.000s\n'
+printf 'ok  \tgithub.com/cafaye/darkroom/internal/variants\t${count}.000s\n'
 printf '\n==> ok\n'
 SH
   chmod +x "$path"
@@ -429,7 +455,7 @@ expect_red 'a requirement satisfied by a file this repository does not have' \
 
 breakages=$((breakages + 1))
 twelve="$(fresh_copy proof-uncompilable)"
-edit "$twelve/gate.yml" "internal/service[ \t]([0-9]+)s'" "internal/service[ \t([0-9]+)('" \
+edit "$twelve/gate.yml" "internal/service[ \t]([0-9]+)(?:\.[0-9]+)?s'" "internal/service[ \t([0-9]+)('" \
   "internal/service[ \t([0-9]+)('"  
 expect_red 'a proof whose pattern does not compile, which would otherwise read as "no proof required"' \
   'gate.schema' "$twelve"
@@ -543,7 +569,7 @@ expect_red --prove 'a gate that outlived the budget its own declaration gave it'
 breakages=$((breakages + 1))
 unmeasurable="$(fresh_copy proof-unmeasurable-prove)"
 standin_gate "$unmeasurable/bin/prime" 900
-edit "$unmeasurable/gate.yml" 'service[ \t]([0-9]+)s' 'service[ \t][0-9]+s'
+edit "$unmeasurable/gate.yml" 'service[ \t]([0-9]+)(?:\.[0-9]+)?s' 'service[ \t][0-9.]+s'
 expect_red_prove 'a floor with no capture group, against a gate that ran and printed its proof' \
   'gate.proof-invalid' "$unmeasurable"
 
@@ -551,7 +577,15 @@ expect_red_prove 'a floor with no capture group, against a gate that ran and pri
 # number, and the declaration is red because the number is below what it promised.
 breakages=$((breakages + 1))
 floor="$(fresh_copy floor)"
-edit "$floor/gate.yml" 'minimum: 1' 'minimum: 999999'
+# The leading spaces are the whole edit, and they are there because `edit`
+# replaces the FIRST literal match and gate.yml's own comment quotes
+# `minimum: 1` in backticks to explain why the capture group exists. Editing
+# the bare string hit that comment, left both real declarations at 1, and the
+# case passed for the wrong reason — which is the failure `edit`'s own header
+# warns about one level up: a self-test that silently stops breaking anything
+# is worse than no self-test. Matching the six-space indent cannot reach the
+# comment, whose minimum is preceded by a backtick.
+edit "$floor/gate.yml" '      minimum: 1' '      minimum: 999999'
 expect_red_prove 'a gate that proved fewer tests than the declaration promised' \
   'gate.floor' "$floor"
 

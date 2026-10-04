@@ -160,14 +160,14 @@ gate:
     # `ok <pkg>` with no count at all — the same fact that `bin/prime`'s own
     # comments argue about three separate times.
     - id: service-suite
-      match: 'ok[ \t]+github\.com/cafaye/darkroom/internal/service[ \t]([0-9]+)s'
+      match: 'ok[ \t]+github\.com/cafaye/darkroom/internal/service[ \t]([0-9]+)(?:\.[0-9]+)?s'
       minimum: 1
     # The variant pipeline's own line, counted the same way. It is a separate
     # proof because `bin/prime` runs that package with `-v` in the DEFAULT tier
     # rather than the database one, and a proof per tier is what makes a
     # vanished package visible from outside this file.
     - id: variants-suite
-      match: 'ok[ \t]+github\.com/cafaye/darkroom/internal/variants[ \t]([0-9]+)s'
+      match: 'ok[ \t]+github\.com/cafaye/darkroom/internal/variants[ \t]([0-9]+)(?:\.[0-9]+)?s'
       minimum: 1
 
 external:
