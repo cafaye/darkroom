@@ -204,4 +204,3 @@ func redact(raw string) string {
 	}
 	return raw[:scheme] + "…" + raw[at:]
 }
-

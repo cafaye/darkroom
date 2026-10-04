@@ -204,10 +204,10 @@ func New(t *testing.T) *Test {
 // `WaitGroup`, and the bug is worth recording because the failure looks like
 // something else entirely:
 //
-//   $ go test ./internal/darkroomdb/…        # on a machine with no PostgreSQL
-//   case 3 and case 4 both got the schema ""
-//   case 5 (schema "") saw 0 rows, want 1: two tests share a schema
-//   FAIL
+//	$ go test ./internal/darkroomdb/…        # on a machine with no PostgreSQL
+//	case 3 and case 4 both got the schema ""
+//	case 5 (schema "") saw 0 rows, want 1: two tests share a schema
+//	FAIL
 //
 // Every case reported a COLLISION, on a run where no case ran at all. The
 // goroutines died at the skip, the parent joined them, and the assertions after

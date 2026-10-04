@@ -2,12 +2,21 @@
 # bin/prime — the gate. Everything that must pass before a commit lands.
 #
 #   ./bin/prime          build, test, clippy, fmt        (no database needed)
-#   ./bin/prime --db     the above, plus the ignored tests against Postgres
+#   ./bin/prime --db     the above, plus the database tests against Postgres
 #
 # `--db` is separate on purpose. The default run is green on a bare machine with
 # no Postgres and no Docker, which is what makes it usable as a pre-commit hook.
-# The database tests are `#[ignore]`d, and a skipped test proves nothing — so
-# CI runs `--db` and this comment is the reason it is not optional there.
+# The database tests need one, and a skipped test proves nothing — so CI runs
+# `--db` and this comment is the reason it is not optional there.
+#
+# BOTH A CARGO AND A GO TIER, because this repository holds both trees until the
+# packet that removes the Rust one, and a gate that runs only the older of two
+# implementations is a gate that stopped checking the newer one the day the newer
+# one appeared. The Go steps are `gofmt`, `go build`, `go vet`, `go test`; the Go
+# database tier needs no separate flag from the Rust one because
+# `internal/darkroomdb/pgtest` SKIPS rather than failing when there is no
+# database, naming the reason — so a bare `./bin/prime` is honest about what it
+# did and did not check, which is what `--db` exists to fix.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -45,6 +54,41 @@ cargo test
 step "cargo test --features s3 (no database)"
 cargo test --features s3
 
+# --- the Go rewrite ------------------------------------------------------------
+#
+# `gofmt -l` rather than `gofmt -w`, and the difference is the whole point: `-w`
+# REWRITES the files and exits 0 whatever it found, so a gate built on it reports
+# "green" having silently reformatted the commit. `-l` lists and still exits 0, so
+# it is paired with an explicit emptiness test. This is the same reasoning as the
+# exit-code paragraph at the top of this file, one level down: a check that cannot
+# fail is not a check.
+step "gofmt -l"
+unformatted="$(gofmt -l . 2>/dev/null | grep -v '^\.git/' || true)"
+if [[ -n "$unformatted" ]]; then
+  echo "    not gofmt-clean:" >&2
+  echo "$unformatted" | sed 's/^/      /' >&2
+  exit 1
+fi
+
+step "go build ./..."
+go build ./...
+
+# `go vet` and not `golangci-lint`: a linter is a dependency to version and to
+# argue about, and the packet that needs one can add it with a reason. `vet` ships
+# with the toolchain and catches the class that matters here — a `Printf` verb
+# against a wrong type, which is how this suite's own `pgtype.Text` mistake would
+# have reached a commit.
+step "go vet ./..."
+go vet ./...
+
+# The default run SKIPS the database tests with a named reason rather than failing,
+# so this step is honest on a bare machine: the output says which tests did not
+# run and why. `go test` discards a passing package's output, so the skip rows are
+# invisible without `-v` — which is why the `--db` run below is not optional and why
+# this one is not a substitute for it.
+step "go test ./internal/darkroomdb/... (no database)"
+go test ./internal/darkroomdb/...
+
 if [[ "${1:-}" == "--db" ]]; then
   # No apostrophes anywhere in this message: bash parses quotes inside the
   # `${VAR:?word}` expansion, so a single apostrophe below — `kit's`, the word
@@ -76,6 +120,23 @@ if [[ "${1:-}" == "--db" ]]; then
   # seconds to know the deployment build still passes the database tier.
   step "cargo test --features s3 --ignored (against TEST_DATABASE_URL)"
   cargo test --features s3 -- --ignored
+
+  # THE GO DATABASE TIER, `-v` BECAUSE `go test` THROWS THE OUTPUT AWAY.
+  #
+  # This is not a style preference. `go test` discards a passing package's output
+  # entirely, so a suite that prints its own `skip:` rows — the honest-skip
+  # contract `internal/darkroomdb/pgtest` follows — is INVISIBLE on a green run
+  # without `-v`. Pantry records the same measurement in `pgtest_test.go`:
+  # "the counters were first incremented inline at each call site and read 6 for a
+  # run that entered 12 gates, and the reason was duller than the bug: `go test`
+  # DISCARDS a passing package's output entirely."
+  #
+  # No `--test-threads` equivalent, and there is no Go one to pass: every test
+  # owns a schema, which is the same property the Rust tier has and the reason its
+  # `--test-threads=1` came out. `pgtest`'s own `TestTheHarnessGivesEachTestItsOwnSchema`
+  # holds it rather than assuming it.
+  step "go test -v ./internal/darkroomdb/... (against TEST_DATABASE_URL)"
+  go test -v -count=1 ./internal/darkroomdb/...
 fi
 
 step "ok"
