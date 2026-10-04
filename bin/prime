@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
 # bin/prime — the gate. Everything that must pass before a commit lands.
 #
-#   ./bin/prime          build, test, clippy, fmt        (no database needed)
-#   ./bin/prime --db     the above, plus the database tests against Postgres
+#   ./bin/prime          fmt, build, vet, test, regenerate-and-diff
+#   ./bin/prime --db     the above, plus the database tiers against Postgres
 #
 # `--db` is separate on purpose. The default run is green on a bare machine with
 # no Postgres and no Docker, which is what makes it usable as a pre-commit hook.
 # The database tests need one, and a skipped test proves nothing — so CI runs
 # `--db` and this comment is the reason it is not optional there.
 #
-# BOTH A CARGO AND A GO TIER, because this repository holds both trees until the
-# packet that removes the Rust one, and a gate that runs only the older of two
-# implementations is a gate that stopped checking the newer one the day the newer
-# one appeared. The Go steps are `gofmt`, `go build`, `go vet`, `go test`; the Go
-# database tier needs no separate flag from the Rust one because
-# `internal/darkroomdb/pgtest` SKIPS rather than failing when there is no
-# database, naming the reason — so a bare `./bin/prime` is honest about what it
-# did and did not check, which is what `--db` exists to fix.
+# # ONE TREE. NO CARGO STEPS, AND THE ABSENCE IS THE POINT
+#
+# This script ran five cargo steps beside six Go steps while both trees existed,
+# because `AGENTS.md` says: "a gate that runs only one of two implementations
+# stopped checking the other the day the second one appeared." `src/`, `tests/`,
+# `Cargo.toml` and `rust-toolchain.toml` are gone as of darkroom-go-06, so the
+# cargo steps are REMOVED rather than commented out.
+#
+# That distinction is not pedantry. A commented-out `cargo test` is a line nobody
+# reads; a LIVE `cargo test` in a repository with no `Cargo.toml` is a step that
+# exits 127 and takes `set -e` and the whole gate down with it. Both are worse
+# than absence, and the packet's rule is "removed, not left commented out and not
+# left running".
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -28,33 +33,13 @@ cd "$(dirname "$0")/.."
 # target someone ran with `make -k`.
 set -o pipefail
 
-# `./bin/prime --db` is the gate. Tiers 4, 5 and 6, and tier 6 runs the ignored
-# database tests IN PARALLEL — each test owns a schema, so there is nothing left
-# for `--test-threads=1` to protect. The step headers below are the ones
-# `bin/tier-counts` matches on; rewording one breaks that script loudly, which
-# is the intended coupling.
+# `./bin/prime --db` is the gate. The database tiers run IN PARALLEL — each test
+# owns a schema, so there is nothing left for a serialisation flag to protect.
+# The step headers below are the ones `bin/tier-counts` matches on; rewording one
+# breaks that script loudly, which is the intended coupling.
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
-step "cargo fmt --check"
-cargo fmt --check
-
-step "cargo build"
-cargo build --all-targets
-
-step "cargo clippy -D warnings"
-cargo clippy --all-targets --all-features -- -D warnings
-
-step "cargo test (no database)"
-cargo test
-
-# A third tier, and the reason it exists: `cargo test` above does not compile the
-# `s3` feature at all, so the R2 configuration rules, the presigned-URL table
-# and the startup refusals are decoration unless something runs them. The
-# default build is not enough, and "it compiles" is not "it is tested".
-step "cargo test --features s3 (no database)"
-cargo test --features s3
-
-# --- the Go rewrite ------------------------------------------------------------
+# --- the Go rewrite, and it is the whole default tier ------------------------
 #
 # `gofmt -l` rather than `gofmt -w`, and the difference is the whole point: `-w`
 # REWRITES the files and exits 0 whatever it found, so a gate built on it reports
@@ -73,6 +58,14 @@ fi
 step "go build ./..."
 go build ./...
 
+# `go build ./...` does not build `./cmd/darkroom` into anything runnable, and a
+# binary that compiles is not a binary that SERVES. This step is the one that
+# refuses when `cmd/darkroom` is deleted or renamed, which `./...` alone would not
+# report as a failure — the package would simply stop existing, the way a Rust
+# `src/main.rs` disappearing would have left `cargo build` with a library.
+step "go build the binary"
+go build -o "${TMPDIR:-/tmp}/darkroom-gate-check" ./cmd/darkroom
+
 # `go vet` and not `golangci-lint`: a linter is a dependency to version and to
 # argue about, and the packet that needs one can add it with a reason. `vet` ships
 # with the toolchain and catches the class that matters here — a `Printf` verb
@@ -81,14 +74,14 @@ go build ./...
 step "go vet ./..."
 go vet ./...
 
-# `./...` and NOT `./internal/darkroomdb/...`, which is what this said while
-# `darkroomdb` was the only package that had tests. Naming the one package is the
-# shape of the bug `AGENTS.md` describes about gates — "A gate that runs only one
-# of two implementations stopped checking the other the day the second one
-# appeared" — pointed at a package instead of a tree: every package added after
-# packet 01 would compile under `go build ./...` and `go vet ./...` and then have
-# its tests never run at all. A directory pattern is the version of this step
-# that cannot go stale.
+# `./...` and NOT a named package, which is what this said while `darkroomdb` was
+# the only package that had tests. Naming the one package is the shape of the bug
+# `AGENTS.md` describes about gates — "A gate that runs only one of two
+# implementations stopped checking the other the day the second one appeared" —
+# pointed at a package instead of a tree: every package added after packet 01
+# compiled under `go build ./...` and `go vet ./...` and then had its tests never
+# run at all. A directory pattern is the version of this step that cannot go
+# stale.
 #
 # The default run still SKIPS the database tests with a named reason rather than
 # failing, so this step is honest on a bare machine: the output says which tests
@@ -106,11 +99,12 @@ go test ./...
 # check that reports zero is worse than one that is absent: it looks like
 # coverage."
 #
-# `go test -list` enumerates the tests WITHOUT running them, so this costs
-# nothing and needs no database. The numbers are the same kind of constant as the
-# Rust ones in `bin/tier-counts`: adding a test means raising the number here in
-# the same commit, and that is the point of the constant — a red that says
-# `objectstore: 21, want 22` is the mechanism working.
+# `go test -list` enumerates the tests WITHOUT running them, so this costs nothing
+# and needs no database. Every number below was READ OUT OF THIS TREE with the
+# command in this comment, not copied forward from the packet that wrote the last
+# version of this script — a floor copied forward is a floor nobody checked.
+# Adding a test means raising the number here in the same commit, and that is the
+# point: a red that says `auth: 12, want 13` is the mechanism working.
 #
 # `go test -list` also prints the trailing `ok` line, so the count is every line
 # that is not one of those. Counting is `grep -c` on the whole listing rather
@@ -130,6 +124,9 @@ assert_go_suite() {
   fi
   echo "    ${pkg}: ${got} tests"
 }
+# Each number below is what this tree actually contained when it was written, and
+# `bin/tier-counts` carries the same figure with the per-file breakdown.
+assert_go_suite ./cmd/darkroom 7
 assert_go_suite ./internal/objectstore 21
 assert_go_suite ./internal/checksum 6
 assert_go_suite ./internal/storagekey 4
@@ -143,6 +140,13 @@ assert_go_suite ./internal/problem 7
 # is the whole reason this step exists at all: the floor holds on a bare machine and
 # the `-v` tier below is what proves the tests actually ran.
 assert_go_suite ./internal/service 29
+# The two packets 05's surface added. `auth` holds the verifier and the tenant
+# accessor every handler's first statement depends on; `httpapi` holds the drift
+# checks that make the DOCUMENT the routing table, and it is the only place the
+# 401 is exercised. Both were unmapped while `src/http.rs` was the tree being
+# tested, and an unmapped suite is the failure mode this step exists to catch.
+assert_go_suite ./internal/auth 12
+assert_go_suite ./internal/httpapi 19
 
 # The variant pipeline, and `-v` for a second reason that is not the skips.
 #
@@ -150,7 +154,7 @@ assert_go_suite ./internal/service 29
 # (cached)` and NO `--- PASS:` rows at all — so `bin/tier-counts` would count
 # zero tests in a step that ran twenty-four of them and report green. That is
 # this repository's exit-code-is-not-the-evidence rule one level down again, and
-# the `--db` Go step below already carries `-count=1` for the same reason.
+# the `--db` Go steps below carry `-count=1` for the same reason.
 #
 # `-v` is what makes each test's name visible to `bin/tier-counts`, which pins
 # `VARIANT_TESTS`. A file that stopped compiling or stopped running would report
@@ -158,6 +162,110 @@ assert_go_suite ./internal/service 29
 # that is absent — it looks like coverage.
 step "go test -v ./internal/variants/ (no database)"
 go test -v -count=1 ./internal/variants/
+
+# --- regenerate and diff ------------------------------------------------------
+#
+# `internal/api/api.gen.go` is generated from `openapi/v1.yaml` by `go generate`,
+# and nothing in the Go tree proves the checked-in file is what the document
+# produces. Packet 05 named this as the gate change it could not make, and the
+# gateway's `bin/prime-go` has the step; this is it, adapted.
+#
+# WHY IT MATTERS MORE HERE THAN THE NOTES SUGGEST: the Go router IS the generated
+# file (`internal/httpapi.New` walks it), so a stale `api.gen.go` answers the OLD
+# routes under the NEW document's promises. The Rust tree's hand-maintained
+# `http::OPERATIONS` had the same failure with a different mechanism — its README
+# admits "a planted `.route()` on a new path left all nine drift tests green" —
+# and this step is the one that closes it for the surface as a whole.
+#
+# THE STEP DOES NOT SKIP WHEN IT CANNOT RUN. There is no `|| true` and no
+# conditional that returns green without the generator: `set -euo pipefail` is
+# already in force, so a missing generator, an empty module cache or a
+# network-dependent `go run` all fail here. A gate that cannot run is not a gate
+# that passed.
+#
+# `GOPROXY=off` does NOT work — `go run <module>@<version>` still asks the proxy
+# for the module's deprecation notice and fails with "module lookup disabled by
+# GOPROXY=off" — so the `file://` proxy over the module cache is the only offline
+# spelling that resolves. Measured, not guessed; the gateway hit it too.
+gen="internal/api/api.gen.go"
+if [[ ! -f "$gen" ]]; then
+  echo "    $gen is missing. Run 'go generate ./internal/api/'." >&2
+  exit 1
+fi
+
+# The checksum BEFORE regeneration, so this step can say whether it had to repair
+# the working tree. Regeneration overwrites whatever was there, and a step that
+# silently rewrites a file a reader did not know it was rewriting surprises whoever
+# is holding the repository. Reporting it costs one `cksum`.
+gen_before="$(cksum < "$gen")"
+module_cache="$(go env GOMODCACHE)"
+# `regen_out` AND NOT `out`: a variable named `out` elsewhere in a script that
+# prints its own test counts would be overwritten here and every count below would
+# read zero and exit zero.
+if ! regen_out="$(GOFLAGS=-mod=mod GOPROXY="file://$module_cache/cache/download" GOSUMDB=off \
+  go generate ./internal/api/ 2>&1)"; then
+  echo "    regeneration FAILED, so whether $gen matches openapi/v1.yaml is unknown." >&2
+  echo "    A generator that cannot run is not a gate that passed, and this step" >&2
+  echo "    deliberately fails rather than warning:" >&2
+  echo "$regen_out" | sed 's/^/      /' >&2
+  echo >&2
+  echo "    If this machine has no oapi-codegen v2.8.0 in its module cache, fetch it" >&2
+  echo "    once with a network: go mod download github.com/oapi-codegen/oapi-codegen/v2" >&2
+  exit 1
+fi
+
+# The header assertion is KEPT as well as the diff, and it is not redundant: it
+# names the generator version the committed file came from, which a diff against a
+# freshly-generated file would not tell you. A diff proves the two agree; it does
+# not say which generator produced either.
+grep -q '^// Code generated by github.com/oapi-codegen/oapi-codegen/v2 version v2\.8\.0 DO NOT EDIT\.$' "$gen" || {
+  echo "    $gen does not carry the oapi-codegen v2.8.0 header. The generator is" >&2
+  echo "    pinned on internal/api/generate.go's //go:generate line; if that pin" >&2
+  echo "    moved, say so in the same commit as the regenerated file." >&2
+  exit 1
+}
+# The post-processing step's own claim, checked rather than trusted.
+grep -q '^// POST-PROCESSED BY internal/api/stripbaseurl' "$gen" || {
+  echo "    $gen does not carry the stripbaseurl header, so core's account-scope" >&2
+  echo "    checker cannot read this repository's route registrations. Run" >&2
+  echo "    'go generate ./internal/api/'." >&2
+  exit 1
+}
+# A route registration whose path is an EXPRESSION rather than a `/`-prefixed
+# string literal is invisible to that checker, and the whole surface then reads as
+# `route_defs=0` — a count of nothing printing exactly like a count of zero.
+if grep -qE '^[[:space:]]*r\.(Get|Post|Put|Patch|Delete|Head)\([[:space:]]*[^"]' "$gen"; then
+  echo "    $gen has a route registration whose path is an expression rather than a" >&2
+  echo "    string literal. Run 'go generate ./internal/api/' — stripbaseurl removes" >&2
+  echo "    the options.BaseURL token." >&2
+  exit 1
+fi
+
+# `git status --porcelain` rather than `git diff --quiet` because the gate must also
+# catch a file that is UNTRACKED-but-present, and because `git diff` alone reports
+# nothing for a tree with no HEAD.
+drift="$(git status --porcelain -- "$gen" | sed 's/^/    /')"
+if [[ -n "$drift" ]]; then
+  echo "    $gen DOES NOT MATCH openapi/v1.yaml. Regenerating changed it:" >&2
+  echo "$drift" >&2
+  echo >&2
+  echo "    Run 'go generate ./internal/api/' and commit the result WITH the document" >&2
+  echo "    change, in the same commit. generate.go says so: \"regeneration is only" >&2
+  echo "    correct immediately after the document changes, in the same commit\"." >&2
+  exit 1
+fi
+gen_after="$(cksum < "$gen")"
+if [[ "$gen_before" != "$gen_after" ]]; then
+  echo "    $gen WAS NOT what openapi/v1.yaml produces, and this step has overwritten it."
+  echo "    The committed state is correct — regenerate-and-diff could not have reached"
+  echo "    this line otherwise — but the working tree had a hand edit, a stale"
+  echo "    regeneration or a generator-version difference in it. Review what is there"
+  echo "    now before committing:  git diff -- $gen"
+  echo
+else
+  step "go generate ./internal/api/ matches openapi/v1.yaml"
+  echo "    $gen is what the document produces, from oapi-codegen v2.8.0"
+fi
 
 if [[ "${1:-}" == "--db" ]]; then
   # No apostrophes anywhere in this message: bash parses quotes inside the
@@ -167,29 +275,6 @@ if [[ "${1:-}" == "--db" ]]; then
   # rather than the mistake. Nothing in this repository's prime run does
   # `bash -n`, so the word is kept out of the string on purpose.
   : "${TEST_DATABASE_URL:?--db needs TEST_DATABASE_URL, e.g. postgres://darkroom:cafaye@localhost:15500/darkroom?sslmode=disable -- that URL is the HOST side of the shared cluster kit ships, so the port is KIT_POSTGRES_PORT (15500), not 5432. See .env.example}"
-  step "cargo test --ignored (against TEST_DATABASE_URL)"
-  # NO --test-threads=1, and that is the second half of a change whose first half
-  # is in `tests/common/mod.rs`: every test now gets a schema of its own, with
-  # the migrations applied into it and `truncate` emptying only that schema. The
-  # flag was there because the suites shared tables, and the shared tables were
-  # the reason. Six parallel runs before that change went red every time, with
-  # `NotFound { detail: "asset not found" }` on a test that had created the
-  # asset two lines earlier; three after it, green. Four runs are not evidence
-  # for a concurrency claim and six are closer, so the counts are in
-  # REPORT-darkroom-hermetic-db-01.md rather than here.
-  #
-  # If a test ever turns out that cannot be isolated, it does NOT get this flag
-  # back — that flag is a suite-wide serialisation and re-adding it undoes the
-  # isolation for the other fifty. Such a test gets its own `#[ignore]` with a
-  # comment saying what it shares with whom, and the count in `bin/tier-counts`
-  # moves with it.
-  cargo test -- --ignored
-  # The same suites with the feature on. It is a different build of the library
-  # — `S3ObjectStore` exists, `Config` has a second variant — and the checksum
-  # table runs against whatever `ObjectStore` is wired, so it is worth the
-  # seconds to know the deployment build still passes the database tier.
-  step "cargo test --features s3 --ignored (against TEST_DATABASE_URL)"
-  cargo test --features s3 -- --ignored
 
   # THE GO DATABASE TIER, `-v` BECAUSE `go test` THROWS THE OUTPUT AWAY.
   #
@@ -201,18 +286,29 @@ if [[ "${1:-}" == "--db" ]]; then
   # run that entered 12 gates, and the reason was duller than the bug: `go test`
   # DISCARDS a passing package's output entirely."
   #
-  # No `--test-threads` equivalent, and there is no Go one to pass: every test
-  # owns a schema, which is the same property the Rust tier has and the reason its
-  # `--test-threads=1` came out. `pgtest`'s own `TestTheHarnessGivesEachTestItsOwnSchema`
-  # holds it rather than assuming it.
+  # Every package whose tests need a database runs here, and `-count=1` for the
+  # reason the variants step above carries it: a cached run prints no `--- PASS:`
+  # rows and `bin/tier-counts` would count zero in a step that ran everything.
   step "go test -v ./internal/darkroomdb/... (against TEST_DATABASE_URL)"
   go test -v -count=1 ./internal/darkroomdb/...
-  # THE SERVICE TIER IS HERE AND NOT IN THE DEFAULT ONE, because every test in it
+  # The service tier is here and not in the default one, because every test in it
   # needs a database: `pgtest` skips the whole package without one, and a skipped
   # package is `ok`. Its floor in the `-list` step above is what holds on a bare
   # machine; this is what proves the tests RAN.
   step "go test -v ./internal/service/... (against TEST_DATABASE_URL)"
   go test -v -count=1 ./internal/service/...
+  # `internal/httpapi` has no database tests today, so nothing new runs here. The
+  # step is listed because that is a FINDING and not an accident: packet 05's
+  # handoff says so ("No cross-tenant 404 test end to end ... the next packet
+  # should add `internal/httpapi` cases that drive the router against a seeded
+  # `pgtest` schema"), and a gate that silently stops growing a tier is the shape
+  # of the bug this whole script exists to prevent.
+  #
+  # UNLESS one is added, in which case this step runs
+  # `go test -v -count=1 ./internal/httpapi/` and `bin/tier-counts` gains a
+  # constant for it. Written here rather than left to be rediscovered.
+  step "go test -v ./internal/httpapi/ (against TEST_DATABASE_URL; nothing new to run)"
+  go test -v -count=1 ./internal/httpapi/
 fi
 
 step "ok"

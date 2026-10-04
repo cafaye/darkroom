@@ -6,220 +6,114 @@
 #
 # ## Why this exists at all
 #
-# `bin/prime` exits zero when it is happy, and `cargo test` exits zero when it
-# ignored every test it could. Those two facts are the same fact: a green exit
-# code is a claim, and this repository has three ways to make a false one.
+# `bin/prime` exits zero when it is happy, and `go test` exits zero when a package
+# has no test files in it. Those two facts are the same fact: a green exit code is
+# a claim, and this repository has three ways to make a false one.
 #
-#   1. Tier 6 does not run at all — someone calls `bin/prime` instead of
-#      `bin/prime --db`, and the 59 database tests report as `ignored` while
-#      the suite still exits 0. darkroom is a service whose entire job is
+#   1. The database tiers do not run at all — someone calls `bin/prime` instead
+#      of `bin/prime --db`, and the 44 database tests report as `ok` while the
+#      suite never touched a database. darkroom is a service whose entire job is
 #      putting bytes in a database.
-#   2. Tier 6 runs but touches nothing — `TEST_DATABASE_URL` is unset, every
-#      `#[ignore]`d test panics or the harness finds no database, and the run
-#      is quietly `0 passed`.
-#   3. Tier 5 does not run — `cargo test` does not compile the `s3` feature at
-#      all, so the R2 configuration rules and the presigned-URL table are
-#      decoration.
+#   2. They run but touch nothing — `TEST_DATABASE_URL` is unset and every
+#      `pgtest.Require` SKIPS with a named reason, and the run is quietly green.
+#   3. A suite is gone — a file emptied or renamed, and `go test ./...` prints
+#      `ok` for a package with no test files.
 #
-# None of those change the exit code. All three change the counts, so this
-# reads the counts. It is an accounting check, not a second gate: `bin/prime`
-# remains the gate, and nothing here loosens it.
+# None of those change the exit code. All three change the counts, so this reads
+# the counts. It is an accounting check, not a second gate: `bin/prime` remains the
+# gate, and nothing here loosens it.
 #
-# ## The invariant worth having
+# # THE IDENTITY, AND WHY IT IS A DIFFERENT ONE FROM THE RUST SCRIPT'S
 #
-# The number of tests the default run *skips* must equal the number the
-# database run *passes*. Those are the same set of tests, so the two counts
-# agreeing is a real identity and not two numbers that happen to be plausible:
+# The Rust version asserted this:
 #
 #   default `cargo test`      77 passed, 59 ignored
 #   `cargo test -- --ignored` 59 passed,  0 ignored
 #
-# A test that is `#[ignore]`d without the database tier running it breaks the
-# identity. A test that is added and never `#[ignore]`d breaks it the other
-# way. Neither can reach master as a green badge.
+# i.e. **the number the default run skips equals the number the database run
+# passes.** That identity is available in cargo because a database test is marked
+# `#[ignore]` and libtest prints `ignored` as a count.
+#
+# IT DOES NOT TRANSLATE, and pretending it does would be the exact failure this
+# script exists to prevent. A Go test is not marked; it calls `pgtest.Require`,
+# which SKIPS at runtime depending on whether a database is reachable. There is no
+# build-time marker and no count of tests-that-would-have-been-ignored. Measured
+# on this tree, against no database:
+#
+#   ./internal/darkroomdb/pgtest    4 PASS, 11 SKIP, 15 total
+#   ./internal/service              9 PASS, 20 SKIP, 29 total
+#
+# Nine of `service`'s tests and four of `pgtest`'s genuinely need no database, so
+# "skipped == passed" is not merely unavailable, it is FALSE here: the skipped
+# counts are 31 and the passed counts would be 44.
+#
+# So this script asserts the identity that IS true and IS checkable from one log:
+#
+#   **the number of tests `bin/prime` ENUMERATES without a database equals the
+#   number the database tiers PASS with one.**
+#
+# Both halves are already in the same log. The `go test -list` step prints
+# `    ./internal/service: 29 tests` for every package, and the `--db` step prints
+# 29 `--- PASS:` rows for it. The two disagreeing is the failure: a test that
+# stopped running in the database tier, a test that stopped being enumerated, a
+# package that stopped compiling. And unlike a constant compared against a
+# constant, this one keeps holding as tests are added — which is the direction a
+# copied-forward constant drifts.
 #
 # ## The absolute numbers
 #
-# The floor below is the count on master. It catches the blunter failure — the
-# whole integration tree silently ceasing to compile, which would report `0
-# passed` everywhere and still balance out. **Adding a test means raising the
-# number in the same commit that adds it.** That is the point: the constant is
-# a claim someone has to look at, not a number that drifts.
+# The floors below are what THIS TREE contained when they were written, read out
+# of it with the command in `bin/prime`'s own comment. **Adding a test means
+# raising the number in the same commit that adds it.** That is the point: the
+# constant is a claim someone has to look at, not a number that drifts.
 #
-# | tier | command | expected |
+# | step | what is counted | expected |
 # |---|---|---|
-# | 4 | `cargo test` | 77 lib unit tests, 59 skipped for want of a database, 9 OpenAPI drift checks, 12 tenant-scoping checks, 4 schema-isolation checks |
-# | 5 | `cargo test --features s3` | 89 lib unit tests, 9 backend-table rows, 9 OpenAPI drift checks, 12 tenant-scoping checks, 4 schema-isolation checks |
-# | 6 | `cargo test -- --ignored` | 59 passed, 7 of them query-scoping, 5 of them schema-isolation |
-# | 6 | `cargo test --features s3 -- --ignored` | 59 passed |
+# | `go test -list` | enumerated per package | ten packages, floors in `bin/prime` |
+# | `go test -v ./internal/variants/` | `--- PASS:` rows | 24 |
+# | `go test -v ./internal/darkroomdb/...` | `--- PASS:` rows | 15 |
+# | `go test -v ./internal/service/...` | `--- PASS:` rows | 29 |
+# | `go test -v ./internal/httpapi/` | `--- PASS:` rows | 19 |
 #
 # The step labels below are the ones `bin/prime` prints. Rewording a step there
-# breaks this script, loudly and on the first run, which is the intended
-# coupling: the two files must agree about what the tiers are.
+# breaks this script, loudly and on the first run, which is the intended coupling:
+# the two files must agree about what the tiers are.
 #
-# ## A test file added in the default tier moves one of these numbers, and
-# ## which one is a question, not a matter of taste
+# # WHAT IS NOT PINNED HERE, AND WHY
 #
-# The rule above says to raise the number in the same commit. Following that
-# literally for `tests/openapi_document.rs` would have meant raising
-# `UNIT_TESTS` from 77 — and that would have made the number a lie, because
-# `UNIT_TESTS` is counted as `unittests src/lib.rs`, and a new file under
-# `tests/` is a *different binary* that `lib.rs`'s count does not include. 77 is
-# what `src/lib.rs` holds and it is still 77. The rule's purpose is "the
-# constant is a claim someone has to look at", and the way to serve that purpose
-# here is to pin the new file in its own right rather than to corrupt a constant
-# that means something else.
+# The eleven Rust constants — `DB_TESTS`, `UNIT_TESTS`, `S3_UNIT_TESTS`,
+# `S3_TABLE_TESTS`, `OPENAPI_DRIFT_TESTS`, `TENANT_SCOPE_TESTS`,
+# `QUERY_SCOPING_TESTS`, `SCHEMA_ISOLATION_TESTS`, `SCHEMA_ISOLATION_DB_TESTS`
+# and the two-file split between them — are GONE with the tree they counted, and
+# nothing carries them forward. Every one of them was either a count of
+# `unittests src/lib.rs`, a count of `#[ignore]`d tests, or a count scoped to a
+# named Rust test binary. There is no `src/lib.rs` to count, no `#[ignore]`, and
+# `tests/` is deleted.
 #
-# So the new number is a new constant, and the four existing ones did not move.
-# Every one of them is still exactly true, which is checkable and was checked:
+# Two of them described properties this tree does not have and this packet did not
+# port, and that is recorded rather than silently dropped:
 #
-#   `UNIT_TESTS` and `S3_UNIT_TESTS` count `unittests src/lib.rs`, and this
-#     packet added no `#[cfg(test)]` test to the library — `OPERATIONS` in
-#     `src/http.rs` is a data table, not a test.
-#   `DB_TESTS` is the ignored count, and the new file has **no** `#[ignore]`d
-#     test: it needs neither `TEST_DATABASE_URL` nor a socket. It therefore adds
-#     0 to the default run's skips and 0 to tier 6's passes, and the identity
-#     below stays 41 == 41 at the time it was written.
-#   `S3_TABLE_TESTS` is scoped to `tests/storage_backends.rs` and is untouched.
+#   - `TENANT_SCOPE_TESTS` was `tests/tenant_scoping.rs` READING `src/store.rs`
+#     AS TEXT and holding its `account_id` predicates in place. The Go tree holds
+#     the same boundary a different way — `InAccountTx` is the only way to start a
+#     transaction and it names the account — so there is no source file to read for
+#     a dropped predicate, and a structural guard over a file that no longer
+#     exists is a guard over nothing.
+#   - `OPENAPI_DRIFT_TESTS` was `tests/openapi_document.rs`. The Go equivalent is
+#     `internal/httpapi`'s drift tests against `openapi/v1.yaml`, which compare the
+#     DOCUMENT to the router in both directions and are floored at 19 in
+#     `bin/prime`.
 #
-# darkroom-09 is the second instance of that pattern, and the one that made the
-# pattern worth a paragraph. `tests/tenant_scoping.rs` is another default-tier
-# file in none of the four constants, so it is pinned as `TENANT_SCOPE_TESTS`
-# for the same reason. It also added 13 `#[ignore]`d tests, so `DB_TESTS` did
-# move — 41 to 54 — and the identity below became 54 == 54. The split is
-# exactly the one the rule describes: a default-tier file adds a new constant and
-# leaves the others alone; `#[ignore]`d tests move the one constant that counts
-# them, and both sides of the identity move together, which is the mechanism
-# working rather than two numbers drifting in step by luck.
-#
-# That last point is the one worth stating plainly, because it is a gap this
-# script does **not** cover on its own: every constant above is either scoped to
-# a named binary or is a count of `#[ignore]`d tests, and a default-tier
-# integration file is neither. If `tests/openapi_document.rs` were emptied, or
-# its tests deleted one at a time, every number here would still read correctly
-# while the file reported `0 passed`. Pinning it — 9 rows, in the tier where it
-# runs — closes that, and is the same mechanism applied to a new file: a
-# constant somebody has to look at.
-#
-# darkroom-hermetic-db-01 is the fourth such file and the first one with tests on
-# both sides of the line. `tests/schema_isolation.rs` holds four tests in the
-# DEFAULT tier — the shape of a generated schema name, the check on the two
-# statements that interpolate one, and the stamp the janitor reads — and four
-# `#[ignore]`d ones that need a database. So it adds a new constant of each
-# kind, `SCHEMA_ISOLATION_TESTS` and `SCHEMA_ISOLATION_DB_TESTS`, and moves
-# `DB_TESTS` 54 -> 58, with both sides of the identity moving together: the
-# default run skipped 58 and the database run passed 58.
-#
-# Then a FIFTH `#[ignore]`d case arrived in that file, and it is the one worth
-# reading: it was not a new property but a guard for a `truncate` the other four
-# did not hold. Rewriting `truncate` to name `public.assets` left the entire
-# database tier green, because every store is created empty and a `public`
-# truncate cannot reach into another schema — so `SCHEMA_ISOLATION_DB_TESTS` is
-# 5 and `DB_TESTS` 59. A count that moves because a guard turned out to be
-# missing is the count doing the job the header says it does.
-#
-# The split is not bookkeeping tidiness. The four default-tier tests are the ones
-# that CAN run on a machine with no Postgres, and they are the ones that hold the
-# harness's two safety rules — a name that cannot escape an identifier, and a
-# `drop schema` that only ever fires on a schema this harness made and that no
-# run can still be using. Neither rule is anything to do with isolation levels or
-# search paths, so neither should need a database to check, and putting them in
-# the database tier would mean the cheapest checks in the tree are the ones a
-# developer without Docker never runs.
+# Neither is a loss the rewrite caused; both are the same properties expressed in
+# the mechanism each tree has.
 
 set -euo pipefail
 
-DB_TESTS=59
-UNIT_TESTS=77
-S3_UNIT_TESTS=89
-S3_TABLE_TESTS=9
-# The default-tier integration files are in none of the four above: the first two
-# count `unittests src/lib.rs`, the third counts `#[ignore]`d tests, and the
-# fourth is scoped to `storage_backends.rs`. So each such file is pinned
-# separately, and one that stops running fails the gate instead of quietly
-# reporting zero.
-OPENAPI_DRIFT_TESTS=9
-# `tests/tenant_scoping.rs` is the third such file, and the one this repository
-# can least afford to lose silently: it is the only thing in the tree that reads
-# `src/store.rs` and holds its `account_id` predicates in place. Delete it and
-# every number above still reads correctly while a dropped `and account_id = $2`
-# ships green — which is the exact failure darkroom-09 exists to make impossible.
-#
-# Pinned in BOTH default tiers for the reason `OPENAPI_DRIFT_TESTS` is: the two
-# are separate builds of `src/http.rs` and the file reads that source, so a file
-# that compiles and runs in one need not in the other.
-#
-# Twelve. Two are new relative to the first draft of this packet, and both exist
-# because that draft was measured rather than trusted:
-#
-#   `the_operation_kinds_are_what_the_comment_claims` asserts the four-reads,
-#   three-lists, two-updates, one-delete breakdown that was previously only
-#   prose, and
-#   `naming_a_row_is_anchored_to_a_whole_identifier` tests the mutation guard's
-#   own predicate, because the unanchored version of it passed a
-#   `where account_id = $2` update that rewrites every row an account has.
-#
-# `the_operation_kinds_are_what_the_comment_claims` deserves its own note. The
-# file's headline claim — four reads, three lists, two updates, one delete — was
-# prose, and the coverage it describes is exactly what a reader would otherwise
-# take on trust. It is also the test that caught the *other* problem in the
-# first draft: the sibling assertion compared the derived list of scoped queries
-# as a **sequence** against this file's constant, which is grouped by operation
-# kind, so it went red on a tree where the two lists held the same ten names in a
-# different order. A guard that fails for a reason unrelated to the property gets
-# re-run without being read, and one that is habitually red protects nothing. The
-# derived side is now sorted, and the grouping is asserted by kind instead.
-TENANT_SCOPE_TESTS=12
-
-# `tests/query_scoping.rs` is the only place the query layer is exercised
-# against a real Postgres. It is in the `DB_TESTS` total above, which is a count
-# of `#[ignore]`d tests across every file — so a file that stopped compiling
-# would move that number too. It is pinned separately anyway, for the same
-# reason `OPENAPI_DRIFT_TESTS` is: a count that covers several files cannot say
-# *which* one went quiet, and for the delete path this is the check that matters
-# most. Seven: four operation kinds, the shared-checksum case, the cursor, and
-# the sweep.
-QUERY_SCOPING_TESTS=7
-
-# `tests/schema_isolation.rs` is the file that holds the per-test schema harness
-# in place, and it is the fourth default-tier file this script pins separately —
-# pinned in the default tier for `OPENAPI_DRIFT_TESTS`'s reason, because a new
-# integration binary is in none of the four constants above.
-#
-# Four of the eight tests in that file need no database, which is the half that
-# matters most: they hold the two rules standing between this harness and a
-# `drop schema` of somebody else's table. A name that is only ever
-# `t_` + eight lowercase hex characters, and a `drop` that fires only on a schema
-# carrying a stamp older than six hours. Neither rule involves Postgres, so both
-# are checked on a machine that has none — which is where most runs of this
-# repository's default tier happen.
-#
-# The other four are `#[ignore]`d and are counted in `DB_TESTS` above; pinned
-# separately for `QUERY_SCOPING_TESTS`'s reason, since a count that covers seven
-# files cannot say which one went quiet.
-SCHEMA_ISOLATION_TESTS=4
-SCHEMA_ISOLATION_DB_TESTS=5
-
-# `internal/variants/` is the Go rewrite's image pipeline, and it is the FIRST
-# package in the newer tree that is neither the database seam nor a test harness —
-# it is the code itself. Which is exactly why it needs pinning: the other Go
-# packages are infrastructure whose absence is obvious from a failed build, and
-# this one is a package that compiles perfectly while answering nothing.
-#
-# It is counted from `--- PASS:` rows rather than from cargo's `test result:`
-# lines, so this needed a `count_go` that did not exist before: `go test` prints
-# `ok <pkg> <time>` and no test count at all, which is the same reason
-# `bin/prime` runs this package with `-v`. The awk buffers the rows and attributes
-# them to the NEXT `ok` line, because that is where Go puts the package name —
-# `=== RUN` carries no package, so the two halves of a `-v` run cannot be split by
-# scanning forwards from the test.
-#
-# Twenty-four, and every one of them was either planted against or is documented
-# as unobservable. `bin/prime` runs this package without `-race`; a package whose
-# concurrency is a single synchronous `Encode` per test has nothing for the race
-# detector to find, and a race tier is the packet's business when there is a
-# goroutine in it.
+# The floors. Read out of this tree, not carried forward from the Rust script.
 VARIANT_TESTS=24
+PGTEST_DB_TESTS=15
+SERVICE_DB_TESTS=29
+HTTPAPI_TESTS=19
 
 usage() {
   echo "usage: bin/tier-counts <log-of-'bin/prime --db'>" >&2
@@ -229,48 +123,12 @@ usage() {
 log="${1:-}"
 [[ -n "$log" && -f "$log" ]] || usage
 
-# `bin/prime` prints its step headers through printf with SGR escapes, and
-# cargo colours its own output when it thinks it is on a terminal. Neither is
-# part of what is being measured, and neither is allowed to change an answer,
-# so both are stripped before anything is counted.
+# `bin/prime` prints its step headers through printf with SGR escapes. That is not
+# part of what is being measured and is not allowed to change an answer, so it is
+# stripped before anything is counted.
 clean="$(mktemp)"
 trap 'rm -f "$clean"' EXIT
 sed -e $'s/\x1b\\[[0-9;]*m//g' "$log" >"$clean"
-
-# Sum `passed` or `ignored` over the `test result:` lines cargo printed,
-# optionally restricted to one `==> ` step header and one test binary.
-#
-# Every binary's result is counted, including the two that are always empty:
-# `Running unittests src/main.rs` and the doc-test block. Both contribute zero
-# to every total — main.rs has no tests, the crate is `publish = false` and has
-# no doctests — so counting them changes no number. Restricting to named
-# binaries would hide a file that stopped compiling at all, and "a suite that
-# silently stopped running is the failure this script is here to catch" applies
-# to a test file exactly as it applies to a test.
-count() {
-  local scope="${1:-}" pattern="${2:-.*}" field="$3"
-  awk -v scope="$scope" -v pattern="$pattern" -v field="$field" '
-    /^==>/ { group = $0; sub(/^==> /, "", group) }
-    /^ *Running / {
-      binary = $0
-      sub(/^ *Running /, "", binary)
-      sub(/\(.*/, "", binary)
-      sub(/ +$/, "", binary)
-    }
-    /^test result:/ {
-      if (scope != "" && group != scope) next
-      if (pattern != ".*" && binary !~ pattern) next
-      # Cargo writes the count BEFORE the field name — `77 passed;` — so the
-      # number is $(i - 1), and the terminator is a semicolon, not a colon.
-      # Getting either of those backwards reads every count as zero, which is
-      # precisely the failure this script exists to prevent.
-      for (i = 1; i <= NF; i++) {
-        if ($i == field";") { total += $(i - 1); break }
-      }
-    }
-    END { print total + 0 }
-  ' "$clean"
-}
 
 fail() {
   printf '\033[1;31m==> tier-counts FAILED\033[0m  %s\n' "$1" >&2
@@ -309,6 +167,22 @@ count_go() {
   ' "$clean"
 }
 
+# Read back what `bin/prime`'s `-list` step enumerated for one package.
+#
+# The line is `    ./internal/service: 29 tests`, printed by `assert_go_suite`.
+# Reading it rather than recomputing it is the point of the identity below: this
+# is the half of the comparison that ran WITHOUT a database, taken from the same
+# log as the half that ran WITH one.
+listed() {
+  # The line is `    ./internal/service: 29 tests`, so the COUNT is field 2 and the
+  # first field carries the trailing colon. Reading field 3 reads the word "tests"
+  # and every package below would print the same thing.
+  awk -v pkg="$1" '
+    $1 == pkg":" { print $2; found = 1; exit }
+    END { if (!found) print 0 }
+  ' "$clean"
+}
+
 expect() {
   local what="$1" got="$2" want="$3"
   if [[ "$got" != "$want" ]]; then
@@ -318,122 +192,112 @@ expect() {
 }
 
 # --- the log is a `--db` run at all ------------------------------------------
-# Tier 6 exists only under the flag. A `bin/prime` log is missing its headers,
-# and saying so is more useful than reporting a count of zero.
+# The database tiers exist only under the flag. A `bin/prime` log is missing their
+# headers, and saying so is more useful than reporting a count of zero.
 for step in \
-  'cargo test (no database)' \
-  'cargo test --features s3 (no database)' \
-  'cargo test --ignored (against TEST_DATABASE_URL)' \
-  'cargo test --features s3 --ignored (against TEST_DATABASE_URL)'
+  'go test -v ./internal/darkroomdb/... (against TEST_DATABASE_URL)' \
+  'go test -v ./internal/service/... (against TEST_DATABASE_URL)'
 do
   if ! grep -qxF "==> $step" "$clean"; then
     fail "tier ran" "'$step' is not in this log — this is not a complete 'bin/prime --db' run"
   fi
 done
 
-# --- tier 4: the default run -------------------------------------------------
-# 59 skipped here is not a problem; it is the accounting identity's left side.
-expect "tier 4  unit tests" \
-  "$(count 'cargo test (no database)' 'unittests src/lib.rs' passed)" "$UNIT_TESTS"
-default_ignored="$(count 'cargo test (no database)' '' ignored)"
-expect "tier 4  skipped for want of a database" \
-  "$default_ignored" "$DB_TESTS"
-
-# The OpenAPI drift check is the file that would have caught a document that
-# drifted from the router, so a suite that reports zero here has removed the
-# only thing in the repository that notices. Pinned in both default tiers
-# because `cargo test` and `cargo test --features s3` are separate builds of
-# `src/http.rs` and a file that compiles and runs in one need not in the other.
-expect "tier 4  openapi drift checks" \
-  "$(count 'cargo test (no database)' 'tests/openapi_document.rs' passed)" "$OPENAPI_DRIFT_TESTS"
-expect "tier 4  openapi drift checks left ignored" \
-  "$(count 'cargo test (no database)' 'tests/openapi_document.rs' ignored)" "0"
-
-# --- the tenant-scoping file, in the tier that runs it ----------------------
-# A file that stops running must fail the gate rather than report zero, and
-# "0 passed" is exactly what a deleted security check looks like from outside.
-for step in 'cargo test (no database)' 'cargo test --features s3 (no database)'
+# The default-tier steps, because a log missing them is not this gate either.
+for step in \
+  'gofmt -l' \
+  'go build ./...' \
+  'go build the binary' \
+  'go vet ./...' \
+  'go test ./... (no database)' \
+  'go test -list: the Go suites are not empty' \
+  'go test -v ./internal/variants/ (no database)' \
+  'go generate ./internal/api/ matches openapi/v1.yaml'
 do
-  case "$step" in
-    'cargo test (no database)') label='default build' ;;
-    *) label='s3 build' ;;
-  esac
-  expect "tier 4/5  tenant-scoping checks ($label)" \
-    "$(count "$step" 'tests/tenant_scoping.rs' passed)" "$TENANT_SCOPE_TESTS"
-  expect "tier 4/5  tenant-scoping checks left ignored ($label)" \
-    "$(count "$step" 'tests/tenant_scoping.rs' ignored)" "0"
-  expect "tier 4/5  schema-isolation checks ($label)" \
-    "$(count "$step" 'tests/schema_isolation.rs' passed)" "$SCHEMA_ISOLATION_TESTS"
-  # Not zero, and deliberately: this is the only file in the tree whose ignored
-  # count is a constant rather than a failure. Half of it needs a database and
-  # half does not, so the number that must hold here is the split — a fifth test
-  # quietly marked `#[ignore]` would run nowhere, and one quietly un-marked would
-  # run on a machine with no Postgres.
-  expect "tier 4/5  schema-isolation checks needing a database ($label)" \
-    "$(count "$step" 'tests/schema_isolation.rs' ignored)" "$SCHEMA_ISOLATION_DB_TESTS"
+  if ! grep -qxF "==> $step" "$clean"; then
+    fail "step ran" "'$step' is not in this log"
+  fi
 done
 
-# --- the Go tier -------------------------------------------------------------
+# --- the default tier --------------------------------------------------------
 # The variant pipeline, pinned in the tier that runs it. A package that compiles,
 # links, vets clean and answers nothing is the quietest failure in this
 # repository, and twenty-four tests reporting zero is what it looks like from
 # outside.
-expect "go tier  variant-pipeline checks" \
+expect "default  variant-pipeline checks" \
   "$(count_go 'go test -v ./internal/variants/ (no database)' 'github.com/cafaye/darkroom/internal/variants')" \
   "$VARIANT_TESTS"
 
-# --- tier 5: the s3 build ----------------------------------------------------
-# `cargo test` does not compile the s3 feature at all, so these two numbers are
-# the only evidence darkroom-02's R2 work is still tested by anything.
-expect "tier 5  unit tests (s3 build)" \
-  "$(count 'cargo test --features s3 (no database)' 'unittests src/lib.rs' passed)" "$S3_UNIT_TESTS"
-expect "tier 5  R2/S3 behaviour table rows" \
-  "$(count 'cargo test --features s3 (no database)' 'tests/storage_backends.rs' passed)" "$S3_TABLE_TESTS"
-expect "tier 5  openapi drift checks (s3 build)" \
-  "$(count 'cargo test --features s3 (no database)' 'tests/openapi_document.rs' passed)" "$OPENAPI_DRIFT_TESTS"
+# --- the database tiers ------------------------------------------------------
+# Each of these three is a package whose tests are DATABASE tests, so on a machine
+# with no PostgreSQL every one of them SKIPS and `go test ./...` prints `ok`. The
+# floors in `bin/prime`'s `-list` step are what hold on a bare machine; these are
+# what prove the tests RAN.
+expect "database  harness and role checks" \
+  "$(count_go 'go test -v ./internal/darkroomdb/... (against TEST_DATABASE_URL)' 'github.com/cafaye/darkroom/internal/darkroomdb/pgtest')" \
+  "$PGTEST_DB_TESTS"
+expect "database  service checks" \
+  "$(count_go 'go test -v ./internal/service/... (against TEST_DATABASE_URL)' 'github.com/cafaye/darkroom/internal/service')" \
+  "$SERVICE_DB_TESTS"
+# The HTTP surface runs in the `--db` branch today with no database tests in it,
+# which is a FINDING packet 05 recorded rather than an accident. It is counted
+# here anyway, because a step whose count is not read is a step nobody is holding
+# in place.
+expect "database  httpapi checks" \
+  "$(count_go 'go test -v ./internal/httpapi/ (against TEST_DATABASE_URL; nothing new to run)' 'github.com/cafaye/darkroom/internal/httpapi')" \
+  "$HTTPAPI_TESTS"
 
-# The database tier's own file. `tests/query_scoping.rs` is the only place the
-# query layer is exercised against a real Postgres, and the cross-tenant
-# behaviour of `store::delete_asset` is proved nowhere else — a service that
-# scopes its reads and forgets its delete is the common shape, and an empty
-# report here would be a green badge over it.
-expect "tier 6  query-scoping cases" \
-  "$(count 'cargo test --ignored (against TEST_DATABASE_URL)' 'tests/query_scoping.rs' passed)" "$QUERY_SCOPING_TESTS"
-# The other half of `tests/schema_isolation.rs`: the four that genuinely need a
-# database, and the four in the default tier this same file runs without one.
-# Both numbers, because a harness that stopped isolating would leave the second
-# half red and a harness that stopped existing would leave both zero.
-expect "tier 6  schema-isolation cases" \
-  "$(count 'cargo test --ignored (against TEST_DATABASE_URL)' 'tests/schema_isolation.rs' passed)" "$SCHEMA_ISOLATION_DB_TESTS"
-expect "tier 6  schema-isolation cases left ignored" \
-  "$(count 'cargo test --ignored (against TEST_DATABASE_URL)' 'tests/schema_isolation.rs' ignored)" "0"
-
-# --- tier 6: the database, both feature sets ---------------------------------
-# Two runs, not one. `cargo test -- --ignored` and
-# `cargo test --features s3 -- --ignored` are different builds of the library —
-# `S3ObjectStore` exists in one and `Config` has a second variant — and the
-# checksum table runs against whatever `ObjectStore` is wired, so the
-# deployment build has to pass the database tier too.
-for label in 'default build' 's3 build'
+# A tier that reported a SKIP where a pass was expected is the failure this whole
+# script is for, and `--- SKIP:` is the shape it takes: a package whose tests all
+# skipped because no database answered, with a green `ok` underneath it.
+for pair in \
+  "go test -v ./internal/darkroomdb/... (against TEST_DATABASE_URL):github.com/cafaye/darkroom/internal/darkroomdb/pgtest" \
+  "go test -v ./internal/service/... (against TEST_DATABASE_URL):github.com/cafaye/darkroom/internal/service"
 do
-  case "$label" in
-    'default build') step='cargo test --ignored (against TEST_DATABASE_URL)' ;;
-    's3 build') step='cargo test --features s3 --ignored (against TEST_DATABASE_URL)' ;;
-  esac
-  expect "tier 6  database tests passed ($label)" \
-    "$(count "$step" '' passed)" "$DB_TESTS"
-  expect "tier 6  database tests left ignored ($label)" \
-    "$(count "$step" '' ignored)" "0"
+  step="${pair%%:*}"; pkg="${pair##*:}"
+  skipped="$(awk -v scope="$step" '
+    /^==>/ { group = $0; sub(/^==> /, "", group) }
+    /^--- SKIP: / { if (group == scope) pending++ }
+    /^ok[ \t]/ {
+      if (group == scope) { split($0, f, "\t"); if (f[2] == pkg) total += pending }
+      pending = 0
+    }
+    END { print total + 0 }
+  ' "$clean")"
+  if [[ "$skipped" != "0" ]]; then
+    fail "the database tier skipped $skipped tests in $pkg" \
+      "a --db run reported skips, so TEST_DATABASE_URL pointed somewhere this tier could not query: every one of them is a check that did not run"
+  fi
 done
 
 # --- and the identity --------------------------------------------------------
-# The only line here that is not a constant-to-constant comparison, and the one
+# The one line here that is not a constant-to-constant comparison, and the one
 # that would survive the constants being wrong together.
-if [[ "$default_ignored" != "$DB_TESTS" ]]; then
-  fail "skipped == run" \
-    "the default run skipped $default_ignored tests and the database run passed $DB_TESTS; those are the same set and must be the same number"
-fi
+#
+# ENUMERATED WITHOUT A DATABASE == PASSED WITH ONE, per package. The Rust script's
+# `skipped == passed` is not translatable and the header says why; this is the
+# version that is true of a Go tree, and it is checked in BOTH directions because
+# each direction catches a different deletion:
+#
+#   enumerated > passed   a test stopped running in the database tier — a renamed
+#                         helper, a build tag that stopped matching, a `t.Skip`
+#                         that became unconditional.
+#   enumerated < passed   the floor in `bin/prime` was raised past what the
+#                         database tier runs, which means the two files disagree
+#                         about the same package.
+for pair in \
+  "./internal/darkroomdb/pgtest:$PGTEST_DB_TESTS:github.com/cafaye/darkroom/internal/darkroomdb/pgtest" \
+  "./internal/service:$SERVICE_DB_TESTS:github.com/cafaye/darkroom/internal/service" \
+  "./internal/httpapi:$HTTPAPI_TESTS:github.com/cafaye/darkroom/internal/httpapi"
+do
+  pkg="${pair%%:*}"; rest="${pair#*:}"; want="${rest%%:*}"; import="${rest##*:}"
+  got="$(listed "$pkg")"
+  if [[ "$got" != "$want" ]]; then
+    fail "enumerated == passed for $pkg" \
+      "bin/prime enumerated $got without a database and tier-counts expects $want; those are the same tests and must be the same number — one of the two files is stale"
+  fi
+  printf '  ok  %-46s %s enumerated, %s passed with a database\n' "identity  $pkg" "$got" "$want"
+done
 
-printf '\n\033[1m==> tier-counts ok\033[0m  %d unit, %d with s3, %d database x2, %d backend-table rows, %d openapi drift x2, %d tenant scoping x2, %d query scoping, %d schema isolation x2, %d go variants\n' \
-  "$UNIT_TESTS" "$S3_UNIT_TESTS" "$DB_TESTS" "$S3_TABLE_TESTS" "$OPENAPI_DRIFT_TESTS" \
-  "$TENANT_SCOPE_TESTS" "$QUERY_SCOPING_TESTS" "$SCHEMA_ISOLATION_TESTS" "$VARIANT_TESTS"
+printf '\n\033[1m==> tier-counts ok\033[0m  %d variants (no db), %d harness, %d service, %d httpapi (against the database)\n' \
+  "$VARIANT_TESTS" "$PGTEST_DB_TESTS" "$SERVICE_DB_TESTS" "$HTTPAPI_TESTS"
