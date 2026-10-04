@@ -102,10 +102,43 @@ func DecodeCursor(raw string) (*Cursor, *problem.Error) {
 	if !ok {
 		return badCursor()
 	}
-	if id == "" || strings.ContainsAny(id, " \t\n") {
+	// THE ID MUST BE A UUID, and this check is not decoration. The cursor's second
+	// half is bound as `$2::uuid`, so an unchecked string reaches Postgres as an
+	// invalid input syntax for type uuid — a 500 for a malformed request, and the one
+	// way a client could turn a 422 into a server error. It was found by a test that
+	// passed `MTIzfGV4dA` (which is base64 for "123|ext"): the separator was there and
+	// both halves were non-empty, so the first draft of this accepted it.
+	if !isUUID(id) {
 		return badCursor()
 	}
 	return &Cursor{CreatedAt: time.Unix(0, nanos).UTC(), ID: id}, nil
+}
+
+// isUUID reports whether s is a canonical 8-4-4-4-12 hex UUID.
+//
+// The SHAPE and not a round trip through a uuid library: the cursor is opaque to the
+// client and this is the only place that ever parses one, so the check is for "would
+// `$::uuid` accept this" — which is exactly the 8-4-4-4-12 hex form, case-insensitive
+// and with an optional version nibble, because Postgres accepts all of those.
+func isUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < 36; i++ {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if s[i] != '-' {
+				return false
+			}
+			continue
+		}
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // parseInt64 parses a base-10 int64, reporting whether it was one at all.
