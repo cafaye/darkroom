@@ -89,6 +89,21 @@ go vet ./...
 step "go test ./internal/darkroomdb/... (no database)"
 go test ./internal/darkroomdb/...
 
+# The variant pipeline, and `-v` for a second reason that is not the skips.
+#
+# `-count=1` defeats the test cache, and without it a cached run prints `ok …
+# (cached)` and NO `--- PASS:` rows at all — so `bin/tier-counts` would count
+# zero tests in a step that ran twenty-four of them and report green. That is
+# this repository's exit-code-is-not-the-evidence rule one level down again, and
+# the `--db` Go step below already carries `-count=1` for the same reason.
+#
+# `-v` is what makes each test's name visible to `bin/tier-counts`, which pins
+# `VARIANT_TESTS`. A file that stopped compiling or stopped running would report
+# zero here, and a security-or-correctness check reporting zero is worse than one
+# that is absent — it looks like coverage.
+step "go test -v ./internal/variants/ (no database)"
+go test -v -count=1 ./internal/variants/
+
 if [[ "${1:-}" == "--db" ]]; then
   # No apostrophes anywhere in this message: bash parses quotes inside the
   # `${VAR:?word}` expansion, so a single apostrophe below — `kit's`, the word
