@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/image/draw"
@@ -809,9 +810,9 @@ func TestTheJpegEncoderReadsRawChannelsNotPremultipliedOnes(t *testing.T) {
 // package, and swapping the two would change the answer.
 //
 // Measured as the mean absolute horizontal gradient — total variation — of the
-// resized luminance. On a hard vertical edge, a kernel that blurs across it
-// spends its output range on the transition and leaves less contrast on either
-// side; that is what "soft" means, and it is arithmetic rather than taste.
+// resized luminance, and compared against the pipeline's own resize rather than
+// against a second copy of the kernel, so the assertion is about which one
+// `Encode` calls.
 func TestTheResampleKernelIsSharperThanBiLinear(t *testing.T) {
 	// A 512x64 black-and-white comb: 4px bars, so downscaling to 128 forces real
 	// frequency content above the Nyquist limit and the two kernels disagree
@@ -834,26 +835,19 @@ func TestTheResampleKernelIsSharperThanBiLinear(t *testing.T) {
 		}
 	}
 
-	shrink := func(scaler draw.Scaler) float64 {
-		dst := image.NewNRGBA(image.Rect(0, 0, targetWidth, sourceHeight))
+	shrink := func(scaler draw.Scaler, to int) *image.NRGBA {
+		dst := image.NewNRGBA(image.Rect(0, 0, to, sourceHeight))
 		scaler.Scale(dst, dst.Bounds(), img, img.Bounds(), draw.Src, nil)
-		// Luma, then the mean absolute difference between horizontally adjacent
-		// columns — the comb's edges run vertically, so this is measuring exactly
-		// the transition the kernel had to decide about.
-		row := make([]int, targetWidth)
-		for x := range targetWidth {
-			row[x] = int(dst.NRGBAAt(x, sourceHeight/2).R)
-		}
-		total := 0
-		for x := 1; x < targetWidth; x++ {
-			total += int(math.Abs(float64(row[x] - row[x-1])))
-		}
-		return float64(total) / float64(targetWidth-1)
+		return dst
 	}
 
-	// What the pipeline actually does: CatmullRom.
-	fromPipeline := shrink(draw.CatmullRom)
-	fromBiLinear := shrink(draw.BiLinear)
+	// What the pipeline actually does — through `resizeToFit`, NOT by naming
+	// `draw.CatmullRom` here. The first draft of this test measured the two
+	// candidates side by side and passed while `Encode` used either of them,
+	// because it never went near `Encode`. A guard that measures the candidates
+	// and not the choice is a guard on nothing.
+	fromPipeline := edgeGradient(resizeToFit(img, targetWidth, sourceHeight))
+	fromBiLinear := edgeGradient(shrink(draw.BiLinear, targetWidth))
 
 	if fromPipeline <= fromBiLinear {
 		t.Errorf(
@@ -871,6 +865,92 @@ func TestTheResampleKernelIsSharperThanBiLinear(t *testing.T) {
 			fromPipeline, fromBiLinear,
 		)
 	}
+}
+
+// TestEveryAcceptedFormatIsRegisteredInThisFile covers the half of the blank
+// imports that TestEveryAcceptedInputFormatDecodes structurally cannot, and the
+// reason it is needed is a hole in that test that was found by planting.
+//
+// **The behavioural test cannot catch a dropped PNG, JPEG or GIF registration,
+// and the trap is that it looks like it can.** Those three decoders live in the
+// same standard-library package as their ENCODERS, and this test file needs the
+// encoders to build its fixtures — so `import "image/png"` here registers the PNG
+// decoder all by itself. Delete the blank import from `variants.go` and the
+// behavioural test stays green, because the package under test is no longer the
+// only thing registering anything. That is a guard passing on a broken source,
+// which is the failure mode `AGENTS.md` singles out, and the comment on the
+// import block in `variants.go` claims the opposite until this test exists.
+//
+// **WebP is the exception and it is not luck.** `golang.org/x/image` has a
+// decoder and no encoder, so nothing in this repository can register the WebP
+// decoder except the blank import. That split — the very reason for refusing cgo
+// libwebp — is what makes a BEHAVIOURAL guard possible for WebP at all, and it
+// is why the WebP rows of the format table are checked-in fixtures rather than
+// images the test builds. See `testdata/README.md`.
+//
+// So this test reads `variants.go` as text and holds the registration where the
+// behavioural test cannot. It is a structural guard on source, in the shape
+// `tests/tenant_scoping.rs` already uses to hold `src/store.rs`'s predicates in
+// place — reading the file as text because the property being held is about the
+// file. It is deliberately narrow: one import line per accepted format, named
+// literally, so that a reformat cannot silently satisfy it and a rename cannot
+// silently fail it for the wrong reason.
+func TestEveryAcceptedFormatIsRegisteredInThisFile(t *testing.T) {
+	source, err := os.ReadFile("variants.go")
+	if err != nil {
+		t.Fatalf("reading variants.go: %v — this guard checks the SOURCE, so it cannot run from elsewhere", err)
+	}
+	text := string(source)
+
+	cases := []struct {
+		format     string
+		importLine string
+	}{
+		// JPEG is the encoder as well as the decoder, so it is a plain import and
+		// `jpeg.Encode` is what keeps it honest.
+		{"jpeg", `"image/jpeg"`},
+		{"png", `_ "image/png"`},
+		{"gif", `_ "image/gif"`},
+		{"webp", `_ "golang.org/x/image/webp"`},
+	}
+	for _, tc := range cases {
+		if !strings.Contains(text, tc.importLine) {
+			t.Errorf(
+				"variants.go does not contain %s — darkroom would stop accepting %s, "+
+					"and nothing else in this package would notice",
+				tc.importLine, tc.format,
+			)
+		}
+	}
+
+	// And the reverse, because a stale registration is as wrong as a missing one:
+	// a fifth blank import would be a format this package claims nothing about,
+	// and the packet's accepted set is four.
+	if got := strings.Count(text, "\t_ \""); got != 3 {
+		t.Errorf(
+			"variants.go has %d blank image imports, want 3 (png, gif, webp) — a fourth is a "+
+				"format nothing here has an opinion about", got,
+		)
+	}
+}
+
+// edgeGradient returns the mean absolute difference between horizontally adjacent
+// luma samples along the middle row — total variation across the comb's vertical
+// edges, which is exactly the transition the kernel had to decide about.
+//
+// A kernel that blurs across an edge spends its output range on the transition
+// and leaves less contrast on either side. That is what "soft" means, and it is
+// arithmetic rather than taste.
+func edgeGradient(img *image.NRGBA) float64 {
+	row := img.Bounds().Dy() / 2
+	previous := int(img.NRGBAAt(0, row).R)
+	total := 0
+	for x := 1; x < img.Bounds().Dx(); x++ {
+		current := int(img.NRGBAAt(x, row).R)
+		total += int(math.Abs(float64(current - previous)))
+		previous = current
+	}
+	return float64(total) / float64(img.Bounds().Dx()-1)
 }
 
 // --- helpers -----------------------------------------------------------------

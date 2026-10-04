@@ -200,30 +200,7 @@ func Encode(original []byte, kind VariantKind, declaredContentType string) (*Enc
 	longest := max(sourceWidth, sourceHeight)
 	if uint32(longest) > maxEdge {
 		width, height := fitInside(sourceWidth, sourceHeight, maxEdge)
-		dst := image.NewNRGBA(image.Rect(0, 0, width, height))
-		// `CatmullRom` because it is the closest thing `golang.org/x/image/draw`
-		// offers to the Rust `FilterType::Lanczos3` this replaces, and the
-		// idiomatic Go choice besides. `BiLinear` is the other kernel in that
-		// package and it is visibly softer on the 256px thumbnail this service
-		// serves most; `TestTheResampleKernelIsSharperThanBiLinear` holds that
-		// choice rather than leaving it as a comment nobody can check.
-		//
-		// The resample happens in PREMULTIPLIED space, which is the right space
-		// for it and not an accident: `x/image/draw` reads `src.At().RGBA()` and
-		// writes through `color.NRGBAModel`, so an NRGBA source is premultiplied on
-		// the way in and un-premultiplied on the way out. Interpolating the
-		// non-premultiplied colour across a transparent edge instead would drag
-		// the transparent pixel's hue into its opaque neighbour — a halo, and a
-		// visible one at the edge of every cut-out logo a customer uploads.
-		//
-		// `draw.Src` rather than `draw.Over`. On THIS destination the two are
-		// indistinguishable, because `Over` composited against the zeroed
-		// destination `image.NewNRGBA` just made is the identity on the source;
-		// `Src` is chosen because it states the intent — every pixel is written,
-		// not blended with whatever was there — and stays correct if a future
-		// change reuses a destination buffer.
-		draw.CatmullRom.Scale(dst, dst.Bounds(), source, source.Bounds(), draw.Src, nil)
-		img = dst
+		img = resizeToFit(source, width, height)
 	}
 
 	width, height := img.Bounds().Dx(), img.Bounds().Dy()
@@ -343,6 +320,45 @@ func normalise(src image.Image) *image.NRGBA {
 	bounds := src.Bounds()
 	dst := image.NewNRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
 	draw.Draw(dst, dst.Bounds(), src, bounds.Min, draw.Src)
+	return dst
+}
+
+// resizeToFit scales `src` to exactly width x height with the pipeline's kernel.
+//
+// It is a named function rather than three lines inside `Encode` because the
+// KERNEL is a decision with nothing else in the file depending on it, and
+// `TestTheResampleKernelIsSharperThanBiLinear` needs to reach it without going
+// through a JPEG round trip that would add lossy noise to the measurement. The
+// first draft of that test called `draw.CatmullRom` and `draw.BiLinear` side by
+// side and passed while `Encode` used either of them, because it never touched
+// `Encode` — a guard that measures the two candidates and not the thing that
+// chose between them.
+//
+// `CatmullRom` because it is the closest thing `golang.org/x/image/draw` offers
+// to the Rust `FilterType::Lanczos3` this replaces, and the idiomatic Go choice
+// besides. `BiLinear` is the other kernel in that package and it is visibly
+// softer on the 256px thumbnail this service serves most.
+//
+// The resample happens in PREMULTIPLIED space, which is the right space for it
+// and not an accident: `x/image/draw` reads `src.At().RGBA()` and writes through
+// `color.NRGBAModel`, so an NRGBA source is premultiplied on the way in and
+// un-premultiplied on the way out. Interpolating the non-premultiplied colour
+// across a transparent edge instead would drag the transparent pixel's hue into
+// its opaque neighbour — a halo, and a visible one at the edge of every cut-out
+// logo a customer uploads.
+//
+// `draw.Src` rather than `draw.Over`. On THIS destination the two are
+// indistinguishable, and that was measured rather than assumed: `Over`
+// composited against the zeroed destination `image.NewNRGBA` just made is the
+// identity on the source, so swapping the two changes no byte of output and no
+// test here can tell them apart. `Src` is chosen because it states the intent —
+// every pixel is written, not blended with whatever was there — and stays correct
+// if a future change reuses a destination buffer. That it is currently
+// unobservable is why there is no plant for it in the divergence table rather
+// than there being a test that has gone missing.
+func resizeToFit(src *image.NRGBA, width, height int) *image.NRGBA {
+	dst := image.NewNRGBA(image.Rect(0, 0, width, height))
+	draw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Src, nil)
 	return dst
 }
 
