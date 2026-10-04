@@ -1,0 +1,48 @@
+# oapi-codegen's configuration for darkroom, and the reasoning copied from
+# pantry and then from the gateway — both of which spell it this way and for the
+# same reasons.
+#
+# The generator is pinned at v2.8.0 by the `//go:generate` line in generate.go
+# rather than here, and the split is deliberate: `go run <module>@<version>`
+# resolves in module-aware mode and ignores this module's go.mod, so the
+# GENERATOR is never a dependency of this repository. What IS a dependency is
+# `github.com/oapi-codegen/runtime`, which the generated code imports, plus
+# `github.com/go-chi/chi/v5`, which the chi router it generates is built from.
+#
+#   package: api    The same package as generate.go, and NOT a subpackage. This
+#                   module's generated types are under `internal/`, so they are
+#                   already unreachable from outside the module.
+#   models: true    Typed structs for every schema in openapi/v1.yaml, so a
+#                   response cannot carry a key the document does not name.
+#   chi-server: true A chi router with a method per operationId. THE DOCUMENT IS
+#                   THE ROUTING TABLE, and it is what closes the hole the Rust
+#                   tree's README admits: "a planted `.route()` on a new path left
+#                   all nine drift tests green", because axum cannot enumerate its
+#                   own routes and `http::OPERATIONS` was a hand-maintained second
+#                   inventory. Here there is no second inventory to forget. A new
+#                   `operationId` is a new method on the generated `ServerInterface`,
+#                   so forgetting to implement it is a COMPILE ERROR rather than a
+#                   404 that only a deployment finds.
+#
+# strict-server is deliberately FALSE, as in pantry and the gateway. Its interface
+# returns the declared response TYPE per method instead of writing the writer
+# itself, and darkroom has to write a problem document on two routes the generated
+# code does not own (chi's own 404 and 405). Generating both and using neither
+# would be a large pile of unreferenced output a lint exclusion then has to
+# excuse.
+#
+# No `client: true`. darkroom is the server here; a generated client would put a
+# second, divergent spelling of this document in this repository.
+package: api
+
+# Relative to THIS FILE's directory, not to the directory `go generate` runs in.
+output: api.gen.go
+
+generate:
+  models: true
+  chi-server: true
+
+output-options:
+  name-normalizer: ToCamelCaseWithInitialisms
+  skip-prune: false
+  nullable-type: false

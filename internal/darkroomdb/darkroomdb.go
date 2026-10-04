@@ -68,6 +68,26 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
+// Ping executes `select 1` and reports whether the database answered.
+//
+// It exists for `GET /readyz` and nothing else, and that is the constraint on it:
+// `AGENTS.md` says the probe "really does `select 1`" while "`/healthz` is
+// unconditional", because "a database outage must not get the process restarted out
+// from under in-flight uploads". A readiness check that did not reach the database
+// would be the thing it exists to prevent.
+//
+// It is deliberately NOT wrapped in a transaction and deliberately takes no
+// account: the probe asks whether the CONNECTION works, and
+// `migrations/0004_account_isolation.sql` makes an unset
+// `current_account_id()` match NULL — so a probe inside `InAccountTx` would be
+// measuring the policy rather than the database.
+func (s *Store) Ping(ctx context.Context) error {
+	if _, err := s.pool.Exec(ctx, "select 1"); err != nil {
+		return fmt.Errorf("darkroomdb.Ping: %w", err)
+	}
+	return nil
+}
+
 // Open connects to `databaseURL` and verifies the connection before returning.
 //
 // The ping is not ceremony. A `Store` whose first real use is the one that finds
