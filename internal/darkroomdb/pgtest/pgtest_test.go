@@ -20,11 +20,15 @@ package pgtest_test
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -351,6 +355,177 @@ func TestTheLoginRoleCanWriteEveryTableTheServiceWrites(t *testing.T) {
 	}
 	if truncate {
 		t.Error("darkroom_app holds TRUNCATE on assets. The grants say DML and DML is four privileges, not `all` — and TRUNCATE is not subject to RLS, so it would empty a tenant table with no policy consulted.")
+	}
+}
+
+// TestTheLoginRoleCanDoTheWork is the end-to-end version of the test above, and it
+// is here because the privilege-level assertions are the wrong altitude for the one
+// question that actually matters: can the application, logging in as `darkroom_app`,
+// insert an asset AND the outbox event that describes it, in ONE transaction?
+//
+// That is the shape of every write in darkroom. `AGENTS.md` on the outbox: "Every
+// darkroom event is inserted into this table in the SAME transaction as the domain
+// write it describes; there is no path in this service that inserts an event
+// anywhere else." So a grant set that satisfies the two halves separately and
+// refuses the pair is a grant set that cannot express the service's own rule, and
+// only a two-table transaction finds that out.
+//
+// MEASURED ON THE SHARED CLUSTER as `darkroom_app`, host side of
+// `DARKROOM_DATABASE_URL`, rather than by impersonating the owner: an
+// impersonation proves the PRIVILEGES and this proves the CREDENTIAL, and the
+// credential is what a request path actually holds.
+func TestTheLoginRoleCanDoTheWork(t *testing.T) {
+	url := strings.TrimSpace(os.Getenv("DARKROOM_DATABASE_URL"))
+	if url == "" {
+		t.Skip("no DARKROOM_DATABASE_URL in this environment. It is the APPLICATION's credential — the login role — and the rest of this package runs as the owner because the harness creates schemas, which needs CREATE on the database. Set it to the darkroom_app URL in .env.example to run this one.")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatalf("connecting as the application: %v", redactForTest(url))
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+
+	// Prove which role this actually is, because a URL pointed at `darkroom` would
+	// pass every assertion in this test while testing nothing about the login role.
+	var who string
+	if err := conn.QueryRow(ctx, `select current_user`).Scan(&who); err != nil {
+		t.Fatalf("reading current_user: %v", err)
+	}
+	if who != "darkroom_app" {
+		t.Fatalf("DARKROOM_DATABASE_URL authenticates as %q, not darkroom_app. Every assertion below would still pass against the owner, which owns the tables outright and so cannot fail any of them.", who)
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("beginning: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// The identity the request path sets, then the two writes. One transaction:
+	// the domain row and the event describing it, which is the whole outbox rule.
+	if _, err := tx.Exec(ctx, `select cafaye.begin_account($1::uuid)`, accountA); err != nil {
+		t.Fatalf("setting the account identity: %v", err)
+	}
+	// A fresh id per run, and the rows are REMOVED at the end. This test writes to
+	// `public` — the service's own schema — rather than to a per-test one, because
+	// the point is to prove the CREDENTIAL works and the credential's grants are
+	// cluster-wide facts, not schema-local ones.
+	//
+	// Which makes cleanup load-bearing rather than tidy. The first version used a
+	// fixed id and the second run failed with `duplicate key value violates unique
+	// constraint "assets_pkey"`, having left its row in a database the developer
+	// also uses. A test that writes into the service's own schema and does not
+	// clean up is a test that corrupts a working environment, and the failure mode
+	// is a red test rather than a lost upload.
+	assetID := randomUUID(t)
+	if _, err := tx.Exec(ctx,
+		`insert into assets (id, account_id, owner_user_id, kind, original_filename, content_type, byte_size, checksum, storage_key)
+		 values ($1::uuid, $2::uuid, $3::uuid, 'image', 'a.png', 'image/png', 3, $4, $5)`,
+		assetID, accountA, userA, checksumFor(assetID), "key/"+assetID); err != nil {
+		t.Fatalf("inserting the asset as darkroom_app: %v", err)
+	}
+	// `subject` is the ASSET'S id, not a literal. The cleanup below deletes the
+	// event by `subject = assetID`, and the first version inserted the literal
+	// 'asset' — so the cleanup deleted nothing and every run left a row behind in
+	// the service's own database. Three runs, three orphans, found by counting
+	// `assets` and `outbox_events` after the suite rather than trusting it.
+	//
+	// `core/docs/event-outbox.md` owns this column list; `subject` naming the
+	// subject of the event is the obvious reading and this test asserts it rather
+	// than assuming it.
+	if _, err := tx.Exec(ctx,
+		`insert into outbox_events (id, event_type, source, subject, time, data)
+		 values (gen_random_uuid(), 'darkroom.asset.ready', 'darkroom', $1, now(), '{}'::jsonb)`,
+		assetID); err != nil {
+		t.Fatalf("inserting the outbox event as darkroom_app: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("committing: %v", err)
+	}
+
+	// And the read-back is SCOPED, which is the property that makes the write
+	// worth anything: the row is visible to its own account and invisible to
+	// another, on the connection the application actually holds.
+	//
+	// TWO transactions rather than one `begin; …; commit` string, because the
+	// extended protocol refuses it: "cannot insert multiple commands into a
+	// prepared statement". pgx uses the extended protocol whenever a query takes
+	// arguments, and a query with arguments cannot be a batch — so a single-string
+	// transaction works in `psql` and fails here. That asymmetry is worth knowing
+	// before somebody "simplifies" a test into it.
+	seenAs := func(account string) int {
+		t.Helper()
+		rx, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatalf("beginning a read as %s: %v", account, err)
+		}
+		defer func() { _ = rx.Rollback(context.WithoutCancel(ctx)) }()
+		if _, err := rx.Exec(ctx, `select cafaye.begin_account($1::uuid)`, account); err != nil {
+			t.Fatalf("setting the identity as %s: %v", account, err)
+		}
+		var n int
+		if err := rx.QueryRow(ctx, `select count(*) from assets where id = $1::uuid`, assetID).Scan(&n); err != nil {
+			t.Fatalf("counting as %s: %v", account, err)
+		}
+		return n
+	}
+
+	if n := seenAs(accountB); n != 0 {
+		t.Errorf("account B sees %d of the assets account A just wrote, as darkroom_app. The write path works and the read path does not scope, which is the worse of the two failures.", n)
+	}
+	if n := seenAs(accountA); n != 1 {
+		t.Errorf("account A sees %d of its own just-written assets, want 1. A policy that hides everything also satisfies 'nobody sees another's'.", n)
+	}
+
+	// The cleanup, and it is a DELETE rather than a rollback because the write has
+	// already committed — which is the whole point of the test. `darkroom_app` holds
+	// DELETE on `assets` (asserted in the test above), so this needs no role
+	// elevation and is exactly the statement the grants were specified for.
+	cleanup, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("beginning the cleanup: %v", err)
+	}
+	defer func() { _ = cleanup.Rollback(context.WithoutCancel(ctx)) }()
+
+	// THE IDENTITY IS SET AGAIN, AND THE FIRST VERSION DID NOT — so the DELETE
+	// matched zero rows and reported success.
+	//
+	// This is RLS working exactly as designed and it is the nastiest failure in the
+	// substrate: `assets_cafaye_delete` is `using (account_id = (select
+	// cafaye.current_account_id()))`, and with no identity set the helper returns
+	// NULL, so the predicate is NULL rather than false, so the statement deletes
+	// NOTHING and exits 0. A cleanup that reports success and does nothing is
+	// worse than one that fails, because the run is green and the developer's
+	// database is not.
+	//
+	// It was found by COUNTING the tables after three green runs —
+	// `select count(*) from assets` said 3 — rather than by reading the test, which
+	// looked correct throughout. `AGENTS.md` calls the design "the rule is absence,
+	// not refusal", and this is the same rule seen from the other side: a statement
+	// that touches nothing is indistinguishable from one that did its job.
+	if _, err := cleanup.Exec(ctx, `select cafaye.begin_account($1::uuid)`, accountA); err != nil {
+		t.Fatalf("setting the identity for the cleanup: %v", err)
+	}
+
+	tag, err := cleanup.Exec(ctx, `delete from assets where id = $1::uuid`, assetID)
+	if err != nil {
+		t.Errorf("removing the row this test wrote into public.assets (%s): %v. It is still there, and the next run of this test will fail on it.", assetID, err)
+		return
+	}
+	// The ROW COUNT, because `err == nil` is not the same claim as "the row is
+	// gone" and this is the assertion that would have caught it.
+	if n := tag.RowsAffected(); n != 1 {
+		t.Errorf("the cleanup deleted %d rows, want 1. RLS made the DELETE a no-op rather than an error, so the row written into public.assets (%s) is still there.", n, assetID)
+	}
+	if _, err := cleanup.Exec(ctx, `delete from outbox_events where subject = $1`, assetID); err != nil {
+		t.Errorf("removing the outbox row this test wrote: %v", err)
+	}
+	if err := cleanup.Commit(ctx); err != nil {
+		t.Errorf("committing the cleanup: %v", err)
 	}
 }
 
@@ -717,6 +892,28 @@ func TestIsWrappedAt(t *testing.T) {
 			}
 		})
 	}
+}
+
+// randomUUID returns a version-4 UUID as a string, or fails the test.
+//
+// It is hand-built rather than pulled from `github.com/google/uuid` because it is
+// fifteen lines and the module's only other need for one is in the asset id the
+// service mints, which is a later packet's business. A test dependency that exists
+// to produce sixteen bytes is a dependency that has to be vendored forever.
+func randomUUID(t *testing.T) string {
+	t.Helper()
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		t.Fatalf("pgtest_test: no entropy for an asset id: %v", err)
+	}
+	// Version 4 and the RFC 4122 variant, so the value is a real UUID and not 16
+	// random bytes in a column that says `uuid`. Postgres does not enforce either,
+	// which is exactly why a test that skipped them would pass and then produce an
+	// id a fixture in another language could not parse.
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	h := hex.EncodeToString(b[:])
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }
 
 // redactForTest mirrors pgtest's unexported redact. It is a copy rather than an
