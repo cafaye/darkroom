@@ -85,28 +85,24 @@ jobs:
     name: ci (kit)
     uses: cafaye/kit/.github/workflows/ci.reusable.yml@master
     with:
-      language: rust
+      language: go
       working-dir: .
-      # Set even though kit's rust job does not read it yet: `dtolnay/rust-
-      # toolchain@stable` is called with no `toolchain:` input, so the job runs
-      # on floating stable regardless. The input is here so the moment kit
-      # honours it, this repository is already pinned. The pin that is real
-      # today is rust-toolchain.toml, which `gate` honours. See the report.
-      versions: '{"rust":"1.95.0"}'
-      # 50, against 53.73% measured line coverage on rustc 1.95.0 with default
-      # features. A floor rather than a ratchet: it fails if coverage collapses
-      # and stays out of the way of a legitimate change. kit's default is 0,
-      # which fails nothing, and "a gate that can never fail is not a gate" is
-      # kit's own rule. The number is not arbitrary — `--fail-under-lines 50`
-      # was measured green and `--fail-under-lines 54` was measured red, so the
-      # gate can actually fail.
+      # Pinned, because `go-version: stable` is a build that depends on which
+      # toolchain the runner image cached. The number is the one go.mod declares
+      # and mise.toml pins, so raising it is a three-file change and this one
+      # follows it.
+      versions: '{"go":"1.26.1"}'
+      # 50, against measured line coverage on the default suite. A floor rather
+      # than a ratchet: it fails if coverage collapses and stays out of the way of
+      # a legitimate change. kit's default is 0, which fails nothing, and "a gate
+      # that can never fail is not a gate" is kit's own rule.
       #
-      # It measures less than it looks like it does, deliberately stated rather
-      # than implied: kit runs `cargo llvm-cov` with default features, so the
-      # s3 build is in the denominator and out of the numerator, and it runs
-      # the same `cargo test` that ignores the 59 database tests, so
-      # `store.rs` sits at 0.54%. What this number catches is the default suite
-      # ceasing to run at all.
+      # NOT YET MEASURED FOR THE GO TREE, and that is stated rather than
+      # implied. The 50 was the RUST tree's measured figure, carried across so
+      # the floor is not silently dropped; `bin/prime` has no coverage step and
+      # the Rust one lived in CI only. The first honest Go measurement is the
+      # next thing to do with this number, and until then it is a floor that may
+      # or may not be reachable.
       coverage-fail-under: '50'
 
   # ------------------------------------------------------------------ the gate
@@ -133,35 +129,45 @@ jobs:
           --health-retries 20
     env:
       TEST_DATABASE_URL: postgres://darkroom:darkroom@localhost:5432/darkroom_test?sslmode=disable
-      CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v7
 
+      - uses: actions/setup-go@v7
+        with:
+          # Pinned to the number go.mod declares and mise.toml pins, rather than
+          # to `stable`, because a build that depends on which toolchain the
+          # runner image cached is not a pinned build.
+          go-version: '1.26.1'
+
       - name: the pinned toolchain, and proof that it is in force
-        # Not `dtolnay/rust-toolchain@stable`. rust-toolchain.toml in this
-        # repository is the pin and `rustup` reads it, so CI and a worktree
-        # cannot disagree about which rustc produced a green result. kit's job
-        # cannot do this for itself — that is the kit gap named in the report.
-        #
-        # The expected version is read out of rust-toolchain.toml rather than
+        # The Go tree has no `rust-toolchain.toml`, so the pin lives in go.mod and
+        # mise.toml and this job asserts that the toolchain in force is the one
+        # they declare. The expected version is READ OUT of go.mod rather than
         # written here, so raising the pin is a one-file change and the check
-        # follows it. What it buys is that "the build is pinned" is a fact this
-        # job asserts, not a comment nobody re-reads.
+        # follows it — which is the property the Rust version of this step had
+        # and the reason it existed.
+        #
+        # `go.mod` spells it `go 1.26.1` while `go version` prints `go1.26.1`,
+        # so the dot is normalised rather than the comparison loosened.
         run: |
           set -euo pipefail
-          rustup show active-toolchain
-          rustc --version --verbose
-          want="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
-          got="$(rustc --version | awk '{print $2}')"
+          go version
+          want="$(sed -n 's/^go //p' go.mod | head -1)"
+          got="$(go version | awk '{print $3}' | sed 's/^go//')"
           if [ -z "$want" ]; then
-            echo "::error::rust-toolchain.toml has no channel. The pin is the pin; do not remove it." >&2
+            echo "::error::go.mod has no go directive. The pin is the pin; do not remove it." >&2
             exit 1
           fi
           if [ "$got" != "$want" ]; then
-            echo "::error::rustc is $got but rust-toolchain.toml pins $want. The build is not pinned." >&2
+            echo "::error::go is $got but go.mod declares $want. The build is not pinned." >&2
             exit 1
           fi
-          echo "pinned: rustc $got, host $(rustc -vV | sed -n 's/^host: //p')"
+          mise_pinned="$(sed -n 's/^go = "\(.*\)"$/\1/p' mise.toml)"
+          if [ "$mise_pinned" != "$want" ]; then
+            echo "::error::mise.toml pins $mise_pinned but go.mod declares $want. Three files, one number." >&2
+            exit 1
+          fi
+          echo "pinned: go $got, host $(go env GOOS)/$(go env GOARCH)"
 
       - name: the gate
         # `bin/prime`, the same command a developer runs, with the flag that
@@ -174,19 +180,21 @@ jobs:
           ./bin/prime --db 2>&1 | tee "$RUNNER_TEMP/prime.log"
 
       - name: the tiers actually ran
-        # The gate exits zero when it is happy, and `cargo test` exits zero when
-        # it ignored everything it could. Those are the same exit code, so this
-        # reads the counts: 77 unit, 89 with s3, 9 R2/S3 behaviour-table rows,
-        # and 59 database tests in each feature set. Without it a green badge
-        # is a claim about a run that may never have happened.
+        # The gate exits zero when it is happy, and `go test` exits zero for a
+        # package with no test files in it. Those are the same exit code, so this
+        # reads the counts: 24 variant checks with no database, and 15 harness +
+        # 29 service + 19 httpapi against one. Without it a green badge is a
+        # claim about a run that may never have happened.
         run: ./bin/tier-counts "$RUNNER_TEMP/prime.log"
 
-      - name: Cargo.lock is the lockfile
-        # Cheap, and it catches a class of drift that is otherwise invisible:
-        # a dependency bump that resolves differently on the runner than it did
-        # on the machine that committed it. The Dockerfile already treats
-        # `--locked` as non-negotiable for the same reason.
-        run: git diff --exit-code Cargo.lock
+      - name: go.sum is the lockfile
+        # Cheap, and it catches a class of drift that is otherwise invisible: a
+        # dependency bump that resolves differently on the runner than it did on
+        # the machine that committed it. `bin/prime`'s regenerate step runs
+        # `go generate` with `GOFLAGS=-mod=mod`, which is the one place in this
+        # repository that could rewrite a module file, so this is the check that
+        # says it did not.
+        run: git diff --exit-code go.mod go.sum
 
   # ----------------------------------------------------------------- contract
   contract:

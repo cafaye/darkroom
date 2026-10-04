@@ -142,22 +142,24 @@ services:
       # been reproduced against a running postgres and is labelled as what it
       # is rather than dressed up as a transcript:
       #
-      #   the service's own pool   DARKROOM_DB_MAX_CONNECTIONS, default 10
-      #                             (src/config.rs), and a pool holds its
+      #   the service's own pool   darkroomdb.Open sets MaxConns=4 from the
+      #                             cluster's per-role cap, and a pool holds its
       #                             ceiling open rather than its working set
-      #   one test binary          PgPoolOptions::max_connections(5)
-      #                             (tests/common/mod.rs)
+      #   the test tiers           pgtest builds one pool per test, and each
+      #                             test owns a schema
       #
       # `docker compose up` brings the service up, and a developer then runs
-      # `cargo test -- --ignored` against the SAME cluster — which is what this
-      # file arranged with its own container and what `TEST_DATABASE_URL` in
-      # `.env.example` still points at. 10 + 5 is 15 against a limit of 10, so
-      # the per-role budget is spent by the service's own pool before a single
-      # test connects, and the symptom reads like a code defect and is not:
+      # `./bin/prime --db` against the SAME cluster — which is what this file
+      # arranged with its own container and what `TEST_DATABASE_URL` in
+      # `.env.example` still points at. 4 service + a pool per test exceeds the
+      # old limit of 10, so the per-role budget can be spent by the service's
+      # own pool before a test connects, and the symptom reads like a code
+      # defect and is not:
       #
       #   FATAL 53300 (too many connections for role "darkroom")
       #
-      # 20 rather than 15 because this is a ceiling rather than a setting: 15 is
+      # 20 rather than the arithmetic above because this is a ceiling rather
+      # than a setting: it is
       # what this repository needs TODAY, and the failure mode of being one
       # connection short is a suite that cannot run at all. The fleet arithmetic
       # still closes — one database at 20 is 23 against kit's
@@ -329,6 +331,11 @@ services:
       DARKROOM_JWKS_URL: https://identity.cafaye.com/.well-known/jwks.json
       DARKROOM_ISSUER: https://identity.cafaye.com
       DARKROOM_AUDIENCE: darkroom
-      # Production default. Set to `development` for the HMAC verifier, which
-      # only exists behind --features dev-auth.
+      # READ AND LOGGED, AND IT GATES NOTHING. The Rust tree used
+      # `DARKROOM_ENV=development` to select an HMAC verifier behind a
+      # `--features dev-auth` build flag. `internal/auth` has no such
+      # constructor, so there is no dev path to select and this value changes the
+      # startup log line and nothing else. It stays here because deleting a
+      # variable from a compose file is a change nobody reads; keeping it and
+      # saying what it does is the smaller surprise.
       DARKROOM_ENV: development

@@ -303,3 +303,37 @@ func TestTheEnvironmentIsReadAndNothingElseIsReadFromIt(t *testing.T) {
 		t.Error("loadConfig returned nothing at all")
 	}
 }
+
+// A BIND ADDRESS THAT ALREADY CARRIES A PORT IS NOT A HOST AND A COLON.
+//
+// This is the case the reading rejected, and it was found by running the binary
+// rather than by reading it: `DARKROOM_BIND_ADDR=127.0.0.1:8081` reached
+// `addr()` as a bare host, was joined with `PORT`, and produced
+// `127.0.0.1:8081:8080`. The listener refused it with "too many colons in
+// address", so the crash was loud — but it was a crash on startup for a value
+// that reads as a complete and correct listen address, and nothing in the suite
+// covered the join because every test set a bare host.
+func TestABindAddrThatCarriesItsOwnPortIsUsedWhole(t *testing.T) {
+	cfg, err := loadConfig(with("DARKROOM_BIND_ADDR", "127.0.0.1:8081"))
+	if err != nil {
+		t.Fatalf("a bind address with a port was refused: %v", err)
+	}
+	if got := cfg.addr(); got != "127.0.0.1:8081" {
+		t.Errorf("addr() = %q, want 127.0.0.1:8081 — PORT must not be appended to an address that already has one", got)
+	}
+}
+
+// And the bare-host reading is NOT lost while fixing that, because it is what
+// `PORT` is for and what the Dockerfile's `DARKROOM_BIND_ADDR=0.0.0.0` means.
+func TestABareBindHostStillTakesPort(t *testing.T) {
+	cfg, err := loadConfig(env(merge(valid(), map[string]string{
+		"DARKROOM_BIND_ADDR": "127.0.0.1",
+		"PORT":               "8081",
+	})))
+	if err != nil {
+		t.Fatalf("a bare bind host with PORT was refused: %v", err)
+	}
+	if got := cfg.addr(); got != "127.0.0.1:8081" {
+		t.Errorf("addr() = %q, want 127.0.0.1:8081", got)
+	}
+}

@@ -36,6 +36,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -104,7 +105,25 @@ type Config struct {
 
 // addr is the listen address, one string so the log line and the listener cannot
 // disagree about it.
-func (c Config) addr() string { return fmt.Sprintf("%s:%d", c.BindAddr, c.Port) }
+//
+// `DARKROOM_BIND_ADDR` MAY CARRY ITS OWN PORT, and this is not a convenience —
+// the alternative is an address that cannot be expressed. Binding a service to
+// one interface on one port while `PORT` serves another is not a configuration
+// anybody asks for, and with the bare-host-only reading the only way to get it
+// is a variable whose name promises an address and silently delivers half of one.
+// So a value that already contains a port wins outright, and a bare host still
+// takes `PORT` exactly as before.
+//
+// The failure this replaces was silent and load-bearing: `127.0.0.1:8081`
+// became `127.0.0.1:8081:8080`, which the listener refused with "too many
+// colons in address" — a clear error, but one that arrives as a crash on
+// startup for a setting that reads as correct.
+func (c Config) addr() string {
+	if _, _, err := net.SplitHostPort(c.BindAddr); err == nil {
+		return c.BindAddr
+	}
+	return fmt.Sprintf("%s:%d", c.BindAddr, c.Port)
+}
 
 // loadConfig reads and validates, failing on the FIRST problem with a specific
 // message — an operator fixing a deployment sees the actual cause rather than a

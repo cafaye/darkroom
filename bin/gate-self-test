@@ -87,6 +87,17 @@ fi
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/darkroom-gate-self-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
+# `mise` REFUSES to run a config file it has not been told to trust, so every
+# copy this script makes would otherwise produce a gate that died with
+#
+#   mise ERROR Config files in $WORK/…/mise.toml are not trusted.
+#
+# and the checker's proving phase would then report `gate.nonzero` and
+# `gate.proof-missing` for every proof — the honest-sounding report about the
+# wrong problem. [fresh_copy] trusts each tree as it makes it, which is where the
+# copies actually are; `MISE_TRUSTED_CONFIG_PATHS` was tried first and is not a
+# glob, which is the kind of fix that looks right and does nothing.
+
 failures=0
 breakages=0
 skips=0
@@ -116,6 +127,31 @@ fresh_copy() {
     mkdir -p "$dst/$(dirname "$rel")"
     cp -p "$ROOT/$rel" "$dst/$rel"
   done < <(git -C "$ROOT" ls-files -co --exclude-standard -z)
+  # THE COPY IS A REPOSITORY, and that is not tidiness.
+  #
+  # `git ls-files` tells this function what to copy but does not make the
+  # destination one, and `bin/prime`'s regenerate step ends in
+  # `git status --porcelain -- internal/api/api.gen.go`. In a directory that is
+  # not a repository that is `fatal: not a git repository` and exit 128 — so the
+  # gate dies AFTER every step has passed, and the checker's proving phase reports
+  # `gate.nonzero` plus `gate.proof-missing` for every proof. Which is the
+  # honest-sounding report about the wrong problem, and it was found by running
+  # the self-test rather than by reading it.
+  #
+  # A copy that cannot answer "did regeneration change a tracked file?" is not a
+  # usable copy, so the copy is initialised and committed. `git init -q` with no
+  # `user.email`/`user.name` works because the config only has to exist for the
+  # commit; a missing identity would fail here and say so rather than three steps
+  # later inside a gate.
+  git -C "$dst" init -q
+  git -C "$dst" -c user.email=gate-self-test@invalid -c user.name=gate-self-test \
+    add -A >/dev/null 2>&1
+  git -C "$dst" -c user.email=gate-self-test@invalid -c user.name=gate-self-test \
+    commit -qm 'the tree as it was' >/dev/null 2>&1
+  # Trust the copy's mise config, and see the note by `$WORK` above for why. A
+  # no-op where there is no mise, and `>/dev/null` because this script's output
+  # is a report and a trust confirmation is not part of it.
+  command -v mise >/dev/null 2>&1 && mise trust "$dst" >/dev/null 2>&1 || true
   printf '%s' "$dst"
 }
 
@@ -163,14 +199,27 @@ standin_gate() {
 # name, so a breakage about a proof's SHAPE is not masked by a missing tier.
 set -uo pipefail
 for step in \\
-  'cargo test (no database)' \\
-  'cargo test --features s3 (no database)' \\
-  'cargo test --ignored (against TEST_DATABASE_URL)' \\
-  'cargo test --features s3 --ignored (against TEST_DATABASE_URL)'
+  'go build the binary' \\
+  'go test ./... (no database)' \\
+  'go test -v ./internal/darkroomdb/... (against TEST_DATABASE_URL)' \\
+  'go test -v ./internal/service/... (against TEST_DATABASE_URL)' \\
+  'go generate ./internal/api/ matches openapi/v1.yaml'
 do
   printf '\n==> %s\n' "\$step"
-  printf 'test result: ok. ${count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n'
 done
+# The countable lines the two floors match, in the shape `go test -v` prints them:
+# a `--- PASS:` row per test and then `ok <import-path>\t<time>`. The SAME package
+# appears under more than one step on purpose — `go test ./...` prints it too —
+# because a checker that only saw each package once would not be reading a real
+# log.
+# `'%s\n'` and NOT `printf '--- ...'`, and that is a correction rather than a
+# style: bash's builtin printf reads a leading `--` as an OPTION, so on the bash
+# 3.2 that ships with macOS every one of these lines printed
+# "printf: --: invalid option" to stderr and NO test row to stdout — and a
+# checker counting rows then sees zero, which is a green gate over nothing.
+for _ in \$(seq 1 "${count}"); do printf '%s\n' '--- PASS: TestSomething (0.00s)'; done
+printf 'ok  \tgithub.com/cafaye/darkroom/internal/service\t0.0${count}s\n'
+printf 'ok  \tgithub.com/cafaye/darkroom/internal/variants\t0.0${count}s\n'
 printf '\n==> ok\n'
 SH
   chmod +x "$path"
@@ -380,8 +429,8 @@ expect_red 'a requirement satisfied by a file this repository does not have' \
 
 breakages=$((breakages + 1))
 twelve="$(fresh_copy proof-uncompilable)"
-edit "$twelve/gate.yml" "0 failed; 0 ignored;'" "0 failed; 0 ignored; ('" \
-  "0 failed; 0 ignored; ('"
+edit "$twelve/gate.yml" "internal/service[ \t]'" "internal/service[ \t('" \
+  "internal/service[ \t('" 
 expect_red 'a proof whose pattern does not compile, which would otherwise read as "no proof required"' \
   'gate.schema' "$twelve"
 
@@ -494,8 +543,7 @@ expect_red --prove 'a gate that outlived the budget its own declaration gave it'
 breakages=$((breakages + 1))
 unmeasurable="$(fresh_copy proof-unmeasurable-prove)"
 standin_gate "$unmeasurable/bin/prime" 900
-edit "$unmeasurable/gate.yml" "([1-9][0-9]*) passed; 0 failed; 0 ignored;'" \
-  "[1-9][0-9]* passed; 0 failed; 0 ignored;'"
+edit "$unmeasurable/gate.yml" 'ok[ \t]+github\.com' 'ok[ \t]+githubxcom'
 expect_red_prove 'a floor with no capture group, against a gate that ran and printed its proof' \
   'gate.proof-invalid' "$unmeasurable"
 
@@ -503,7 +551,7 @@ expect_red_prove 'a floor with no capture group, against a gate that ran and pri
 # number, and the declaration is red because the number is below what it promised.
 breakages=$((breakages + 1))
 floor="$(fresh_copy floor)"
-edit "$floor/gate.yml" 'minimum: 7' 'minimum: 999999'
+edit "$floor/gate.yml" 'minimum: 1' 'minimum: 999999'
 expect_red_prove 'a gate that proved fewer tests than the declaration promised' \
   'gate.floor' "$floor"
 
@@ -513,7 +561,7 @@ expect_red_prove 'a gate that proved fewer tests than the declaration promised' 
 # THIS repository's gate prints" is a claim about this gate.
 breakages=$((breakages + 1))
 unmatched="$(fresh_copy proof-unmatched)"
-edit "$unmatched/gate.yml" "0 failed; 0 ignored;'" "0 failed; 999999 ignored;'"
+edit "$unmatched/gate.yml" '==> go build the binary' '==> go build a binary nobody prints' 
 expect_red_prove 'a proof that matches nothing the real gate prints' \
   'gate.proof-missing' "$unmatched"
 

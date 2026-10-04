@@ -29,12 +29,11 @@ gate:
   # `--db` is the load-bearing argument in this file, and it is here because
   # `bin/prime` without it is not a gate.
   #
-  # `bin/prime` has three tiers — 4, 5 and 6 in `bin/tier-counts`'s numbering,
-  # after fmt, build and clippy — and tier 6 is the one behind the flag. Its
-  # tests are `#[ignore]`d, so `./bin/prime` reports all 59 of them as `ignored`,
-  # runs everything else, prints `==> ok` and exits 0 — a green badge over 59
-  # tests that never executed. That is the `cafaye-rb` defect wearing a Rust
-  # hat, and declaring `[bin/prime]` here would write it down.
+  # `bin/prime` has a default tier and a database tier behind the flag, and the
+  # database tier's tests SKIP at runtime when no database answers — so
+  # `./bin/prime` reports them as `ok`, prints `==> ok` and exits 0. That is a
+  # green badge over 44 tests that never executed, and it is why the flag is in
+  # this declaration rather than implied by it.
   #
   # darkroom is a service whose entire job is putting bytes in a database. The
   # gate that does that is `bin/prime --db`, and it is the same command CI runs
@@ -56,104 +55,162 @@ gate:
   miseTask: prime
   # The file behind the command, and the file the mise task must resolve to.
   entrypoint: bin/prime
-  # Generous on purpose. A cold `bin/prime --db` compiles the crate twice —
-  # once for `cargo build --all-targets`, once more for
-  # `cargo clippy --all-targets --all-features` — and the `s3` feature pulls in
-  # the AWS SDK. Warm it is a couple of minutes; from an empty cargo cache on a
-  # CI runner it is the better part of ten. A budget tight enough to be a bug
-  # detector is tight enough to be a flake generator on a first run, and this
-  # number exists to stop a hung gate, not to measure one.
+  # Generous on purpose. A cold `bin/prime --db` compiles every package twice —
+  # once for `go build`, once more for `go vet` — and `internal/service` and
+  # `internal/httpapi` each stand up a JWKS server, so the default tier is
+  # seconds and the database tier is a couple of minutes. A budget tight enough to
+  # be a bug detector is tight enough to be a flake generator on a first run, and
+  # this number exists to stop a hung gate, not to measure one.
   timeoutSeconds: 3600
   proof:
-    # Four of these are the step headers `bin/prime` prints, and they carry no
+    # Five of these are the step headers `bin/prime` prints, and they carry no
     # `minimum` because they report nothing countable. They are here for one
     # reason: **they are the only thing in the output that distinguishes a
-    # `--db` run from a fast one.** Run the declared gate without the flag, or
-    # delete the `--db` branch, and two of them are absent — which is
-    # `gate.proof-missing`, a failure. That is the drift between this
-    # repository's local gate and its CI gate, recorded in a file instead of
-    # living in a comment in `.github/workflows/ci.yml` where nobody reads it.
+    # `--db` run from a fast one.** Run the declared gate without the flag, and
+    # two of them are absent — which is `gate.proof-missing`, a failure. That is
+    # the drift between this repository's local gate and its CI gate, recorded in
+    # a file instead of living in a comment in `.github/workflows/ci.yml` where
+    # nobody reads it.
     #
-    # Read as one assertion: "all four cargo tiers ran". A run that stops after
-    # the fast tiers, or a run where the `s3` build silently stopped compiling,
-    # is red rather than green.
-    - id: tier-4-default-unit
-      match: '==> cargo test \(no database\)'
-    - id: tier-5-s3-unit
-      match: '==> cargo test --features s3 \(no database\)'
-    - id: tier-6-database-default-build
-      match: '==> cargo test --ignored \(against TEST_DATABASE_URL\)'
-    - id: tier-6-database-s3-build
-      match: '==> cargo test --features s3 --ignored \(against TEST_DATABASE_URL\)'
-    # And one that counts. Two things about it were measured, not guessed, and
-    # both are worth writing down because the obvious version of each is wrong.
+    # Read as one assertion: "the binary built, the tests ran, and the database
+    # tiers reached a database." The last two are the ones that distinguish a
+    # `--db` run from a fast one; the first three are here because a gate whose
+    # only proofs are the database headers stops noticing when the surface it
+    # gates has stopped compiling.
     #
-    # `cargo test` prints **one `test result:` line per test binary**, not one
-    # per suite, and the checker reads the *last* match. Measured on a real
-    # `bin/prime --db` log: 36 such lines, and the last one is always
-    # `Doc-tests darkroom` reporting `0 passed` — because this crate is
-    # `publish = false` and has no doctests, and cargo runs the doc-test block
-    # last in every one of the four tiers. A floor written the obvious way,
-    # `([0-9]+)`, therefore reads **0 in this repository, always**, and any
-    # positive floor under it is a gate that can never go green. The leading
-    # `[1-9]` is not a weakening, it is the correction: a binary that reported
-    # zero tests is not a suite, and requiring the last reported result to be a
-    # non-zero count is exactly "the last thing that ran actually ran
-    # something".
+    # `internal/variants` has no proof of its own, deliberately: it is the only
+    # package `bin/prime` runs with `-v` in the DEFAULT tier, and the schema caps
+    # this list at eight. Its count lives in `bin/tier-counts` as
+    # `VARIANT_TESTS=24`, which is the same mechanism for the same property.
+    - id: default-tier-binary
+      match: '==> go build the binary'
+    - id: default-tier-tests
+      match: '==> go test \./\.\.\. \(no database\)'
+    - id: database-harness
+      match: '==> go test -v \./internal/darkroomdb/\.\.\. \(against TEST_DATABASE_URL\)'
+    - id: database-service
+      match: '==> go test -v \./internal/service/\.\.\. \(against TEST_DATABASE_URL\)'
+    # And the regenerate step, which is a proof rather than a comment for the
+    # same reason the others are: `internal/api/api.gen.go` is generated from
+    # `openapi/v1.yaml`, and the Go ROUTER IS THAT FILE. A run where generation
+    # failed prints this header and nothing after it, so its ABSENCE is what
+    # proves the committed router is the document's.
+    - id: generated-router-matches-document
+      match: '==> go generate \./internal/api/ matches openapi/v1\.yaml'
+    # And one that counts. `go test -v` prints a `--- PASS:` row per test and
+    # then `ok <import-path>\t<time>`, so the LAST match for a package is its
+    # `ok` line — which is why the pattern is anchored on the import path rather
+    # than on the count.
     #
-    # With that, 25 lines match and the last is
-    # `test result: ok. 12 passed; 0 failed; 0 ignored;` — `tests/tenant_isolation.rs`
-    # in the s3 database tier, all twelve of its tests, against Postgres. That is
-    # the suite AGENTS.md calls "the reason the tenant-isolation suite is real
-    # rather than decoration", so the floor lands on the right file by accident
-    # and by arithmetic. **Read it as a decrease-detector for that file** — which
-    # is why `minimum` is 7 and not 12: the file grew, and a floor is a thing to
-    # be caught by, not a number to be re-raised every time somebody adds a case.
-    # Re-derive it if a test binary is added that sorts AFTER
-    # `tests/tenant_isolation.rs`; `tests/schema_isolation.rs` sorts before it
-    # and did not move this.
+    # `[ \t]` AND NOT `[[:space:]]`, and the reason is the sharpest thing in this
+    # file: **THE SAME SPELLING IS CORRECT IN ONE LANGUAGE AND WRONG IN THE
+    # OTHER.**
     #
-    # It is NOT the suite total — 59 database tests, 77 lib unit tests — because
-    # the gate does not print a total. The suite-wide counts are
-    # `bin/tier-counts`'s constants, pinned in the same repository, and the two
-    # must not be confused: this one is a line the gate prints, that one is an
-    # accounting script over the same log. And note the division of labour with
-    # the four headers above: a fast `./bin/prime` still ends on a non-zero
-    # result, so **the floor does not notice a missing `--db` and the headers
-    # do.** Neither alone would do this declaration's job.
+    # core's checker compiles these patterns with Python's `re`, which does NOT
+    # support POSIX character classes inside a bracket expression — `[[:space:]]`
+    # there is a class of `[`, `:`, `s`, `p`, `a`, `c`, `e` and `]`, and it matches
+    # no `ok` line. Python warns about it too: `FutureWarning: Possible nested
+    # set at position 3`.
     #
-    # Deliberately unanchored. `ci.yml` sets `CARGO_TERM_COLOR: always`, and a
-    # `^` anchor would make this proof depend on whether colour was forced, so a
-    # green `--prove` run in CI and a green one on a laptop could disagree for
-    # no reason a reader could see. The trailing `finished in …` is likewise not
-    # part of the pattern: libtest has changed that field before, and a proof
-    # that breaks on an unrelated formatting change is a proof that gets deleted.
-    - id: suite
-      match: 'test result: ok\. ([1-9][0-9]*) passed; 0 failed; 0 ignored;'
-      minimum: 7
+    # `bin/tier-counts` uses awk, and awk DOES support `[[:space:]]` — where
+    # `[ \t]` is the two characters `\` and `t` rather than a tab, so that file
+    # needs the POSIX class and this one needs the escape. Both spellings are
+    # correct where they are and wrong in the other place, which is why this note
+    # exists: "use the POSIX class" and "never write `\t` inside brackets" are
+    # each true of one engine and false of the other.
+    #
+    # Measured both ways rather than reasoned about:
+    #
+    #     re.search(r'ok[[:space:]]+github\.com/…', log)   -> None
+    #     re.search(r'ok[ \t]+github\.com/…', log)        -> match
+    #
+    # The first draft of this proof used `[[:space:]]` on the strength of the awk
+    # half of this paragraph, and every proof reported MISSING on a green run
+    # while looking entirely correct. `bin/gate-self-test`'s proving control is
+    # what caught it.
+    #
+    # The floor is on `internal/service`, which is where the correctness
+    # properties live: the state machine, the checksum, the cross-tenant 404 and
+    # the idempotency ledger. **Read it as a decrease-detector** — which is why it
+    # is 1 and not 29: the count itself is `bin/tier-counts`'s job, and this one
+    # says only that the database tier reported the package at all.
+    #
+    # **THE CAPTURE GROUP READS THE ELAPSED SECONDS, NOT THE TEST COUNT, AND IT
+    # IS NOT THE PRETTY ANSWER.** `go test` prints no test count on its `ok` line
+    # at all — that is the fact `bin/prime` and `bin/tier-counts` argue about
+    # three separate times — so the only number on the line is the duration.
+    # `bin/gate-self-test` caught the first draft of this proof, which set a
+    # `minimum` on a pattern with NO capture group: core reports
+    # `gate.proof-invalid` for it, and a floor read from nothing is not a floor.
+    # So the group is here and it is here honestly: `minimum: 1` on
+    # `internal/service`'s elapsed time catches a database tier that reported the
+    # package in under a second, which is what a tier that skipped looks like.
+    #
+    # It is NOT the suite total. The counts across every tier are
+    # `bin/tier-counts`'s constants and its enumerated-equals-passed identity,
+    # pinned in the same repository, and the two must not be confused: this one
+    # is a line the gate prints, that one is an accounting script over the same
+    # log. And note the division of labour with the headers above: a fast
+    # `./bin/prime` never prints the two `against TEST_DATABASE_URL` headers at
+    # all, so **the floor cannot notice a missing `--db` and the headers do.**
+    # Neither alone would do this declaration's job.
+    #
+    # The count comes from the `-v` run `bin/prime` makes, which is also what
+    # makes `bin/tier-counts` able to read it. Without `-v`, `go test` prints
+    # `ok <pkg>` with no count at all — the same fact that `bin/prime`'s own
+    # comments argue about three separate times.
+    - id: service-suite
+      match: 'ok[ \t]+github\.com/cafaye/darkroom/internal/service[ \t]([0-9]+)s'
+      minimum: 1
+    # The variant pipeline's own line, counted the same way. It is a separate
+    # proof because `bin/prime` runs that package with `-v` in the DEFAULT tier
+    # rather than the database one, and a proof per tier is what makes a
+    # vanished package visible from outside this file.
+    - id: variants-suite
+      match: 'ok[ \t]+github\.com/cafaye/darkroom/internal/variants[ \t]([0-9]+)s'
+      minimum: 1
 
 external:
-  # Not self-contained, and saying so is the point. `bin/prime --db` needs a Rust
-  # toolchain, a crates.io cache and a Postgres. A declaration that called this
+  # Not self-contained, and saying so is the point. `bin/prime --db` needs a Go
+  # toolchain, a module cache and a Postgres. A declaration that called this
   # self-contained would be describing a gate nobody has ever run on a clean
   # machine, which is the same defect as identity's gate being green over a
   # database nobody had migrated, told the other way round.
   selfContained: false
   requirements:
     - kind: toolchain
-      name: rustc 1.95 with cargo, rustfmt and clippy — the pin in rust-toolchain.toml, the same release as mise.toml, Cargo.toml's rust-version and the Dockerfile's RUST_VERSION
+      name: go 1.26.1 — the pin in mise.toml and in docker/Dockerfile's GO_VERSION, the same release go.mod declares
       satisfy:
         command: [mise, install]
         # Quoted, and that is not decoration. A plain YAML scalar may not contain
         # ": ", so the unquoted spelling of this sentence is a document that
         # core's restricted reader accepts and every other YAML parser in the
         # fleet refuses. See the report.
-        unmet: 'bin/prime exits 127 at its first step, "cargo fmt --check", with "cargo: command not found"'
+        unmet: 'bin/prime exits 127 at "gofmt -l", with "gofmt: command not found"'
     - kind: network
-      name: crates.io, ONCE, on a cold checkout only — the ~200 crates Cargo.lock pins, and nothing after the first fetch
+      name: the Go module proxy, ONCE, on a cold checkout only — the modules go.sum pins, and nothing after the first fetch
       satisfy:
-        command: [cargo, fetch]
-        unmet: cargo build --all-targets fails naming a crate in Cargo.lock, with a network or download error
+        command: [go, mod, download]
+        unmet: go build ./... fails naming a module in go.sum, with a network or download error
+    #
+    # AND A SECOND ONE, which the Rust declaration did not need and this one does.
+    #
+    # `bin/prime` now runs `go generate ./internal/api/` and the `//go:generate`
+    # line is `go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0`.
+    # `go run <module>@<version>` RESOLVES IN MODULE-AWARE MODE and is not this
+    # module's dependency, so `go mod download` does NOT fetch it and a checkout
+    # that has run every other requirement can still fail this gate step.
+    #
+    # It is a separate requirement rather than a clause on the one above because
+    # the two fail differently and an operator reads the failure: this one fails
+    # at `go generate`, having named no module in go.sum.
+    - kind: network
+      name: oapi-codegen v2.8.0 in the module cache — the GENERATOR, invoked on purpose by `go generate` and never a dependency of this module
+      satisfy:
+        command: [go, mod, download, github.com/oapi-codegen/oapi-codegen/v2]
+        unmet: >-
+          bin/prime exits 1 at "go generate ./internal/api/ matches
+          openapi/v1.yaml", with "regeneration FAILED" and a module-lookup error
     - kind: database
       name: Postgres reachable at $TEST_DATABASE_URL on kit's shared cluster, and it may be EMPTY
       satisfy:
@@ -194,18 +251,19 @@ external:
           - -d
           - --wait
         unmet: >-
-          bin/prime --db exits 1 at "cargo test --ignored" with a panic that
-          names TEST_DATABASE_URL, or with `role "darkroom" does not exist`,
-          which reads like a missing migration and is a cluster that was never
-          told this database exists — KIT_POSTGRES_DATABASES is read by an init
-          script that runs ONCE PER VOLUME
+          bin/prime --db exits 1 at "go test -v ./internal/darkroomdb/..." with
+          a skip that names TEST_DATABASE_URL, or with `role "darkroom" does not
+          exist`, which reads like a missing migration and is a cluster that was
+          never told this database exists — KIT_POSTGRES_DATABASES is read by an
+          init script that runs ONCE PER VOLUME
       # "and it may be EMPTY" is the sharp part of this requirement, and it is
-      # not a hope — it is what `tests/common/mod.rs:63` does. `test_store()`
-      # calls `sqlx::migrate!("./migrations")` and runs it against the pool it
-      # just opened, with the migration files embedded at compile time. So the
-      # 59 database tests cannot pass against a schema nobody applied, and this
-      # repository is not identity: a green database tier here is a green
-      # database tier against a migrated schema.
+      # not a hope — it is what `internal/darkroomdb/pgtest` does. Every
+      # `test_store()` call creates a schema named `t_<hex>`, applies
+      # `migrations/` into it with that schema on the connection's `search_path`,
+      # and drops it with `cascade` afterwards. So the 44 database tests cannot
+      # pass against a schema nobody applied, and this repository is not
+      # identity: a green database tier here is a green database tier against a
+      # migrated schema.
       #
       # That is worth stating because it is the one requirement in this file
       # that was *not* true of the last repository core measured it on, and it
@@ -216,8 +274,11 @@ external:
       # no object-storage bucket, and no credential of any kind. The `s3` tier
       # presigns with the real AWS SDK and static dummy credentials, which
       # builds a signature locally and transmits nothing, so the R2/MinIO/S3
-      # behaviour table runs offline. darkroom's own CI takes no `secrets:` at
-      # all, and nothing in this file introduces one.
+      # configuration rules and the presigned-URL table run offline.
+      # `internal/objectstore.New` REFUSES a static credential and takes the
+      # SDK's own chain, so there is no code path by which one could be in this
+      # process anyway. darkroom's own CI takes no `secrets:` at all, and nothing
+      # in this file introduces one.
 
 ci:
   workflow: .github/workflows/ci.yml

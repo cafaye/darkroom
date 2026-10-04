@@ -148,6 +148,13 @@ fail() {
 # table row gains a `t.Run`, which is a bookkeeping change rather than a claim
 # somebody made.
 #
+# `[[:space:]]` AND NOT `[ \t]` for the `ok` line, and this is the same correction
+# made in `gate.yml`'s countable proofs: `\t` inside a POSIX bracket expression
+# is the two characters `\` and `t`, not a tab, in every awk that follows the
+# standard. macOS's awk accepts it and GNU awk on a CI runner may not — so the
+# class that reads correctly everywhere is used here instead. The symptom if this
+# is ever reverted is every number below reading 0 on a green run.
+#
 # And a `-count=1` is required on the command this reads, or a cached run prints
 # `ok <pkg> (cached)` with no `--- PASS:` rows at all and every number here reads
 # zero. `bin/prime` carries the flag for that reason.
@@ -156,7 +163,7 @@ count_go() {
   awk -v scope="$scope" -v package="$package" '
     /^==>/ { group = $0; sub(/^==> /, "", group) }
     /^--- PASS: / { pending++ }
-    /^ok[ \t]/ {
+    /^ok[[:space:]]/ {
       if (scope == "" || group == scope) {
         split($0, fields, "\t")
         if (package == "" || fields[2] == package) total += pending
@@ -258,7 +265,7 @@ do
   skipped="$(awk -v scope="$step" '
     /^==>/ { group = $0; sub(/^==> /, "", group) }
     /^--- SKIP: / { if (group == scope) pending++ }
-    /^ok[ \t]/ {
+    /^ok[[:space:]]/ {
       if (group == scope) { split($0, f, "\t"); if (f[2] == pkg) total += pending }
       pending = 0
     }
