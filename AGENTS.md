@@ -5,10 +5,18 @@ anything; the house rules in `moon/PLAN.md` §1 and §3 apply on top of it.
 
 ## What this repository is
 
-`github.com/cafaye/darkroom`, Rust 1.95, one static binary. It owns uploaded
-media: signed uploads, a tenant-scoped asset registry, derived variants. The
-contracts are owned by `cafaye/core`; CI and lint config come from `cafaye/kit`.
-Neither lives here.
+`github.com/cafaye/darkroom`, one static binary. It owns uploaded media: signed
+uploads, a tenant-scoped asset registry, derived variants. The contracts are
+owned by `cafaye/core`; CI and lint config come from `cafaye/kit`. Neither lives
+here.
+
+**BOTH LANGUAGES ARE HERE, AND THE RUST ONE IS ON ITS WAY OUT.** The Go rewrite
+is mid-flight: `go.mod`, `internal/darkroomdb`, `migrations/embed.go` and the
+substrate migration `migrations/0004_account_isolation.sql` are here and green;
+`src/` and `tests/` are the Rust service, still complete and still gated. A later
+packet deletes them, and until it does **both trees run in `bin/prime`** — a gate
+that ran only one of two implementations stopped checking the other the day the
+second one appeared.
 
 ## Layout
 
@@ -23,10 +31,14 @@ src/outbox.rs       the event envelope                            (the contract)
 src/checksum.rs     sha256, and the rules about trusting it
 src/variants.rs     resize + re-encode
 src/storage_key.rs  opaque key generation
-migrations/         plain SQL, applied by a deploy step
-openapi/v1.yaml     what exposes.api points at
-bin/prime           the gate
-tests/              the database suites, all #[ignore]d, plus the backend table
+
+internal/darkroomdb/       the Go seam to PostgreSQL. InTx, InAccountTx
+internal/darkroomdb/pgtest one schema per test, migrations applied into it
+migrations/embed.go        the SQL, compiled in (go:embed cannot reach ../)
+migrations/                plain SQL, applied by a deploy step
+openapi/v1.yaml            what exposes.api points at
+bin/prime                  the gate
+tests/                     the Rust database suites, all #[ignore]d
 ```
 
 Dependencies point downward only. `service.rs` knows nothing about axum;
@@ -34,7 +46,40 @@ Dependencies point downward only. `service.rs` knows nothing about axum;
 That is what lets the state machine be tested without a socket and the storage
 scope without a database. **Do not add an `upward` import** — the moment
 `service.rs` imports axum, the HTTP layer stops being a translation and the
-test for a decision needs a request.
+test for a decision needs a request. The Go rule is the same shape:
+`darkroomdb` knows nothing about HTTP, and nothing above it will import a pool.
+
+## The two database credentials, and which is which
+
+**`DATABASE_URL` is `darkroom`, the OWNER. `DARKROOM_DATABASE_URL` is
+`darkroom_app`, the LOGIN the application uses.** Both are provisioned by
+`templates/compose/postgres/initdb/10-cluster.sh` from one `KIT_POSTGRES_DATABASES`
+entry, and the distinction is the whole of kit's account boundary:
+
+- `darkroom` owns every table, runs migrations, and is subject to the RLS
+  policies anyway because `assets` and `asset_variants` carry **FORCE** RLS.
+- `darkroom_app` owns nothing, holds DML on the four tables and nothing else, and
+  therefore **cannot** `ALTER TABLE ... DISABLE ROW LEVEL SECURITY` or
+  `DROP POLICY`. A leaked connection string for it is a read-only one.
+
+`TEST_DATABASE_URL` is the **owner** on purpose: `pgtest` creates a schema per
+test, which needs `CREATE` on the database. A test suite running as the login role
+could not isolate itself at all.
+
+## The one rule RLS adds, and it is the one that surprises people
+
+`assets` and `asset_variants` have **FORCE ROW LEVEL SECURITY**, which removes the
+**owner's** exemption from their policies. So `current_account_id()` returning
+NULL when no identity is set means a statement matches **NULL**, not false — and a
+`DELETE` with no `begin_account` **deletes nothing and exits 0**.
+
+That is the substrate working as designed and it is the nastiest edge in it: a
+cleanup or a query that reports success and did nothing. `AGENTS.md` already
+states the same rule from the other side — *"the rule is absence, not refusal"* —
+and this is what it looks like in practice. **`internal/darkroomdb.InAccountTx`
+sets the identity, and any statement that runs outside one is asserting rows
+exist rather than that it saw them.** When a write "succeeds" and changes nothing,
+check the identity before anything else.
 
 ## Rules
 
@@ -148,8 +193,11 @@ fake that looks finished. README's "Not done" is the source of truth.
 
 ## Tests that need a database
 
-`cargo test` is green on a bare machine with no Postgres and no Docker. The
-integration suites are `#[ignore]`d and need `TEST_DATABASE_URL`:
+`cargo test` and `go test` are both green on a bare machine with no Postgres and
+no Docker. **Both** is deliberate: the Rust integration suites are `#[ignore]`d
+and the Go suite SKIPS with a named reason, and a skip that is silent is a check
+that proves nothing — which is why `bin/prime`'s `--db` tier runs the Go suite
+with `-v`, because `go test` discards a passing package's output entirely.
 
 ```sh
 # the database is kit's shared cluster, brought up with this repository's
@@ -160,6 +208,7 @@ docker compose --project-directory . \
   -f ./docker-compose.yml up -d --wait
 
 cargo test -- --ignored
+go test -v ./internal/darkroomdb/...
 ```
 
 `TEST_DATABASE_URL` comes from `.env` (see `.env.example`): the host side,
@@ -168,6 +217,27 @@ database, and the CLUSTER's password. All three changed when darkroom joined the
 shared cluster, and all three are consequences of kit's defaults rather than
 choices. The service's own `DATABASE_URL`, inside the compose network, uses the
 service name `postgres` in place of `localhost`.
+
+**THE GO HARNESS DOES THE SAME THING AND NEEDS ONE EXTRA THING.** `pgtest` gives
+each test a schema named `t_<12 hex>`, applies `migrations/` into it with that
+schema on the connection's `search_path`, and drops it with `cascade`. Because
+`cafaye.protect_table` takes a `regclass` and `regclass` resolution follows
+`search_path`, each test protects its OWN `assets` — the isolation is real rather
+than a naming convention.
+
+It serialises the MIGRATION step and nothing else, and the reason is measured
+rather than designed: six concurrent tests applying `0004` failed with `tuple
+concurrently updated`, because `protect_table` GRANTS DML to `darkroom_app` and
+two transactions granting to the same role contend on that row. The schemas are
+independent; the GRANT names a cluster-wide object no schema can privatise. Every
+test still connects, seeds, queries and drops concurrently.
+
+`DARKROOM_DATABASE_URL` is read by exactly one Go test —
+`TestTheLoginRoleCanDoTheWork` — which is the only one that must prove the LOGIN
+role works rather than the owner's privileges. It writes to `public` and removes
+what it wrote; `pgtest.Require(t)` exists because `t.Skip` calls `runtime.Goexit`
+and a test that spawns goroutines and skips inside one reports phantom
+collisions instead of skipping.
 
 These tests run against the SAME database the service uses, so the service's
 per-role connection limit is spent by the service's own pool before a test
@@ -303,14 +373,21 @@ duplicate uses a real second request. None of them waits.
 ## Gates
 
 ```sh
-./bin/prime          # fmt, build, clippy, test, and test --features s3
-./bin/prime --db     # + the ignored tests against Postgres, both feature sets
+./bin/prime          # fmt, build, clippy, test, test --features s3, + the Go tier
+./bin/prime --db     # + the database tests against Postgres, both trees
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo build --all-targets --all-features   # the feature-gated paths
 cargo llvm-cov --fail-under-lines 50       # the coverage floor, and only this
-./bin/gate-self-test # is gate.yml still true of this repository
+gofmt -l .            # listed, then asserted empty: -w rewrites and exits 0
+go vet ./...          # not golangci-lint: a linter is a dep to version and argue about
+./bin/gate-self-test  # is gate.yml still true of this repository
 ```
+
+**BOTH TREES ARE IN `bin/prime` WHILE BOTH EXIST.** Five cargo steps and five Go
+steps. A gate that runs only the older of two implementations stopped checking
+the newer one the day the newer one appeared, and `go build`, `go vet` and
+fourteen database tests were in that state until this rewrite added them.
 
 **`./bin/prime --db` is the gate, and `mise run prime` is not.** `gate.yml`
 declares the former, and the flag is in the declaration rather than implied by
@@ -329,6 +406,41 @@ reason in the other direction: `cargo test` does not compile the R2
 configuration rules, the presigned-URL table or the startup refusals at all, and
 a test nobody's gate runs is a test that proves nothing.
 
+**`gofmt -l` AND NOT `gofmt -w`.** The second rewrites the files and exits 0
+whatever it found, so a gate built on it reports green having silently reformatted
+the commit. `-l` lists and still exits 0, so it is paired with an explicit
+emptiness test — the same reasoning as the exit-code rule at the top of
+`bin/prime`, one level down.
+
+## Every guard here gets a planted divergence
+
+A guard that has never been shown red is a guard nobody can rely on. The Go
+database guards were each planted against the real cluster before being believed,
+and two of them caught bugs in the packet that introduced them:
+
+| planted                                          | caught by                                    |
+|--------------------------------------------------|----------------------------------------------|
+| `grant truncate … to darkroom_app`                 | `TestTheLoginRoleCanWriteEveryTable…`        |
+| a migration that unfocuses `assets`                | `TestEveryProtectedTableIsForced` **and** `TestTheOwnerCannotRead…` |
+| a migration replacing a wrapped call with a bare one | `TestEveryHelperCallInAPolicyIsWrapped`     |
+| a migration creating a `for all` policy            | `TestNoPolicyIsForAll`                       |
+| `droppable` fed `public`, `""`, `t_`, `t_ZZZ…`    | `TestDroppableIsThePlantedDivergence…`       |
+
+Three things went wrong while writing them and all three are recorded in the
+code, because each is a way a guard passes on a broken source:
+
+- **`isWrappedAt` was wrong twice.** Go's `regexp` is RE2 and has no lookbehind,
+  so the first version's `(?<!…)` **panicked** and took the package down. The
+  replacement trimmed whitespace on the wrong side and read all eight correct
+  policies as bare. `TestIsWrappedAt`'s table caught the second version.
+- **A planted row was not a divergence.** `TestDroppable…`'s "PLANTED: too long"
+  was `t_0123456789ab` — byte-identical to the REAL row two lines below it — so
+  it asserted `false` for a name the harness builds.
+- **`pg_get_expr` is not the text `protect_table` wrote.** It deparses
+  `(select f())` as `( SELECT f() AS f)`, so matching the written form failed on
+  every correct policy. Reading the deparse is what makes the check structural;
+  knowing its exact shape is what makes it correct.
+
 The coverage floor is deliberately loose and deliberately not in `bin/prime`:
 instrumenting is a different build, and folding it into the gate would make
 every developer run twice. It measures the default suite only — not the s3
@@ -336,6 +448,8 @@ build, not the database tier — and README says so where a reader will look.
 
 
 ## Adding an endpoint
+
+In Rust, the tree this packet does not remove:
 
 1. `service.rs` — the rule, in a method that takes a `Tenant`. Tests first.
 2. `http.rs` — the handler, extracting and translating, with nothing decided,
@@ -348,6 +462,13 @@ build, not the database tier — and README says so where a reader will look.
 6. A new constant in `bin/tier-counts` if the new test lives in its own file, so
    a file that stops running fails the gate instead of reporting zero.
 7. `./bin/prime`.
+
+In Go, once the HTTP layer exists — the same seven steps with `internal/service`
+for the rule, `internal/httpapi` for the handler, and `internal/darkroomdb`'s
+`InAccountTx` for the tenant scope. Step 1's rule survives translation: a
+function that does not take an account, or that takes a transaction from
+somewhere other than `InAccountTx`, is doing the thing the Rust `Tenant`
+typecheck prevented.
 
 ## Adding an event
 
