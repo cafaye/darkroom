@@ -292,6 +292,33 @@ services:
       # string, and it is not worth a percent-encoder to keep a development
       # default out of a comment.)
       DATABASE_URL: postgres://darkroom:${KIT_POSTGRES_PASSWORD:-cafaye}@postgres:5432/darkroom?sslmode=disable
+
+      # THE URL THE APPLICATION LOGS IN WITH, and it is `darkroom_app` rather than
+      # `darkroom`. `10-cluster.sh` provisions two roles per service from ONE
+      # `KIT_POSTGRES_DATABASES` entry — `<svc>` owns the database and runs
+      # migrations, `<svc>_app` owns nothing — and this is the second one, used for
+      # the first time since the tenancy substrate was adopted.
+      #
+      # `DATABASE_URL` above is deliberately LEFT AS `darkroom` and is not tidying:
+      # it is the migration and deploy credential, the owner of every table, and a
+      # service that runs its own migrations cannot stop needing it. Two URLs rather
+      # than one changed URL is the honest shape while both trees exist — the Rust
+      # service authenticates as the owner, and the Go rewrite authenticates as the
+      # login role.
+      #
+      # WHY IT MATTERS, and it is not a hardening nicety. `assets` and
+      # `asset_variants` carry `FORCE ROW LEVEL SECURITY`, which removes the
+      # OWNER's exemption from their policies: as `darkroom`, the application's own
+      # pool reads every account's rows unless a transaction sets an identity, and
+      # as `darkroom_app` that is still true but the role additionally CANNOT
+      # `ALTER TABLE ... DISABLE ROW LEVEL SECURITY` or `DROP POLICY`. One
+      # compromised connection string is then a read-only one.
+      #
+      # Same password, same port, same database, same service name on the compose
+      # network. `10-cluster.sh` gives every role it creates `$POSTGRES_PASSWORD`,
+      # so there is no second credential to rotate and no second place for a
+      # password to be wrong.
+      DARKROOM_DATABASE_URL: postgres://darkroom_app:${KIT_POSTGRES_PASSWORD:-cafaye}@postgres:5432/darkroom?sslmode=disable
       PORT: "8080"
       # The in-memory object store by default, and it stays that way: a local
       # stack that needs a bucket credential is a local stack nobody starts, and

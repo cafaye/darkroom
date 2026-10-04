@@ -1,9 +1,16 @@
-# cafaye.yml — darkroom: a Rust service that serves an HTTP API and publishes events.
+# cafaye.yml — darkroom: a service that serves an HTTP API and publishes events.
 # Validated by `caf contract lint` against cafaye/core's
 # schemas/cafaye.manifest.schema.json.
+#
+# `language: go`, changed from `rust` when the Go module built and `go vet ./...`
+# went clean. Nothing else in this file moved, and that is deliberate in both
+# directions: `exposes.api` still points at the same `openapi/v1.yaml` because the
+# packet that introduces the Go HTTP layer is not this one, and a contract that
+# changes while the thing implementing it does not is a contract that lies about
+# what is deployed.
 name: darkroom
 description: Media service — signed uploads, tenant-scoped asset registry, and derived variants.
-language: rust
+language: go
 core: ^0.2.0
 
 exposes:
