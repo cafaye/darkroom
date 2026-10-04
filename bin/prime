@@ -81,13 +81,22 @@ go build ./...
 step "go vet ./..."
 go vet ./...
 
-# The default run SKIPS the database tests with a named reason rather than failing,
-# so this step is honest on a bare machine: the output says which tests did not
-# run and why. `go test` discards a passing package's output, so the skip rows are
-# invisible without `-v` — which is why the `--db` run below is not optional and why
-# this one is not a substitute for it.
-step "go test ./internal/darkroomdb/... (no database)"
-go test ./internal/darkroomdb/...
+# `./...` and NOT `./internal/darkroomdb/...`, which is what this said while
+# `darkroomdb` was the only package that had tests. Naming the one package is the
+# shape of the bug `AGENTS.md` describes about gates — "A gate that runs only one
+# of two implementations stopped checking the other the day the second one
+# appeared" — pointed at a package instead of a tree: every package added after
+# packet 01 would compile under `go build ./...` and `go vet ./...` and then have
+# its tests never run at all. A directory pattern is the version of this step
+# that cannot go stale.
+#
+# The default run still SKIPS the database tests with a named reason rather than
+# failing, so this step is honest on a bare machine: the output says which tests
+# did not run and why. `go test` discards a passing package's output, so the skip
+# rows are invisible without `-v` — which is why the `--db` run below is not
+# optional and why this one is not a substitute for it.
+step "go test ./... (no database)"
+go test ./...
 
 if [[ "${1:-}" == "--db" ]]; then
   # No apostrophes anywhere in this message: bash parses quotes inside the
