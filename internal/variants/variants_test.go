@@ -513,6 +513,24 @@ func TestAReEncodeIsSmallerThanThePngItCameFrom(t *testing.T) {
 	}
 }
 
+// TestAOnePixelWideImageDoesNotScaleToZero is the floor's end-to-end half.
+//
+// `TestFitInsideHoldsTheRustArithmetic` pins the arithmetic; this pins the
+// consequence, which is a different thing. Without the floor a 1-pixel-wide
+// source becomes a zero-width destination, `image.NewNRGBA` builds that into a
+// 1x256 image with a stride of zero, and `jpeg.Encode` fails on it — so the
+// visible symptom is a 500 from a customer's perfectly valid 1-pixel-wide upload,
+// not a wrong-sized thumbnail. A test holding only the arithmetic would have
+// reported "0x256" and read as a bug report about sizing.
+func TestAOnePixelWideImageDoesNotScaleToZero(t *testing.T) {
+	source := gradientPNG(t, 1, 1000)
+	encoded := encodeOK(t, source, KindThumbnail)
+	w, h := dimensions(t, encoded.Bytes)
+	if w < 1 || h != 256 {
+		t.Fatalf("a 1x1000 thumbnail is 1x256, got %dx%d", w, h)
+	}
+}
+
 func TestAOneByOneImageDoesNotScaleToZero(t *testing.T) {
 	// The rounding in the scale calculation can produce 0 for a very extreme
 	// aspect ratio. The `max(…, 1)` in fitInside is what stops a variant with
@@ -542,10 +560,17 @@ func TestFitInsideHoldsTheRustArithmetic(t *testing.T) {
 		{"a tall image fits by height", 500, 2000, 256, 64, 256},
 		{"preview at 1024", 3000, 3000, 1024, 1024, 1024},
 		{"an exact fit is not resized by this function", 256, 256, 256, 256, 256},
-		// 3x1000 bounded at 256: height becomes 256 and the width rounds to 1.
-		// Without the floor this is 0x256, and `image.NewNRGBA` with a zero
-		// dimension is a one-pixel image that `jpeg.Encode` then rejects.
-		{"an extreme aspect ratio floors at 1", 3, 1000, 256, 1, 256},
+		// THE FLOOR ROW, and the arithmetic in it is the whole point: 1x10000
+		// bounded at 256 scales the width to 0.0256, which `math.Round` gives as 0.
+		// A 0x256 variant is one `image.NewNRGBA` builds into a one-pixel image
+		// with a stride of zero, and `jpeg.Encode` then rejects it.
+		//
+		// The first draft of this row was 3x1000, which reads like the same case
+		// and is not: 3 * 0.256 is 0.768, which rounds to 1 with or without the
+		// floor, so deleting `max(…, 1)` left this whole table green. That was
+		// found by planting the divergence, and the numbers in this comment are
+		// the arithmetic that makes the row bite.
+		{"an extreme aspect ratio floors at 1", 1, 10000, 256, 1, 256},
 		// The rounding tie. 0.5 rounds AWAY from zero in both languages, so a
 		// `math.Floor`-based port would give 128 here and disagree with the Rust
 		// binary on every such image.

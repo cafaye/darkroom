@@ -301,6 +301,12 @@ func fitInside(width, height int, maxEdge uint32) (int, int) {
 //
 // See the call site for why both halves of that sentence matter.
 func normalise(src image.Image) *image.NRGBA {
+	// The fast path is an ALLOCATION saved and nothing else: `draw.Draw` with
+	// `draw.Src` into a fresh NRGBA converts a NRGBA source to the same non-
+	// premultiplied bytes, so removing this branch is a slowdown rather than a
+	// bug. It is here because a 4000x1000 upload that skips a full-image copy on
+	// the no-resize path is worth two lines, and said so because a reader finding
+	// no test guarding it would otherwise assume one exists.
 	if nrgba, ok := src.(*image.NRGBA); ok && nrgba.Bounds().Min == (image.Point{}) {
 		return nrgba
 	}
