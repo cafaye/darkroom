@@ -98,6 +98,43 @@ go vet ./...
 step "go test ./... (no database)"
 go test ./...
 
+# A GO SUITE THAT LOSES ITS TESTS IS STILL GREEN, AND THAT IS THE POINT OF THIS
+# STEP. `go test ./...` prints `ok` for a package with no test files at all, and
+# `go test` discards the count from a package that passes. So a file emptied, a
+# build tag that stopped matching, or a rename that left the tests behind is a
+# green gate reporting zero — which `AGENTS.md` calls out by name: "a security
+# check that reports zero is worse than one that is absent: it looks like
+# coverage."
+#
+# `go test -list` enumerates the tests WITHOUT running them, so this costs
+# nothing and needs no database. The numbers are the same kind of constant as the
+# Rust ones in `bin/tier-counts`: adding a test means raising the number here in
+# the same commit, and that is the point of the constant — a red that says
+# `objectstore: 21, want 22` is the mechanism working.
+#
+# `go test -list` also prints the trailing `ok` line, so the count is every line
+# that is not one of those. Counting is `grep -c` on the whole listing rather
+# than a per-name match, because a package whose tests are all subtests of one
+# function is one entry here and many rows in the log.
+step "go test -list: the Go suites are not empty"
+go_list_counts() {
+  go test -list '.*' "$1" 2>/dev/null | grep -cv -e '^ok' -e '^testing:' -e '^$' || true
+}
+assert_go_suite() {
+  local pkg="$1" want="$2" got
+  got="$(go_list_counts "$pkg")"
+  if [[ "$got" -lt "$want" ]]; then
+    echo "    ${pkg}: ${got} tests, want at least ${want}" >&2
+    echo "    a green go test with no tests is a check that proves nothing" >&2
+    exit 1
+  fi
+  echo "    ${pkg}: ${got} tests"
+}
+assert_go_suite ./internal/objectstore 21
+assert_go_suite ./internal/checksum 6
+assert_go_suite ./internal/storagekey 4
+assert_go_suite ./internal/darkroomdb/pgtest 15
+
 if [[ "${1:-}" == "--db" ]]; then
   # No apostrophes anywhere in this message: bash parses quotes inside the
   # `${VAR:?word}` expansion, so a single apostrophe below — `kit's`, the word
