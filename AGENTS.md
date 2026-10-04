@@ -37,6 +37,7 @@ internal/darkroomdb/pgtest one schema per test, migrations applied into it
 internal/objectstore/      the object storage boundary: Store, Memory, S3
 internal/checksum/         sha256, one-shot and streaming, and the trust rules
 internal/storagekey/       the only two constructors for a storage key
+internal/variants/         the Go variant pipeline. Decode, resize, matte, JPEG
 migrations/embed.go        the SQL, compiled in (go:embed cannot reach ../)
 migrations/                plain SQL, applied by a deploy step
 openapi/v1.yaml            what exposes.api points at
@@ -182,6 +183,19 @@ the network through.
 
 **No `unsafe`.** There is none in this repository. Do not add any without a
 written justification next to it.
+
+**A blank import is a guard no compiler holds.** `golang.org/x/image/webp`
+registers itself with `image.Decode` through `import _ …`, and deleting that line
+leaves a program that compiles, links, vets clean and passes every other test
+before failing on the first WebP a customer uploads. The Rust tree's
+`SUPPORTED_INPUT_FORMATS` guarded the equivalent risk there because a missing
+Cargo feature does not compile; **in Go there is no list that can guard it**,
+because the standard library exposes `image.RegisterFormat` and no reader for the
+registry. `internal/variants/` holds the formats with a behavioural test carrying
+a real file of each, plus a structural test that reads `variants.go` for the
+three blank imports the behavioural test structurally cannot catch. Both were
+found by planting the divergence, and the reasons they are two tests rather than
+one are in `README.md` under "The Go dependency".
 
 **No secrets in the repo.** Object-storage credentials are the AWS SDK's own
 chain. `DARKROOM_DEV_JWT_SECRET` is read at runtime, never baked in with

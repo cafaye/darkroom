@@ -378,21 +378,69 @@ bounded by their longest edge. **Never upscales**: a 100×80 image asked for as 
 256px thumbnail stays 100×80, because upscaling costs bytes, adds no
 information, and produces a thumbnail bigger than its source.
 
-Every variant is **JPEG**. WebP would be better and is deliberately not used:
-the `image` crate's WebP encoder is **lossless-only** — its own docs say so and
-point at libwebp for lossy — and a lossless re-encode of a 256px thumbnail
-saves little enough to not be worth a C dependency and a second codec's failure
-modes. `image`'s JPEG encoder is lossy, pure Rust, and decodable by everything
-that will ever request a thumbnail. **This is the one place a dependency
-decision is deferred**; it is called out in the report.
+Every variant is **JPEG**. WebP would be better and is deliberately not used,
+for two reasons that are the same reason. In Rust: the `image` crate's WebP
+encoder is **lossless-only** — its own docs say so and point at libwebp for
+lossy — and a lossless re-encode of a 256px thumbnail saves little enough to not
+be worth a C dependency and a second codec's failure modes. In Go the same
+refusal is stronger: there is **no first-party WebP encoder at all**
+(golang/go#45121 is open and unassigned), and `golang.org/x/image/webp` is a
+pure-Go *decoder*, so "switch the variants to WebP" would mean cgo libwebp and
+with it the static binary the Dockerfile builds. `image/jpeg` is lossy, pure Go,
+statically linked and decodable by everything that will ever request a
+thumbnail. **This is the one place a dependency decision is deferred**; it is
+called out in the report.
 
-Alpha is composited over white explicitly, in `u16`. `DynamicImage::to_rgb8`
-*drops* the alpha channel rather than compositing it, so a transparent black
-pixel would stay black in the served image. A test caught exactly that.
+Alpha is composited over white explicitly, as integer arithmetic:
+`out = src·a + 255·(1−a)`, rounded to nearest. `DynamicImage::to_rgb8` *drops*
+the alpha channel rather than compositing it, so a transparent black pixel would
+stay black in the served image. A test caught exactly that, and the Go port has
+the same test plus a resized-transparent variant, because compositing correctly
+and then resizing premultiplied RGBA both produce plausible images and only one
+of them is right.
 
 The original row and its object are never touched. `variant_created_is_emitted_
 and_the_original_is_untouched` asserts the original's checksum, byte size and
 `updated_at` are all unchanged after a variant is derived.
+
+Accepted inputs: **PNG, JPEG, GIF, WebP**. Accepted by `internal/variants/`
+(decoding) and by `AssetKind` (declaring) — a decode failure is a 422 naming
+`content_type`, because the bytes were checksum-verified first, so a declared
+type that disagrees with them is the client's mistake.
+
+### The Go dependency: `golang.org/x/image`
+
+One dependency, stated here because `AGENTS.md` requires it.
+
+**`golang.org/x/image`, for two packages.** `draw` supplies the resampling kernel
+and `webp` supplies a pure-Go WebP decoder. Both are needed; neither is optional.
+
+- **No cgo.** `chai2010/webp` and `gen2brain/webp` are the two popular WebP
+  decoders in Go and both are cgo bindings to libwebp. Either would cost darkroom
+  its static binary and complicate the musl build, to decode a format that only
+  ever *arrives*: every variant is JPEG, so darkroom reads WebP and never writes
+  it. `golang.org/x/image/webp` is first-party, pure Go, and maintained.
+- **No hand-rolled image processing.** The packet's brief and this repository's
+  house rules agree here. `image/jpeg`, `image/png` and `image/gif` are the
+  standard library's; the resampler and the WebP decoder are `x/image`'s.
+- **WebP *encoding* is not available and not needed.** See the JPEG paragraph
+  above. `internal/variants/` says so in its package comment too, so nobody
+  re-derives the need later.
+
+The `webp` decoder registers itself with `image.Decode` through a **blank
+import**, which is worth one sentence because it is the only guard-shaped thing
+about it: deleting that line leaves a program that compiles, links, vets clean
+and passes every other test, and then fails on the first WebP a customer uploads.
+So the formats are held by `TestEveryAcceptedInputFormatDecodes`, which carries
+a real file of each, and `TestEveryAcceptedFormatIsRegisteredInThisFile`, which
+reads `variants.go` and holds the registration the behavioural test structurally
+cannot. That second test exists because PNG, JPEG and GIF decoders share a
+standard-library package with their *encoders*, which the test file needs — so
+dropping those three blank imports leaves the behavioural test green. WebP is
+the exception and not by luck: `x/image` has a decoder and no encoder, so nothing
+in the repository can register the WebP decoder except the blank import. That
+split is why the WebP fixtures are checked in rather than built
+(`internal/variants/testdata/README.md` records the `cwebp` commands).
 
 ## Events and the outbox
 
