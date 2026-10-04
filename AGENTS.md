@@ -10,43 +10,54 @@ uploads, a tenant-scoped asset registry, derived variants. The contracts are
 owned by `cafaye/core`; CI and lint config come from `cafaye/kit`. Neither lives
 here.
 
-**BOTH LANGUAGES ARE HERE, AND THE RUST ONE IS ON ITS WAY OUT.** The Go rewrite
-is mid-flight: `go.mod`, `internal/darkroomdb`, `migrations/embed.go` and the
-substrate migration `migrations/0004_account_isolation.sql` are here and green;
-`src/` and `tests/` are the Rust service, still complete and still gated. A later
-packet deletes them, and until it does **both trees run in `bin/prime`** — a gate
-that ran only one of two implementations stopped checking the other the day the
-second one appeared.
+**ONE LANGUAGE. The Go rewrite is the whole tree.** `src/` and `tests/` were
+deleted in darkroom-go-06 and they were a *gated* tree until then: for six
+packets `bin/prime` ran five cargo steps beside six Go steps, because "a gate
+that runs only one of two implementations stopped checking the other the day the
+second one appeared." The cargo steps are REMOVED, not commented out — a gate
+step that references a deleted `Cargo.toml` is a gate that does not run, and a
+commented-out one is a line nobody reads.
+
+Where this file says "the Rust tree did X", it is describing history and the
+history is in git. Every such sentence now names the Go mechanism that replaced
+it, because a rule with no mechanism behind it is a rule that decays.
 
 ## Layout
 
 ```
-src/http.rs         routes, handlers, probes, auth middleware    (the wire)
-src/service.rs      the upload state machine, every decision      (the rules)
-src/domain.rs       assets, variants, enums                       (the vocabulary)
-src/auth.rs         token verification, Principal, Tenant         (who is calling)
-src/objectstore/    the storage trait, in-memory + s3 (aws, r2)  (where bytes live)
-src/store.rs        sqlx, the outbox, the idempotency ledger      (persistence)
-src/outbox.rs       the event envelope                            (the contract)
-src/checksum.rs     sha256, and the rules about trusting it
-src/variants.rs     resize + re-encode
-src/storage_key.rs  opaque key generation
+cmd/darkroom/               main, and the configuration table. The only package
+                            that reads the environment.
+internal/httpapi/           routes, handlers, probes, auth middleware   (the wire)
+internal/service/           the upload state machine, every decision     (the rules)
+internal/domain/            assets, variants, enums                      (the vocabulary)
+internal/auth/              token verification, Principal, Tenant        (who is calling)
+internal/objectstore/       the storage interface, in-memory + s3 (aws, r2)
+internal/darkroomdb/        pgx, the outbox, the idempotency ledger      (persistence)
+internal/service/outbox.go  the event envelope                          (the contract)
+internal/checksum/          sha256, one-shot and streaming, and the trust rules
+internal/variants/          resize + re-encode
+internal/storagekey/        the only two constructors for a storage key
+internal/api/               GENERATED from openapi/v1.yaml. The router.
+internal/problem/           the problem envelope: code, title, status
+internal/darkroomdb/pgtest  one schema per test, migrations applied into it
 
-internal/darkroomdb/       the Go seam to PostgreSQL. InTx, InAccountTx
-internal/darkroomdb/pgtest one schema per test, migrations applied into it
-internal/objectstore/      the object storage boundary: Store, Memory, S3
-internal/checksum/         sha256, one-shot and streaming, and the trust rules
-internal/storagekey/       the only two constructors for a storage key
-internal/variants/         the Go variant pipeline. Decode, resize, matte, JPEG
-migrations/embed.go        the SQL, compiled in (go:embed cannot reach ../)
-migrations/                plain SQL, applied by a deploy step
-openapi/v1.yaml            what exposes.api points at
-bin/prime                  the gate
-tests/                     the Rust database suites, all #[ignore]d
+migrations/embed.go         the SQL, compiled in (go:embed cannot reach ../)
+migrations/                 plain SQL, applied by a deploy step
+openapi/v1.yaml             what exposes.api points at
+bin/prime                   the gate
+bin/tier-counts             the accounting check over the same log
 ```
 
-Dependencies point downward only. `service.rs` knows nothing about axum;
-`domain.rs` knows nothing about SQL; `objectstore` knows nothing about assets.
+**THE ROUTER IS GENERATED, AND THAT CHANGES WHAT "ADD A ROUTE" MEANS.** There is
+no route table. `internal/api/api.gen.go` is `oapi-codegen` output from
+`openapi/v1.yaml`, it is a `*chi.Mux`, and `httpapi.New` walks it with
+`chi.Walk`. A new operation is a document edit and a `go generate` in one commit;
+forgetting the handler is a COMPILE ERROR rather than a 404 in production. The
+Rust tree's `http::OPERATIONS` was a hand-maintained second inventory and its own
+README admitted the cost.
+
+Dependencies point downward only. `service` knows nothing about net/http;
+`domain` knows nothing about SQL; `objectstore` knows nothing about assets.
 That is what lets the state machine be tested without a socket and the storage
 scope without a database. **Do not add an `upward` import** — the moment
 `service.rs` imports axum, the HTTP layer stops being a translation and the
@@ -91,11 +102,24 @@ check the identity before anything else.
 (PLAN.md §3). Every handler change needs a case asserting the status code
 *and* the JSON shape.
 
-**`Tenant` is the only way to scope a query.** `auth::Tenant` has exactly one
-constructor and it takes a `Principal`. If you find yourself wanting
-`Tenant::from_request`, you are about to build a cross-tenant vulnerability.
-A repository method that does not take a `Tenant` will not typecheck, which is
-the point.
+**`auth.Tenant` is the only way to scope a query, and `InAccountTx` is the only
+way to start a transaction.** `auth.Tenant` has exactly one constructor and it
+takes a verified `*Principal`; there is no `TenantFromRequest` and adding one is
+building a cross-tenant vulnerability. `InAccountTx` is what makes the second half
+expressible: there is no way to reach this repository's database without naming an
+account inside the transaction, because naming the account IS starting the
+transaction. The Rust version of this rule was a typecheck — a repository method
+that did not take a `Tenant` did not compile — and the Go version is a single
+entry point rather than a property of every signature. That is a weaker
+guarantee and it is worth knowing which one you are relying on.
+
+**AND `auth.TenantOf(r) PANICS WHEN THERE IS NO VERIFIED PRINCIPAL.** Not nil,
+not a zero `Tenant` with an empty account (`InAccountTx` with `account_id = ''`
+matches no rows under FORCE RLS while every write still exits 0 — that is the
+"reports success and did nothing" failure), not a 500 written by the accessor
+(that converges: the mistake becomes documented behaviour and a test asserts the
+tidy error). A panic fails the test at the missing call and drops one connection
+in production.
 
 **Cross-tenant is 404, not 403.** And the body must be byte-identical to the
 one for an id that never existed. A 403 leaks existence; a different body is
@@ -110,8 +134,8 @@ the caller is authenticated and the row is not theirs?" and there is only one
 correct answer: the same thing you say when the row does not exist. A refusal
 distinguishes the two cases, so a caller enumerating ids gets a directory of
 every asset on the platform without reading a single row. This includes the
-layers below the wire: `store::find_asset` returns `Ok(None)` for another
-account's row, never a `StoreError`, because a distinguishable error is the same
+layers below the wire: `service.find` returns "not found" for another account's
+row, never a distinct error, because a distinguishable error is the same
 oracle one layer down.
 
 **The checksum is computed, never trusted.** The client's claim is written at
@@ -126,10 +150,10 @@ Cloudflare R2 — R2 offers `FULL_OBJECT` for CRC-64/NVME only, so a `FULL_OBJEC
 sha256 never came back and the check silently stopped happening. A correctness
 property may not depend on which bucket answered it. If you are tempted to make
 the read conditional on a cheaper answer existing, you are rebuilding the bug:
-`tests/checksum_verification.rs` asserts the read count is exactly one, and the
-one read is the trade stated in the README.
+`internal/service`'s tests assert the read count is exactly one, and the one read
+is the trade stated in the README.
 
-**One `ObjectStore` implementation, several S3-compatible services.** R2 is not
+**One `objectstore.Store` implementation, several S3-compatible services.** R2 is not
 a variant, a feature or a second type: it is an endpoint, a region, and
 addressing. If a backend needs a *code* branch, the abstraction is wrong and
 fixing the abstraction is in scope — that is not a reason to add
@@ -151,9 +175,17 @@ complete" in a way that is better served by the client receiving its 4xx.
 database outage must not get the process restarted out from under in-flight
 uploads; that is `/readyz`'s job, and it really does `select 1`.
 
-**The probes are exempt from auth by an explicit allow-list**, not by route
-order. `Router::layer` in axum applies to every route the router holds, so
-registering a route "before" the layer does not exempt it. There is a test.
+**The probes are exempt from auth STRUCTURALLY, and the reason matters.** The
+Rust tree mounted auth with a `Router::layer`, which in axum applies to every
+route the router holds — so "register the probe before the layer" does NOT exempt
+it, and there is a test saying so. chi's `Use` has the opposite property: it
+applies to routes registered AFTER the call and to no others. So the router is
+built from three `chi.Router`s and the probe router simply has no auth middleware
+to remove. The split is on the PATH (`APIV1Prefix`), not on a list of names,
+because a list of names is a second inventory — and
+`TestEveryUnauthenticatedRouteIsOneTheDocumentExempts` holds the set this code
+exempts against the set `openapi/v1.yaml` exempts, so adding an unauthenticated
+route means editing the document.
 
 **Probe failures are logged, never returned in detail.** The body names the
 dependency; the underlying error goes to the log. An unauthenticated caller
@@ -170,7 +202,7 @@ enforce it across two connections anyway. The one real FK is
 `asset_variants.asset_id` → `assets.id`, because both are ours.
 
 **Storage keys are never client-supplied.** A client-chosen key collides across
-tenants, traverses, and is guessable. `StorageKey::generate_*` is the only
+tenants, traverses, and is guessable. `storagekey.Generate` is the only
 constructor. If you need a key shape change, change the generator and the
 migration together.
 
@@ -181,8 +213,11 @@ that can read it will try to build a URL from it.
 README.md. No dependency without one, and no feature flag that a test can reach
 the network through.
 
-**No `unsafe`.** There is none in this repository. Do not add any without a
-written justification next to it.
+**No `unsafe`.** There is none in this repository, and in Go the equivalent is a
+`panic` on a path a caller can reach: the one that exists (`auth.TenantOf` on a
+request with no principal) panics on a MISTAKE at the call site and says so in
+its message. A panic that a request can trigger is not that. Anything else needs
+a written justification next to it.
 
 **A blank import is a guard no compiler holds.** `golang.org/x/image/webp`
 registers itself with `image.Decode` through `import _ …`, and deleting that line
@@ -198,9 +233,13 @@ found by planting the divergence, and the reasons they are two tests rather than
 one are in `README.md` under "The Go dependency".
 
 **No secrets in the repo.** Object-storage credentials are the AWS SDK's own
-chain. `DARKROOM_DEV_JWT_SECRET` is read at runtime, never baked in with
+chain, and `objectstore.New` REFUSES a static credential so the production
+constructor cannot acquire one by accident. There is no dev JWT secret in this
+tree at all: `internal/auth` has one constructor and it is always on. (The Rust
+tree read `DARKROOM_DEV_JWT_SECRET` at runtime rather than baking it in with
 `option_env!` — a secret in the binary is a secret in the image, in the build
-cache, and in `docker history`.
+cache, and in `docker history`. That reasoning still holds for whatever comes
+next.)
 
 **Comments say why.** Explain the decision and the constraint, not the
 mechanism. A comment restating the line below it is noise.
@@ -210,11 +249,17 @@ fake that looks finished. README's "Not done" is the source of truth.
 
 ## Tests that need a database
 
-`cargo test` and `go test` are both green on a bare machine with no Postgres and
-no Docker. **Both** is deliberate: the Rust integration suites are `#[ignore]`d
-and the Go suite SKIPS with a named reason, and a skip that is silent is a check
-that proves nothing — which is why `bin/prime`'s `--db` tier runs the Go suite
-with `-v`, because `go test` discards a passing package's output entirely.
+`go test ./...` is green on a bare machine with no Postgres and no Docker. That is
+deliberate: the suites that need a database call `pgtest.Require`, which SKIPS
+with a named reason, and a skip that is silent is a check that proves nothing —
+which is why `bin/prime`'s `--db` tier runs them with `-v`, because `go test`
+discards a passing package's output entirely, and why `bin/tier-counts` FAILS on
+any `--- SKIP:` in a database tier.
+
+The Rust tree could say "77 passed, 59 ignored" because a cargo database test is
+`#[ignore]`d and libtest prints the count. Go has no such marker, so the
+accounting script's identity is the one that survives: **enumerated without a
+database == passed with one**, checked in both directions.
 
 ```sh
 # the database is kit's shared cluster, brought up with this repository's
@@ -224,8 +269,8 @@ docker compose --project-directory . \
   -f <kit>/templates/compose/docker-compose.yml \
   -f ./docker-compose.yml up -d --wait
 
-cargo test -- --ignored
-go test -v ./internal/darkroomdb/...
+./bin/prime --db                # THE GATE: everything, with the database
+./bin/tier-counts /tmp/prime.log # and the counts out of the same log
 ```
 
 `TEST_DATABASE_URL` comes from `.env` (see `.env.example`): the host side,
@@ -270,22 +315,22 @@ test's tables and cannot reach another's. `--test-threads=1` was here because th
 suites shared one set of tables, and the schemas are why it is gone — six
 parallel runs before that change went red every time, three after it went green,
 with the counts in `REPORT-darkroom-hermetic-db-01.md`.
-`tests/schema_isolation.rs` holds the property, and splits it so the half that
-needs no database runs on a bare machine: a name that can only be twelve
-characters from a fixed alphabet, and a `drop schema` that can only fire on a
-schema this harness made and that no run can still be using.
+`pgtest_test.go` holds the property, and splits it so the half that needs no
+database runs on a bare machine: a name that can only be twelve characters from a
+fixed alphabet, and a `drop schema` that can only fire on a schema this harness
+made and that no run can still be using.
 
-**A test that cannot be isolated does not get the flag back.** Re-adding
-`--test-threads=1` to `bin/prime` undoes the isolation for the other fifty-eight
-and hides the one test that needed it; such a test gets its own exclusion, named,
-with a comment saying what it shares with whom. Nothing has needed one.
+**A test that cannot be isolated does not get a serialisation back.** Adding a
+serialisation flag to `bin/prime` undoes the isolation for every other test and
+hides the one that needed it; such a test gets its own exclusion, named, with a
+comment saying what it shares with whom. Nothing has needed one.
 
 **A `truncate` that quietly points somewhere else is the sharpest edge in this
 suite, and the guard for it exists because the divergence was planted rather than
 imagined.** With `truncate` rewritten to name `public.assets` and its three
 siblings, the entire database tier stayed green — the schemas hide it, because
 every store is created empty and a `public` truncate cannot reach into another
-schema. `tests/schema_isolation.rs` asserts both halves now: one test's
+schema. `pgtest_test.go` asserts both halves now: one test's
 `truncate` empties its own schema AND leaves another test's rows alone, because
 the first half on its own is satisfied by a `truncate` that does nothing at all.
 
@@ -296,8 +341,8 @@ rather than decoration.
 
 ## The exit code is not the evidence
 
-`bin/prime --db` exits zero when it is happy, and `cargo test` exits zero when
-it ignored every test it could. Those are the same exit code, so CI reads the
+`bin/prime --db` exits zero when it is happy, and `go test ./...` exits zero for a
+package with no test files in it. Those are the same exit code, so CI reads the
 counts instead, with `bin/tier-counts`:
 
 ```sh
@@ -305,47 +350,52 @@ counts instead, with `bin/tier-counts`:
 ./bin/tier-counts /tmp/prime.log
 ```
 
-It asserts 77 unit / 89 with s3 / 9 behaviour-table rows / 59 database twice /
-12 tenant-scoping twice / 7 query-scoping, **and** one identity: the count the
-default run skips equals the count the database run passes, because they are the
-same tests. **Adding a test means raising the number in `bin/tier-counts` in the
-same commit** — that is the point of the constant, and a CI red that says
-`expected 59, got 62` is the mechanism working, not failing.
+It asserts 24 variants / 15 harness / 29 service / 19 httpapi, **and** one
+identity: the number `bin/prime` enumerated without a database equals the number
+the database tiers passed with one, because they are the same tests. **Adding a
+test means raising the number in `bin/tier-counts` in the same commit** — that is
+the point of the constant, and a CI red that says `expected 29, got 26` is the
+mechanism working, not failing.
 
-**A query's tenant predicate is checked as a property of the source, not by
-convention.** `tests/tenant_scoping.rs` reads `src/store.rs` with
-`include_str!` and fails if any function taking a `&Tenant` stops constraining
-`account_id = $N`, if that set of functions changes, if a mutation names an
-account without naming a row, or if a second query starts reading across
-accounts. It is in the **default tier on purpose** — it needs no database, so
-the structural half of the isolation guarantee is checked on a bare machine. The
-behavioural half, a two-account fixture against real Postgres covering read,
-list, update and delete, is `tests/query_scoping.rs`.
+**THE IDENTITY CHANGED AND THE OLD ONE IS NOT AVAILABLE IN GO.** The Rust script
+asserted `skipped == passed`, which cargo can say because a database test is
+`#[ignore]`d and libtest prints an `ignored` count. A Go test is not marked; it
+calls `pgtest.Require` and SKIPS at runtime. Measured on this tree against no
+database: `pgtest` is 4 PASS and 11 SKIP, `service` is 9 PASS and 20 SKIP — so
+the skipped counts are 31 and the passed counts are 44, and the Rust identity is
+not merely unavailable here, it is FALSE. The script now also fails on any
+`--- SKIP:` in a database tier, because a skip there is a check that did not run
+under a green `ok`.
 
-Neither file is decoration and both are pinned in `bin/tier-counts`
-(`TENANT_SCOPE_TESTS`, `QUERY_SCOPING_TESTS`). A check nobody's gate runs is a
-check that proves nothing, and a security check that reports zero is worse than
-one that is absent: it looks like coverage.
+**A tenant predicate that is WRONG rather than ABSENT is what RLS is for, and
+there is no structural guard to write for it.** The Rust tree read `src/store.rs`
+as text with `include_str!` and failed if a `&Tenant` query stopped saying
+`account_id = $2`. There is no query file to read here — the predicate is a
+POLICY, set by `migrations/0004_account_isolation.sql`. So the structural half is
+`pgtest`'s policy guards, which read `pg_get_expr` on the live policies instead
+of a source file: what they hold in place is the database's answer rather than a
+text file's spelling. The behavioural half is `internal/service`'s two-account
+fixture against real Postgres, covering read, list, update and delete, and it is
+floored at 29.
 
 **A guard has to be shown to fail, and the predicate has to be tested too.** The
-first draft of `tests/tenant_scoping.rs` shipped three ways of not guarding
-anything, and every one was found by running it rather than reading it: a
-quadratic string scanner that hung two tests for eleven minutes instead of
+first draft of the Rust `tests/tenant_scoping.rs` shipped three ways of not
+guarding anything, and every one was found by running it rather than reading it:
+a quadratic string scanner that hung two tests for eleven minutes instead of
 failing, a "a mutation must name a row" predicate satisfied by `account_id = $2`
 itself (because `id = $` is a substring of it), and a set comparison that
-asserted an accident of file layout. `sql_statements` and `names_a_row` are
-therefore both linear and both have their own tests, the second of which asserts
-the exact mutation that defeated the first. **Any new guard here gets a planted
+asserted an accident of file layout. **Any new guard here gets a planted
 divergence before it is believed**, and if it hangs or passes on a broken source,
-that is a finding about the guard, not about the source.
+that is a finding about the guard, not about the source. The regenerate step in
+`bin/prime` was planted twice for exactly this reason, and the second plant — a
+document edit that changes no route — is the one the drift tests cannot see.
 
 ## No object-storage credentials in CI, and none needed
 
-The `s3` tier needs no endpoint and no credential, which is worth being exact
-about. `tests/storage_backends.rs` presigns with the real SDK and static dummy
-credentials; presigning builds a URI and a signature locally and transmits
-nothing, so the nine-row table runs offline against AWS, MinIO and R2
-*configurations*. Adding a MinIO service container to CI would boot a bucket
+No tier needs an endpoint or a credential, which is worth being exact about.
+`internal/objectstore` presigns with the real SDK and static dummy credentials;
+presigning builds a URI and a signature locally and transmits nothing, so its
+table runs offline against AWS, MinIO and R2 *configurations*. Adding a MinIO service container to CI would boot a bucket
 that nothing in the suite ever speaks to — a green checkmark on nothing. What
 that table cannot prove, and does not claim, is that R2 *accepts* the URL; the
 README's "Running against R2" is the manual procedure.
@@ -366,17 +416,25 @@ in the `gate` job and not only declared in the shared one.
 No test opens a socket to anything but the database named by the environment.
 Two structural reasons, not two promises:
 
-- The AWS SDK is not a default dependency, so the default build **cannot
-  construct a real object-storage client**.
-- HTTP tests drive the router with `tower::ServiceExt::oneshot` — a function
-  call, not a round trip.
+- `objectstore.New` REFUSES a static credential and takes the AWS SDK's own
+  chain, so a test that needs one calls `NewS3ForTest` and there is no way for
+  the production constructor to acquire one by accident.
+- HTTP tests drive the router through `httptest.NewRecorder` — the Go spelling of
+  `ServiceExt::oneshot`, a function call and not a round trip.
 
-The S3 backend's tests presign against the real SDK with static dummy
-credentials, which sends nothing: presigning builds a URI and a signature
-locally. That is what lets `tests/storage_backends.rs` assert what darkroom
-would put on the wire for AWS, MinIO and R2 — the credential scope, the signed
-headers, the absent headers — without a bucket. A real bucket is a manual
-verification step and the README says how.
+**AND TWO PACKAGES STAND UP A LOOPBACK JWKS SERVER, WHICH IS THE ONE EXCEPTION
+AND IT IS NOT AN EXCEPTION TO "NO NETWORK".** `internal/auth` and
+`internal/httpapi` each run an `httptest` key-set server, because the property
+under test is what the verifier does with a key it has to fetch. Neither the
+service under test nor any handler binds a port: every request goes through a
+recorder. The reason is in both files' headers.
+
+The S3 store's tests presign against the real SDK with static dummy credentials,
+which sends nothing: presigning builds a URI and a signature locally. That is
+what lets `internal/objectstore` assert what darkroom would put on the wire for
+AWS, MinIO and R2 — the credential scope, the signed headers, the absent
+headers — without a bucket. A real bucket is a manual verification step and the
+README says how.
 
 The in-memory store's presigned URLs are really signed and really scoped, so a
 bug in the scope or the TTL fails a test instead of shipping.
@@ -390,48 +448,63 @@ duplicate uses a real second request. None of them waits.
 ## Gates
 
 ```sh
-./bin/prime          # fmt, build, clippy, test, test --features s3, + the Go tier
-./bin/prime --db     # + the database tests against Postgres, both trees
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo build --all-targets --all-features   # the feature-gated paths
-cargo llvm-cov --fail-under-lines 50       # the coverage floor, and only this
+./bin/prime          # fmt, build, vet, test, regenerate-and-diff — no database
+./bin/prime --db     # + the database tiers against Postgres. THIS IS THE GATE.
 gofmt -l .            # listed, then asserted empty: -w rewrites and exits 0
+go build ./... && go build -o bin/darkroom ./cmd/darkroom
 go vet ./...          # not golangci-lint: a linter is a dep to version and argue about
+go generate ./internal/api/   # regenerate the router FROM the document
+./bin/tier-counts /tmp/prime.log   # the counts out of a --db run
 ./bin/gate-self-test  # is gate.yml still true of this repository
 ```
 
-**BOTH TREES ARE IN `bin/prime` WHILE BOTH EXIST.** Five cargo steps and six Go
-steps. A gate that runs only the older of two implementations stopped checking
-the newer one the day the newer one appeared, and `go build`, `go vet` and
-fifteen database tests were in that state until this rewrite added them.
+`go build the binary` is a SEPARATE step from `go build ./...` and it exists for
+a reason worth keeping: a `cmd/darkroom` that was deleted is not a build failure,
+it is a silent absence, and `./...` reports a package that is simply not there as
+success. That is the Rust `src/main.rs` shape — a library can outlive its binary
+and `cargo build` stays green.
+
+**ONE TREE, AND THE CARGO STEPS ARE GONE FROM IT.** They were five steps beside
+six Go steps while both existed, and they are REMOVED rather than left commented
+out or left running. Both of those are worse than absence: a commented-out
+`cargo test` is a line nobody reads, and a LIVE one in a repository with no
+`Cargo.toml` exits 127 and takes `set -e` and the whole gate down with it.
 
 **AND A GO SUITE THAT LOSES ITS TESTS IS STILL GREEN, WHICH IS WHY ONE GO STEP
 IS NOT `go test`.** `go test` prints `ok` for a package with no test files and
 discards the count from a package that passes, so an emptied file or a build tag
-that stopped matching is a green gate reporting zero. `bin/prime`'s last Go step
-enumerates each suite with `go test -list` and fails below a floor —
-objectstore 21, checksum 6, storagekey 4, pgtest 15. Adding a test means raising
-the number in the same commit, which is the point of the constant: *"a security
-check that reports zero is worse than one that is absent: it looks like
-coverage."*
+that stopped matching is a green gate reporting zero. `bin/prime` enumerates
+every suite with `go test -list` and fails below a floor — cmd/darkroom 7,
+objectstore 21, checksum 6, storagekey 4, pgtest 15, domain 7, problem 7,
+service 29, auth 12, httpapi 19. Adding a test means raising the number in the
+same commit, which is the point of the constant: *"a security check that reports
+zero is worse than one that is absent: it looks like coverage."*
+
+**AND A GENERATED FILE THAT DRIFTS IS ALSO GREEN, WHICH IS WHY THE REGENERATE
+STEP IS NOT OPTIONAL.** `internal/api/api.gen.go` is built from
+`openapi/v1.yaml` and the router IS that file, so a stale one answers the old
+routes under the new document's promises. `bin/prime` regenerates through the
+module cache and diffs, and it does not skip when it cannot run: a missing
+generator fails the gate rather than passing it.
 
 **`./bin/prime --db` is the gate, and `mise run prime` is not.** `gate.yml`
 declares the former, and the flag is in the declaration rather than implied by
-it: without `--db` the 59 database tests report as `ignored` and the run still
-prints `==> ok` and exits 0. If you are landing a change, run the declared gate.
+it: without `--db` the 44 database tests SKIP at runtime, the run still prints
+`==> ok` and exits 0, and `bin/tier-counts` reports zero. If you are landing a
+change, run the declared gate.
 `gate.yml` is core's format — read it before changing it, and read what it says
 about this repository's own requirements.
 
 `bin/gate-self-test` needs a Postgres at `$TEST_DATABASE_URL` for the cases that
 run the gate, and it reports a skip as a failure rather than a pass.
 
-All green before a commit lands. The `--all-features` build matters: `s3` and
-`dev-auth` are behind features, so a default build compiling clean says nothing
-about them. **So does the `cargo test --features s3` tier**, for the same
-reason in the other direction: `cargo test` does not compile the R2
-configuration rules, the presigned-URL table or the startup refusals at all, and
-a test nobody's gate runs is a test that proves nothing.
+All green before a commit lands. The feature-flag argument is GONE and it is
+worth remembering why it mattered: `s3` and `dev-auth` were behind cargo features,
+so a default build compiling clean said nothing about them, and the gate needed a
+second tier to compile them at all. Go has no feature flags here — one build is
+the deployment build — so the whole class of "the gate did not compile that path"
+is gone with them. The replacement is the regenerate step, which covers the one
+build variant that remains: the generated file.
 
 **`gofmt -l` AND NOT `gofmt -w`.** The second rewrites the files and exits 0
 whatever it found, so a gate built on it reports green having silently reformatted
@@ -468,38 +541,39 @@ code, because each is a way a guard passes on a broken source:
   every correct policy. Reading the deparse is what makes the check structural;
   knowing its exact shape is what makes it correct.
 
-The coverage floor is deliberately loose and deliberately not in `bin/prime`:
-instrumenting is a different build, and folding it into the gate would make
-every developer run twice. It measures the default suite only — not the s3
-build, not the database tier — and README says so where a reader will look.
+The coverage floor lives in CI, not in `bin/prime`: instrumenting is a different
+build, and folding it into the gate would make every developer run twice. **Its
+50 IS THE RUST TREE'S MEASURED NUMBER, CARRIED ACROSS.** It has not been
+re-measured for Go, and the honest statement is that it is a floor which may or
+may not be reachable. It measures the default suite only — not the database tier
+— and README says so where a reader will look.
 
 
 ## Adding an endpoint
 
-In Rust, the tree this packet does not remove:
-
-1. `service.rs` — the rule, in a method that takes a `Tenant`. Tests first.
-2. `http.rs` — the handler, extracting and translating, with nothing decided,
-   **and a row in `http::OPERATIONS`**, which is the table `router()` is built
-   from. There is no other way to register a route.
-3. `openapi/v1.yaml` — the path, the errors, and `info.version` if anything
-   else in the document moved.
+1. `internal/service` — the rule, in a method that takes a `service.Caller`.
+   Tests first.
+2. `openapi/v1.yaml` — the path, the operationId, the errors, and
+   `info.version` if anything else in the document moved.
+3. `go generate ./internal/api/` — **in the same commit.** The generated
+   `ServerInterface` gains a method, and `internal/httpapi` does not implement it
+   until you do, so forgetting the handler is a COMPILE ERROR. Then the handler,
+   extracting and translating, with nothing decided. There is no route table to
+   add a row to; the router walks the generated file.
 4. A test asserting the status code, the JSON shape, and the anonymous case.
 5. A row in README's endpoint table.
-6. A new constant in `bin/tier-counts` if the new test lives in its own file, so
-   a file that stops running fails the gate instead of reporting zero.
-7. `./bin/prime`.
+6. A new constant in `bin/prime`'s `assert_go_suite` and in `bin/tier-counts`
+   if the new test lives in its own package, so a package that stops running
+   fails the gate instead of reporting zero.
+7. `./bin/prime --db`.
 
-In Go, once the HTTP layer exists — the same seven steps with `internal/service`
-for the rule, `internal/httpapi` for the handler, and `internal/darkroomdb`'s
-`InAccountTx` for the tenant scope. Step 1's rule survives translation: a
-function that does not take an account, or that takes a transaction from
-somewhere other than `InAccountTx`, is doing the thing the Rust `Tenant`
-typecheck prevented.
+Step 1's rule survives translation, and it is the one worth restating: a function
+that does not take an account, or that takes a transaction from somewhere other
+than `InAccountTx`, is doing the thing the Rust `Tenant` typecheck prevented.
 
 ## Adding an event
 
-1. A variant on `outbox::EventType`, and the test asserting three segments and
+1. A variant on `service.EventType`, and the test asserting three segments and
    the publisher prefix.
 2. `cafaye.yml` `exposes.events` — and the test that counts both directions.
 3. The catalog row in `core/docs/event-naming.md` **and** a payload schema in

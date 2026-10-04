@@ -1,44 +1,60 @@
-# Toolchain pins for this repository. darkroom is a single static Rust binary.
+# Toolchain pins for this repository. darkroom is a single static Go binary.
 #
 #   mise install     # install the pinned toolchain
-#   mise run prime   # the gate
+#   mise run prime   # the fast local loop (NOT the gate — see below)
 #
-# kit/templates/mise.toml carries `rust = "1.84"` as an explicit PLACEHOLDER and
-# says so: "a service is pinned to the version it deploys on". The pin is raised
-# here to 1.95, the toolchain this service builds and tests on, and the same
-# number is the RUST_VERSION build-arg in docker/Dockerfile. Three files, one
-# number — a worktree on a newer rustc than the image builds on produces a
-# binary CI never produced.
+# # THE PIN IS NOW GO, AND IT IS THE SAME NUMBER go.mod DECLARES
+#
+# The pin used to be `rust = "1.95"`, with a header explaining why it existed:
+# kit/templates/mise.toml carries a PLACEHOLDER rust version, "a service is
+# pinned to the version it deploys on", and a worktree on a newer rustc than the
+# image builds on produces a binary CI never produced. Three files, one number —
+# mise.toml, rust-toolchain.toml and the Dockerfile's RUST_VERSION.
+#
+# THE RULE DID NOT CHANGE, THE NUMBER DID, and the three files are now two:
+#
+#   go.mod            `go 1.26.1`
+#   mise.toml         `go = "1.26.1"`     <- this file
+#   docker/Dockerfile ARG GO_VERSION=1.26.1
+#
+# A worktree on a newer Go than the image builds with is the same failure the
+# Rust header warned about, one language over, so the pin stays and the reason
+# stays. The toolchain assertion moved out of CI's `rustc --version` check and
+# into this file's number agreeing with the other two.
 [tools]
-rust = "1.95"
-# cargo-llvm-cov is not resolvable from the mise registry under this name; install it
-# with `cargo install cargo-llvm-cov` if a coverage gate is ever added here.
-# cargo-llvm-cov = "0.6.13"
+go = "1.26.1"
 
 [tasks.prime]
-description = "The gate: build, test, clippy, fmt"
+description = "The fast local loop: fmt, build, vet, test, regenerate-and-diff"
 run = "./bin/prime"
 
+[tasks.gate]
+description = "THE GATE, with the database tiers. Needs TEST_DATABASE_URL."
+run = "./bin/prime --db"
+
+[tasks.counts]
+description = "Read the counts out of a --db run. See bin/tier-counts's header for what the identity is."
+run = ["./bin/tier-counts", "{{arg('LOG', '/tmp/prime.log')}}"]
+
 [tasks.build]
-description = "Build the darkroom binary into ./target/release"
-run = "cargo build --release"
+description = "Build the binary into ./bin/darkroom"
+run = "go build -o bin/darkroom ./cmd/darkroom"
 
 [tasks.run]
-description = "Run darkroom locally against the in-memory object store (no database, no network)"
-run = "cargo run --features dev-auth"
+description = "Run darkroom locally against the in-memory object store. Needs DARKROOM_DATABASE_URL and a JWKS issuer; see .env.example."
+run = "go run ./cmd/darkroom"
 
 [tasks.fmt]
-description = "Fail if anything needs rustfmt"
-run = "cargo fmt --check"
+description = "Fail if anything needs gofmt. NOT gofmt -w, which rewrites and exits 0 whatever it found."
+run = ["bash", "-c", "test -z \"$(gofmt -l . 2>/dev/null | grep -v '^\\.git/')\" || { gofmt -l .; exit 1; }"]
 
 [tasks.lint]
-description = "Clippy, warnings are errors"
-run = "cargo clippy --all-targets -- -D warnings"
+description = "go vet, which ships with the toolchain. Not golangci-lint: a linter is a dep to version and argue about."
+run = "go vet ./..."
 
 [tasks.test]
-description = "The whole suite. No network, no database."
-run = "cargo test"
-
+description = "The whole suite. No network. Database tests SKIP with a named reason."
+run = "go test ./..."
 
 [tasks.compose-up]
 description = "Start the local stack: postgres and darkroom"

@@ -4,7 +4,7 @@ The cafaye media service. Signed uploads, a tenant-scoped asset registry, and
 derived variants — the foundation anychat's voice clips and anymark's
 attachments both sit on.
 
-One static Rust binary. It owns its own database (PLAN.md §7,
+One static Go binary. It owns its own database (PLAN.md §7,
 database-per-service) and never queries identity's or billing's.
 
 - **Contract**: [`openapi/v1.yaml`](openapi/v1.yaml) — what `exposes.api` in
@@ -14,12 +14,34 @@ database-per-service) and never queries identity's or billing's.
 - **Conventions**: [`moon/cafaye/core/docs`](../core/docs) is normative. Where
   this repository and core disagree, core is right and this is the bug.
 
-## Why axum
+## Why the tenant boundary is the database's
 
-`axum` over `actix-web` because its `FromRequestParts` extractor makes the
-tenant context a *type* rather than an option: a handler takes `Tenant` and
-cannot compile without one, where actix's `web::Data`/extension pattern leaves
-"did this handler read the authenticated principal?" as a review question.
+*(Historical. The Rust tree chose `axum` for its `FromRequestParts` extractor,
+which made the tenant context a *type*; there is no axum here.)*
+
+The Go tree holds the same property a different way, and the migration file is
+the reason. `migrations/0004_account_isolation.sql` gives `assets` and
+`asset_variants` **FORCE ROW LEVEL SECURITY**, so the predicate stopped being a
+`where account_id = $2` that every query has to remember and became a POLICY:
+
+    src/store.rs                     darkroomdb
+    ------------------------------   ------------------------------------
+    auth::Tenant                     uuid.UUID, from the verified token
+    &mut Transaction                 the pgx.Tx InAccountTx hands the callback
+    `where account_id = $1`          cafaye.begin_account($1)
+
+`InAccountTx` is the only way to start a transaction through that package and it
+makes naming the account part of starting the transaction, which is the Rust
+`Tenant` rule in a form a Go signature can carry. `auth.Tenant` is still a
+closed type with one constructor taking a verified `*Principal`, so an account id
+from a request body cannot become a tenant anywhere either.
+
+The mandatory half — the Rust typecheck that a handler *cannot* omit the tenant —
+is not expressible in Go, so `auth.TenantOf(r)` **panics** when there is no
+verified principal and every id-scoped handler calls it as its first statement.
+A panic fails the test at the missing call and drops one connection in
+production; a 500 written by the accessor would converge into documented
+behaviour, which is the wrong direction.
 
 ## The upload flow, and why it is three calls
 
@@ -35,8 +57,7 @@ POST /v1/uploads/{id}/complete ──▶ 200 { asset: ready }
 The bytes never pass through this service. That is the entire point: a 1 GiB
 upload is one request to the bucket, not a stream through an API process that
 has to buffer it, spool it to disk, and time out on a slow client. Two tests
-assert it — `the_bytes_never_pass_through_the_service` and the `StoreStats`
-counters behind it.
+assert it — `internal/service`'s and `internal/objectstore`'s `Stats` counters.
 
 ### The presigned URL
 
@@ -54,7 +75,8 @@ overwriting another tenant's object; a URL with no length cap is a way to write
 a 10 GiB file into a bucket someone pays for; a URL with no content-type scope
 lets an HTML document be stored at an image's key.
 
-`tests/signed_upload.rs` asserts all three, including that asset A's URL cannot
+`internal/httpapi` and `internal/service` assert all three, including that asset
+A's URL cannot
 be used to write at asset B's key.
 
 ### The checksum is verified by reading the object back, not trusted
@@ -95,6 +117,10 @@ if let Some(recorded) = meta.checksum { compare(claim, recorded) }
 else { /* read the object and hash it — the "fallback" */ }
 ```
 
+*(Historical. That was the Rust tree's path and it is in git history; the Go
+`objectstore.Store` has no method that asks a backend what checksum it recorded,
+which is the property this section is about.)*
+
 That is fine on AWS S3 and it is **not a property at all on Cloudflare R2**.
 R2's S3 compatibility table
 ([`developers.cloudflare.com/r2/api/s3/api`](https://developers.cloudflare.com/r2/api/s3/api/))
@@ -107,9 +133,9 @@ reintroduced by accident.
 
 **What it costs:** one read of the object per completed upload, in the API
 process, bounded by `MAX_UPLOAD_BYTES` (1 GiB). That is a real cost and it is
-paid on purpose. `tests/checksum_verification.rs` asserts the number is
-*exactly one*, so the trade cannot be quietly reversed into a header lookup by
-someone who finds the read expensive.
+paid on purpose. The read-count assertion is in `internal/service`'s tests and
+the number is *exactly one*, so the trade cannot be quietly reversed into a
+header lookup by someone who finds the read expensive.
 
 **What it does not cost:** anything on the S3 path. S3 still verifies at
 complete, against what is stored rather than what was sent, which is the
@@ -193,31 +219,36 @@ another service's data has to answer "what do I say when the caller is
 authenticated and the row is not theirs?", and there is one correct answer: the
 same thing you say when the row does not exist. It holds below the wire too —
 `store::find_asset` returns `Ok(None)` for another account's row, never a
-`StoreError`, because a distinguishable error is the same oracle one layer down.
+`*problem.Error`, because a distinguishable error is the same oracle one layer
+down.
 
 ### What holds the predicates in place
 
-`store.rs` was correct by construction and **held in place by nothing**. Every
-existing test exercised the queries *through* a `Tenant`, so all of them stayed
-green if a future edit dropped `and account_id = $2` from one of the eleven
-lines. Three files now make the correctness load-bearing:
+*(Historical. The Rust tree's answer was three test FILES: a structural one that
+read `src/store.rs` as text with `include_str!`, and two behavioural ones. All
+three are in git history; here is what replaced them and why the structural half
+no longer has a file to read.)*
 
-| file | tier | what it proves |
+The Rust half that is gone is not a loss: `tests/tenant_scoping.rs` read
+`src/store.rs` to prove its queries still said `account_id = $2`. There is no
+query file to read — the predicate is a POLICY, and the thing that can be wrong
+rather than absent is now a migration, not a forgotten clause.
+
+What replaces it, in three layers:
+
+| layer | tier | what it proves |
 |---|---|---|
-| `tests/tenant_scoping.rs` | default, **no database** | the `account_id` predicate is still written down, for every query that takes a `&Tenant` |
-| `tests/query_scoping.rs` | database | read, list, update and delete return only the caller's own rows, against a two-account fixture |
-| `tests/tenant_isolation.rs` | database | the same, over the wire: every tenant-scoped route, and the exact status and body |
+| `migrations/0004_account_isolation.sql` + `internal/darkroomdb/pgtest`'s policy guards | database | the FORCE-RLS policies exist, name a row, and cannot be unfocused by the login role |
+| `internal/service`'s tests | database | read, list, update and delete return only the caller's own rows, against a two-account fixture |
+| `internal/httpapi`'s drift tests | default | the document's routes are the router's routes, in both directions, and every one answers 401 without a credential |
 
-`tests/tenant_scoping.rs` reads `src/store.rs` with `include_str!` and fails
-when a `&Tenant` query stops constraining the column, when the set of such
-queries changes, when a mutation names an account without naming a row, when a
-second query starts reading across accounts, and when a route in
-`http::OPERATIONS` has no negative case. It is in the default tier on purpose:
-the structural half of the isolation guarantee should be checked on a machine
-with no Postgres and no Docker, because that is where it will be run most often
-and it is the half that catches the edit before a fixture is built.
+`pgtest`'s policy guards are the structural half in its new shape: they read
+`pg_get_expr` on the live policies rather than a source file, so what they hold
+in place is the database's answer rather than a text file's spelling — and
+`pg_get_expr` deparses `(select f())` as `( SELECT f() AS f)`, so the guard has
+to know its exact shape to read it. That is stated in `pgtest`'s own tests.
 
-`tests/query_scoping.rs` seeds both accounts with **the same checksum** —
+`internal/service`'s cross-tenant tests seed both accounts with **the same checksum** —
 `unique (account_id, checksum)` makes that two legitimate rows — because that is
 the case a scoping bug hides in: an unscoped lookup by checksum does not error
 and does not return nothing, it returns a row and the wrong one, while every
@@ -241,7 +272,7 @@ which present as code defects and are not:
 - **These suites write to the database they are pointed at.** Each test applies
   the migrations into a schema of its own and truncates only that schema, so two
   tests — or two checkouts — no longer destroy each other's fixtures: that used
-  to happen, and the `left: 2, right: 1` from `tests/api.rs` recorded during
+  to happen, and the `left: 2, right: 1` recorded during
   darkroom-09 was another worktree's run rather than a leak. What is left is that
   the schemas are created in, and reaped from, the database `TEST_DATABASE_URL`
   names, so a run against a database holding data you want leaves a schema per
@@ -262,14 +293,14 @@ which present as code defects and are not:
 
 ## The storage boundary
 
-One trait, `objectstore::ObjectStore`, with five methods:
+One interface, `objectstore.Store`, with five methods:
 
-```rust
-async fn presign_put(&self, key, content_type, max_bytes, ttl) -> Result<PresignedPut>;
-async fn head(&self, key)                      -> Result<ObjectMeta>;
-async fn get(&self, key)                       -> Result<Bytes>;
-async fn put(&self, key, bytes, content_type)  -> Result<()>;
-async fn delete(&self, key)                    -> Result<()>;
+```go
+PresignPut(ctx, key, contentType string, maxBytes int64, ttl time.Duration) (PresignedPut, error)
+Head(ctx, key string)                 (ObjectMeta, error)
+Get(ctx, key string)                  ([]byte, error)
+Put(ctx, key string, b []byte, contentType string) error
+Delete(ctx, key string)               error
 ```
 
 Everything above the line is policy — tenancy, checksum verification, status
@@ -305,12 +336,12 @@ trait:
 | region | `auto`; `us-east-1` and `""` alias to it, but SigV4 must be signed as `auto` | an R2 endpoint resolves to `auto` in `config.rs`; a real region is **refused at startup**, naming the variable and the value |
 | endpoint | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`, account-scoped, no global endpoint | always configuration, never a constant; `region=auto` with no endpoint is refused so a bucket-only config cannot resolve `s3.amazonaws.com` |
 | checksums | SHA-256 is `COMPOSITE` only; `FULL_OBJECT` is offered for CRC-64/NVME | darkroom never asks: `ObjectMeta` has no checksum field and `complete` reads the bytes back |
-| headers | no `x-amz-acl`, `x-amz-grant-*`, `x-amz-expected-bucket-owner`, no object lock | darkroom never sets them and has no configuration that could; a source-level invariant in `tests/contract.rs` says so |
+| headers | no `x-amz-acl`, `x-amz-grant-*`, `x-amz-expected-bucket-owner`, no object lock | darkroom never sets them and has no configuration that could; `objectstore.S3Config` has no field for any of them, which is the stronger form of the same claim |
 
 Addressing is forced path-style for an R2 endpoint (the account endpoint is the
 whole host), and the flag is still honoured for anything else.
 
-`tests/storage_backends.rs` runs **the same presign assertions against all of
+`internal/objectstore` runs **the same presign assertions against all of
 them** — one body, five configurations, no per-backend branch — and checks the
 region in the SigV4 credential scope, the signed-header list, and the absence of
 every header R2 rejects. The startup refusals are tested against the real
@@ -335,15 +366,20 @@ export DARKROOM_S3_ENDPOINT=https://<ACCOUNT_ID>.r2.cloudflarestorage.com
 export AWS_ACCESS_KEY_ID=<R2_ACCESS_KEY_ID>
 export AWS_SECRET_ACCESS_KEY=<R2_SECRET_ACCESS_KEY>
 
-cargo run --features s3
+DARKROOM_OBJECT_STORE=s3 go run ./cmd/darkroom
 ```
 
 A real bucket is a **manual verification step** — no test in this repository
 talks to one, and none can. To confirm it works end to end:
 
-1. **Check the startup log.** It carries `object_store=r2` (not `s3`) and the
-   version. If it says `s3`, the endpoint is not an R2 host and R2's rules were
-   not applied.
+1. **Check the startup log.** It carries `"object_store":"s3"` and the version.
+   It says `s3` for R2 too, and that is correct rather than a loss: `AGENTS.md`
+   says "R2 is not a variant, a feature or a second type: it is the endpoint, a
+   region, and addressing," so the log naming the store rather than the vendor is
+   the same claim. What to check instead is that the startup did NOT refuse: an
+   R2 endpoint with a non-`auto` region exits with a message naming
+   `DARKROOM_S3_REGION`, and that refusal is the whole of the R2 configuration
+   rules.
 2. **Check a presigned URL.** `POST /v1/uploads` returns `upload_url`. It must
    look like
    `https://<ACCOUNT_ID>.r2.cloudflarestorage.com/darkroom-media/a/<id>/original?…X-Amz-Credential=…%2Fauto%2Fs3%2Faws4_request…&X-Amz-SignedHeaders=content-type%3Bhost…`.
@@ -557,9 +593,13 @@ psql "$DATABASE_URL" -f migrations/0001_assets.sql
 psql "$DATABASE_URL" -f migrations/0002_outbox_events.sql
 psql "$DATABASE_URL" -f migrations/0003_idempotency_keys.sql
 
-cargo run                                     # in-memory object store
-cargo run --features dev-auth                 # + the HMAC token verifier
+DARKROOM_OBJECT_STORE=memory go run ./cmd/darkroom
 ```
+
+`DARKROOM_OBJECT_STORE=memory` is the default, and the binary warns at startup
+that uploads are lost on restart. There is no `dev-auth` build flag: the Go tree
+has no HMAC verifier, so `DARKROOM_ENV` gates nothing and `auth.New` is the only
+verifier. A development deployment needs a real JWKS endpoint.
 
 `$DATABASE_URL` in that shell is the one from `.env`, which is the HOST-side
 URL — `localhost` and `KIT_POSTGRES_PORT` (15500). The service's own
@@ -573,71 +613,75 @@ one, because two replicas racing to deploy would deadlock on `CREATE TABLE`.
 ## Tests
 
 ```sh
-./bin/prime          # fmt, build, clippy, test — no database needed
-./bin/prime --db     # + the ignored tests, against TEST_DATABASE_URL
+./bin/prime          # fmt, build, vet, test, regenerate-and-diff — no database needed
+./bin/prime --db     # + the database tiers, against TEST_DATABASE_URL
 ```
 
-`cargo test` alone is green on a bare machine with no Postgres and no Docker.
-The database tests are `#[ignore]`d, and **a skipped test proves nothing** —
-which is why `bin/prime --db` and the CI `gate` job exist, and why the comment
-is in both.
+`go test ./...` alone is green on a bare machine with no Postgres and no Docker.
+The database tests call `pgtest.Require`, which SKIPS with a named reason when no
+database answers, and **a skipped test proves nothing** — which is why
+`bin/prime --db` and the CI `gate` job exist, and why the comment is in both.
 
-There is a third tier, `cargo test --features s3`, and it exists because
-`cargo test` does not compile the `s3` feature at all. Without it the R2
-configuration rules, the presigned-URL table and the startup refusals would
-compile in nobody's gate and prove nothing — the same "skipped test proves
-nothing" argument, one level up. `--db` runs the ignored suites with and without
-the feature, because the deployment build is a different build of the library.
+There is a third tier, and it exists because the generated router is the surface:
+`go generate ./internal/api/` plus a diff. `internal/api/api.gen.go` is built
+from `openapi/v1.yaml` and `internal/httpapi.New` WALKS that file to register its
+routes, so a stale generated file answers the old routes under the new document's
+promises. Without the regenerate step nothing in the gate would notice.
 
 ### Reading the tiers, because the exit code does not
 
 `bin/prime --db` exits zero in three situations where it has verified nothing:
-tier 6 never ran, tier 6 ran and touched nothing, and tier 5 never compiled the
-`s3` feature. None of those change the exit code, so the counts are what is
-left to read:
+the database tiers never ran, they ran and touched nothing, and a suite was
+emptied. None of those change the exit code, so the counts are what is left to
+read:
 
 ```sh
 ./bin/prime --db 2>&1 | tee /tmp/prime.log
 ./bin/tier-counts /tmp/prime.log
 ```
 
-| tier | command | what it must report |
+| step | command | what it must report |
 |---|---|---|
-| 4 | `cargo test` | 77 lib unit tests, 59 skipped for want of a database, 9 OpenAPI drift checks, 12 tenant-scoping checks, 4 schema-isolation checks |
-| 5 | `cargo test --features s3` | 89 lib unit tests, 9 R2/S3 behaviour-table rows, 9 OpenAPI drift checks, 12 tenant-scoping checks |
-| 6 | `cargo test -- --ignored` | 59 passed, 0 left ignored, 7 of them query-scoping, 5 of them schema-isolation |
-| 6 | `cargo test --features s3 -- --ignored` | 59 passed, 0 left ignored |
+| default | `go test -v ./internal/variants/` | 24 `--- PASS:` rows |
+| database | `go test -v ./internal/darkroomdb/...` | 15 `--- PASS:` rows, 0 skipped |
+| database | `go test -v ./internal/service/...` | 29 `--- PASS:` rows, 0 skipped |
+| database | `go test -v ./internal/httpapi/` | 19 `--- PASS:` rows |
+| default | `go test -list '.*'` | ten packages, floored in `bin/prime` itself |
 
-One of those is an identity rather than a constant: **the count the default run
-skips must equal the count the database run passes**, because they are the same
-set of tests. A test that is `#[ignore]`d without the database tier running it
-breaks it in one direction; a test added and never `#[ignore]`d breaks it in the
-other. Neither can reach master as a green badge.
+One of those is an identity rather than a constant: **the number of tests
+`bin/prime` enumerates without a database must equal the number the database
+tiers pass with one.** The Rust script could say `skipped == passed`, because a
+cargo database test is `#[ignore]`d and libtest prints an `ignored` count. A Go
+test is not marked; it skips at runtime, so that identity is not merely
+unavailable but FALSE here — measured against no database, `pgtest` is 4 PASS and
+11 SKIP and `service` is 9 PASS and 20 SKIP, so the skipped counts are 31 and the
+passed counts are 44. The enumerating-equals-passing version is true, is in the
+same log, and is checked in both directions.
+
+A tier reporting `--- SKIP:` where a pass was expected fails the script outright:
+a skip there is a check that did not run under a green `ok`.
 
 Adding a test means raising the number in `bin/tier-counts` in the same commit.
 That is the point of the constant: it is a claim somebody has to look at.
 
 **Which** number moves is a question rather than a matter of taste, and
-`bin/tier-counts`'s header works it through. A new file under `tests/` is a
-separate test binary, so it is in none of the four original constants — the first
-two count `unittests src/lib.rs`, the third counts `#[ignore]`d tests, and the
-fourth is scoped to `storage_backends.rs`. Raising `UNIT_TESTS` for it would have
-made that number a lie, so each default-tier file is pinned in its own right
-instead: `OPENAPI_DRIFT_TESTS=9`, asserted in tiers 4 and 5. Without that pin a
-file whose tests were deleted one at a time would report `0 passed` while every
-other number still read correctly.
+`bin/tier-counts`'s header works it through. In the Rust tree a new file under
+`tests/` was a separate test binary and so was in none of the four constants —
+which is why this tree pins each package in `bin/prime`'s `assert_go_suite`
+rather than relying on one total. Without those floors a package whose tests
+were deleted one at a time would report `[no test files]` and print `ok`, while
+every other number still read correctly.
 
-### One schema per test, which is why tier 6 runs in parallel
+### One schema per test, which is why the database tiers run in parallel
 
-There is no `--test-threads=1` anywhere in this repository, and there was one in
-`bin/prime` until each `test_store()` started giving its test a schema of its
-own. `tests/common/mod.rs` creates `t_` plus eight hex characters of a fresh
-uuid, applies `sqlx::migrate!("./migrations")` **into that schema**, and builds
-the pool with `set search_path to <that schema>` in `after_connect`, so every
-connection the test gets is inside it. `truncate` still runs, and still names its
-tables unqualified — that is the isolation, not an oversight: the names resolve
-through the search path, so it empties this test's tables and cannot reach
-another's.
+There is no test-serialising flag anywhere in this repository, and there was one
+in `bin/prime` until each `test_store()` started giving its test a schema of its
+own. `internal/darkroomdb/pgtest` creates `t_` plus hex characters of a fresh
+uuid, applies `migrations/` **into that schema**, and puts that schema on the
+pool's `search_path`, so every connection the test gets is inside it. `truncate`
+still runs, and still names its tables unqualified — that is the isolation, not
+an oversight: the names resolve through the search path, so it empties this
+test's tables and cannot reach another's.
 
 Three reasons it is a schema and not something else, because all three were
 available:
@@ -658,7 +702,8 @@ schema does not have but `public` does resolves to `public`'s copy, so the same
 query returns `relation does not exist` without the fallback and another test's
 rows with it.
 
-`tests/schema_isolation.rs` holds all of it, and splits it so the half that
+`internal/darkroomdb/pgtest`'s `guard_test.go` and `pgtest_test.go` hold all of
+it, and split it so the half that
 needs no Postgres runs on a bare machine: the name's alphabet, the check on the
 two statements that interpolate one, and the stamp a `drop schema` is only
 allowed to act on. The counts and the proofs are in
@@ -666,8 +711,13 @@ allowed to act on. The counts and the proofs are in
 
 ### `openapi/v1.yaml` and the router, held to each other
 
-`tests/openapi_document.rs` compares the published document with the routes the
-service actually serves, **in both directions**: an operation the document
+*(Historical. This section described `tests/openapi_document.rs` comparing a
+hand-maintained `http::OPERATIONS` table with the document. In the Go tree there
+is no table to maintain and no such file — see below, which is the stronger
+version.)*
+
+`internal/httpapi/routes_test.go` compares the published document with the routes
+the service actually serves, **in both directions**: an operation the document
 describes and the router does not serve is a generated client that 404s in
 production, and a route the router serves that the document does not describe is
 a method the generated client does not have. It follows courier's
@@ -680,19 +730,32 @@ than under-read: an unparseable document, a missing `paths:` key, a path item
 with no operation under it, or an empty route table is a failure, because a
 green check over nothing is worse than no check.
 
-**The router's side is a route table, not a list in a test.** axum cannot be
-asked what it routes — there is no `Router::routes()` and nothing to reflect
-over — so `http::OPERATIONS` in `src/http.rs` is a single table of
-`(method, path, handler)` and `router()` is a fold over it. One declaration, read
-by both the router and the check. The alternative, a route list written out
-inside the test, is the shape that can only fail for a name somebody remembered
-to type.
+**THE ROUTER'S SIDE IS NOW THE DOCUMENT, NOT A TABLE — AND THE REASON IS WORTH
+THE WHOLE SECTION.** The Rust tree's problem was that axum cannot be asked what
+it routes — there is no `Router::routes()` and nothing to reflect over — so
+`src/http.rs` carried a hand-maintained `http::OPERATIONS` table of
+`(method, path, handler)` that `router()` folded over. A hand-maintained
+inventory is a second copy that goes stale silently, and the Rust README admits
+the cost: a planted `.route()` on a new path left all nine drift tests green.
 
-One thing the table cannot state, because the method a `MethodRouter` answers is
-baked into the value `get(handler)` returns with no accessor for it, is closed by
-asking the router: a request with an undeclared verb is answered `405` with an
-`Allow` header enumerating the truth, and a path the router does not know is
-`404`. That `405`/`404` distinction is what makes the probe possible, and
+There is no table here. `internal/api/api.gen.go` is generated from the document
+by `oapi-codegen`, it is a `*chi.Mux`, and `internal/httpapi.New` walks THAT
+router with `chi.Walk` and re-registers every route it finds. So:
+
+- there is no path list in this repository to forget;
+- a new `operationId` is a new method on the generated `ServerInterface`, and not
+  implementing it **fails the build** rather than 404ing in production;
+- a route that is not in the document cannot be reached, because the only thing
+  that registers routes is code derived from the document.
+
+And `bin/prime` regenerates and diffs on every run, so the generated file is the
+document rather than a stale copy of it.
+
+One thing the generated table cannot state, because the method a chi route
+answers is baked into the value `r.Get(handler)` returns with no accessor for it,
+is closed by asking the router: a request with an undeclared verb is answered,
+and a path the router does not know is `404`. That distinction is what makes the
+probe possible, and
 `a_path_the_router_does_not_serve_is_404_and_not_405` is the control that says
 the distinction is real.
 
@@ -732,21 +795,23 @@ kit's default of 0 fails nothing, which by kit's own rule is not a gate.
 
 Three things it does not measure, stated rather than implied:
 
-- the `--features s3` build, because kit's coverage step runs with default
-  features — so `objectstore/s3_impl.rs` is not in the picture at all;
-- the database tier, because `cargo llvm-cov` runs the same `cargo test` that
-  ignores the 59 database tests — which is why `store.rs` reports 0.54%;
-- `main.rs`, at 0%, because a binary's `main` is never called by a test.
+- the database tier, because kit's coverage step runs the default `go test
+  ./...`, and the tests that need a database SKIP in it;
+- `internal/service` and `internal/httpapi`, which are largely absent from the
+  default suite for that same reason;
+- `cmd/darkroom`, at ~0%, because a binary's `main` is never called by a test.
 
-What it does catch is the default suite ceasing to run: the only tests
-`cargo llvm-cov` executes are the 77 lib unit tests and the 30 non-ignored
-integration tests — 1 in `api.rs`, 8 in `contract.rs`, 9 in
-`openapi_document.rs` and 12 in `tenant_scoping.rs` — so if those stop running
-the number falls off a cliff.
+**AND THE 50 IS THE RUST TREE'S NUMBER, CARRIED ACROSS.** The figure was measured
+on `rustc 1.95` and has not been re-measured for Go, because `bin/prime` has no
+coverage step and the Rust one lived in CI only. The floor is kept so it is not
+silently dropped, and the honest statement is that it is a floor which may or may
+not be reachable — the first Go measurement is the next thing to do with it.
 
 No test in this repository opens a socket to anything but the database named by
-the environment. HTTP tests drive the router with `tower::ServiceExt::oneshot`,
-which is a function call rather than a network round trip. The S3 backend's
+the environment and the JWKS server two packages stand up for their own verifier.
+HTTP tests drive the router through `httptest.NewRecorder`, which is the Go
+spelling of `ServiceExt::oneshot` — a function call rather than a network round
+trip. The S3 backend's
 tests presign against the real SDK with static dummy credentials, which is a
 local operation — it builds a URI and a signature and sends nothing.
 
@@ -773,18 +838,19 @@ would be a flake waiting for a loaded CI box.
   (MinIO) would close the round-trip half of this without a credential, but it
   needs a test that actually speaks to it — nothing in the suite does today, so
   adding the service container alone would be a green checkmark on nothing.
-- **CI does not build the deployment target.** `docker/Dockerfile` runs
-  `rustup target add x86_64-unknown-linux-musl` and then copies out of
-  `target/x86_64-unknown-linux-musl/release/darkroom` — but its `cargo build`
-  has no `--target`, so the file it copies is not there and the image build
-  fails. Two problems rather than one: the missing flag, and the fact that
-  `ring` needs a C toolchain for that target, so a glibc `ubuntu` runner cannot
-  link it either. Nothing in CI would have caught either. Fixing it means
-  choosing a musl-capable build image, which is a decision about the release
-  pipeline rather than a fix that belongs in a CI packet.
-- **The two bullets above are what a green badge here does not currently mean:**
-  that a real bucket accepts what darkroom signs, and that the target the image
-  ships is the target the compiler can produce.
+- **~~CI does not build the deployment target.~~ FIXED BY THE REWRITE.** The Rust
+  `docker/Dockerfile` ran `rustup target add x86_64-unknown-linux-musl` and then
+  copied out of `target/x86_64-unknown-linux-musl/release/darkroom` while its
+  `cargo build` had no `--target`, so the file it copied was not there; and
+  `ring` needed a C toolchain for that target, so a glibc runner could not link
+  it either. The Go `docker/Dockerfile` is `CGO_ENABLED=0 go build`, which
+  produces a statically linked stripped binary with no musl target, no C
+  toolchain and no `rustup`. There is no equivalent of the missing `--target`
+  because there is no equivalent of the problem. It is not "pending a decision
+  about the release pipeline": the decision was answered by a different language.
+- **The remaining bullet above is what a green badge here does not currently
+  mean:** that a real bucket accepts what darkroom signs. The deployment target
+  is no longer one of them.
 - **The outbox publisher loop.** Needs a NATS client and a deployment. The
   table and the insert path — the half with the correctness guarantee — are
   here; a publisher loop that cannot publish is worse than an absent one.
@@ -813,8 +879,8 @@ would be a flake waiting for a loaded CI box.
 
 ## License
 
-MIT. See [LICENSE](LICENSE). `Cargo.toml` declares the same thing in its
-`license` field.
+MIT. See [LICENSE](LICENSE). `cafaye.yml` declares the same thing, since
+`Cargo.toml` went with the Rust tree.
 
 darkroom is a platform a consumer depends on rather than reads, so the licence
 has to leave the consumer's own situation alone. MIT does; a copyleft licence
