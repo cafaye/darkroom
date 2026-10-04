@@ -168,18 +168,24 @@ func Encode(original []byte, kind VariantKind, declaredContentType string) (*Enc
 
 	// NORMALISE TO NRGBA, ORIGIN AT ZERO, BEFORE ANYTHING ELSE TOUCHES A PIXEL.
 	//
-	// Two separate reasons, and the second is the one that would be a silent
-	// wrong-answer bug:
+	// Two reasons, both about `Pix` rather than about `At`, because this file
+	// deliberately never reads a pixel through `color.Color.RGBA()`:
 	//
-	//  1. `color.Color.RGBA()` returns ALPHA-PREMULTIPLIED values, and
-	//     `image.NRGBA`'s is the only `At` that un-premultiplies on the way out.
+	//  1. NRGBA STORES COLOUR AND ALPHA INDEPENDENTLY, which is the only space the
+	//     matte below means anything in. `out = c*a + 255*(1-a)` says "how much of
+	//     this pixel's own colour survives"; against `image.RGBA`, whose Pix is
+	//     premultiplied, `c` is already `c*a` and the formula would apply alpha
+	//     twice and matte every partially transparent pixel to twice as much white.
 	//     Go's PNG decoder hands back `*image.NRGBA` for a truecolour image WITH
-	//     alpha and `*image.RGBA` for one without, so without this a transparent
-	//     PNG would be composited in premultiplied space and the matte below would
-	//     be the wrong formula entirely.
+	//     alpha and `*image.RGBA` for one without, JPEG hands back `*image.YCbCr`
+	//     and GIF `*image.Paletted`, so three of the four accepted formats need
+	//     this and the fourth gets it for free.
 	//  2. `Bounds().Min` is not guaranteed to be the origin — an `image.SubImage`
 	//     or a decoder that crops moves it — and the pixel walk below is index
 	//     arithmetic over `Pix`, which has no idea where the image starts.
+	//
+	// See [alphaPremultiplicationIsNotWhatTheInterfaceDocSays] for why reading
+	// `Pix` directly is the load-bearing part of this and not an accident.
 	source := normalise(decoded)
 
 	img := source
@@ -199,12 +205,23 @@ func Encode(original []byte, kind VariantKind, declaredContentType string) (*Enc
 		// offers to the Rust `FilterType::Lanczos3` this replaces, and the
 		// idiomatic Go choice besides. `BiLinear` is the other kernel in that
 		// package and it is visibly softer on the 256px thumbnail this service
-		// serves most.
+		// serves most; `TestTheResampleKernelIsSharperThanBiLinear` holds that
+		// choice rather than leaving it as a comment nobody can check.
 		//
-		// `draw.Src` rather than `draw.Over`: the destination starts fully
-		// transparent and every pixel in it is written, so `Over` would composite
-		// the resize against transparent black and then the matte would run
-		// against a result that had already been darkened.
+		// The resample happens in PREMULTIPLIED space, which is the right space
+		// for it and not an accident: `x/image/draw` reads `src.At().RGBA()` and
+		// writes through `color.NRGBAModel`, so an NRGBA source is premultiplied on
+		// the way in and un-premultiplied on the way out. Interpolating the
+		// non-premultiplied colour across a transparent edge instead would drag
+		// the transparent pixel's hue into its opaque neighbour — a halo, and a
+		// visible one at the edge of every cut-out logo a customer uploads.
+		//
+		// `draw.Src` rather than `draw.Over`. On THIS destination the two are
+		// indistinguishable, because `Over` composited against the zeroed
+		// destination `image.NewNRGBA` just made is the identity on the source;
+		// `Src` is chosen because it states the intent — every pixel is written,
+		// not blended with whatever was there — and stays correct if a future
+		// change reuses a destination buffer.
 		draw.CatmullRom.Scale(dst, dst.Bounds(), source, source.Bounds(), draw.Src, nil)
 		img = dst
 	}
@@ -223,10 +240,23 @@ func Encode(original []byte, kind VariantKind, declaredContentType string) (*Enc
 		out.Pix[j+0] = matteOverWhite(img.Pix[i+0], alpha)
 		out.Pix[j+1] = matteOverWhite(img.Pix[i+1], alpha)
 		out.Pix[j+2] = matteOverWhite(img.Pix[i+2], alpha)
-		// JPEG has no alpha, and `jpeg.Encode` reads `Opaque()` to decide whether
-		// it can skip the alpha channel entirely. An `image.NewRGBA` leaves every
-		// alpha byte at zero, and a zero-alpha image encodes to something that is
-		// not the image at all — so the fourth byte is written, not left.
+		// The alpha byte is written, and NOTHING DEPENDS ON IT — which is worth
+		// saying rather than leaving as an apparent load-bearing line.
+		//
+		// `image/jpeg` encodes through `toYCbCr`, which reads
+		// `m.At(x, y).RGBA()`, and in Go 1.26 `color.RGBA.RGBA()` returns its four
+		// channels SCALED TO 16 BITS AND NOT MULTIPLIED BY ALPHA. So an
+		// `*image.RGBA` with an alpha byte of zero still encodes its RGB channels,
+		// and this write can be removed without changing a single output byte.
+		//
+		// It stays because `image.RGBA`'s documented invariant is that a
+		// non-opaque image holds PREMULTIPLIED values, and leaving 0x00 here makes
+		// this image a lie in its own storage: the next reader to hand `out` to
+		// something that does respect premultiplication — a future `draw.Over`, a
+		// different encoder — would get a black image, and nothing in this
+		// repository's tests would have said why. A line that costs a store and
+		// keeps the representation honest is cheaper than a comment explaining an
+		// inconsistent one.
 		out.Pix[j+3] = 0xff
 	}
 
@@ -331,6 +361,40 @@ func matteOverWhite(channel, alpha uint8) uint8 {
 	c, a := uint32(channel), uint32(alpha)
 	return uint8((c*a + 255*(255-a) + 127) / 255)
 }
+
+// # ALPHA PREMULTIPLICATION IS NOT WHAT THE INTERFACE DOC SAYS
+//
+// A note that belongs to no one function and is load-bearing in two of them, so
+// it is written once here and linked from both.
+//
+// The `color.Color` interface documents `RGBA()` as returning "the
+// ALPHA-PREMULTIPLIED red, green, blue and alpha values". In Go 1.26 — the
+// toolchain `go.mod` pins — the two concrete types darkroom actually handles do
+// the OPPOSITE of each other:
+//
+//	color.RGBA.RGBA()   →  r|g<<8, with NO multiply by A   (NOT premultiplied)
+//	color.NRGBA.RGBA()  →  (r|g<<8) * A / 0xff             (premultiplied)
+//
+// Both were read out of `$GOROOT/src/image/color/color.go` and then MEASURED,
+// because the doc and the code disagree and the measurement is the part that
+// settles it: an 8x8 `image.RGBA` of pure red with every alpha byte zero,
+// encoded by `image/jpeg` and decoded again, comes back as (254, 0, 0) — not
+// black. Under a premultiplying implementation `255 * 0 / 255` is 0, so that
+// could not have come out any other way.
+//
+// The consequences, and they are the reason the note exists:
+//
+//   - **This package reads `Pix`, never `At()`.** Walking `Pix` is the only way
+//     to be sure which of the two conventions is in front of it, and it is why
+//     `matteOverWhite` takes two `uint8`s rather than a `color.Color`.
+//   - **`golang.org/x/image/draw` reads `At().RGBA()`**, so it sees an NRGBA
+//     source PREMULTIPLIED. That is the correct space to resample in, and it is
+//     wanted — see the resize in `Encode`.
+//
+// `TestTheJpegEncoderReadsRawChannelsNotPremultipliedOnes` holds the measurement
+// as a test, because a standard-library behaviour this package's correctness
+// leans on is a thing that can change underneath it, and a comment is not a
+// canary.
 
 // The ACCEPTED INPUT FORMATS, written down once, in one place, as this file's
 // first test drives over them: PNG, JPEG, GIF and WebP.

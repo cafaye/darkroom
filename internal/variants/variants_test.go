@@ -8,9 +8,12 @@ import (
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/image/draw"
 )
 
 // The images are BUILT here rather than checked in as fixtures, so the tests
@@ -746,6 +749,127 @@ func TestTheQualityIsTheNamedConstant(t *testing.T) {
 	}
 	if bytes.Equal(encoded.Bytes, reference(90)) {
 		t.Errorf("the output is byte-identical to quality 90, so this assertion is not measuring quality at all")
+	}
+}
+
+// TestTheJpegEncoderReadsRawChannelsNotPremultipliedOnes is the canary for the
+// note at the bottom of `variants.go`.
+//
+// That note records a measured disagreement between the `color.Color`
+// documentation and Go 1.26's implementations of it, and this package's
+// correctness leans on the measurement: `Encode` hands `image/jpeg` an
+// `*image.RGBA` whose alpha byte it sets to 0xff, and the claim that byte is
+// inert — that the encoder reads the RGB channels whatever the alpha says — is
+// what makes that line a choice rather than a bug.
+//
+// If a future Go restores premultiplication, this test goes red, the note above
+// it goes stale, and both say so at once instead of the pipeline quietly
+// encoding premultiplied bytes into every thumbnail on the platform.
+func TestTheJpegEncoderReadsRawChannelsNotPremultipliedOnes(t *testing.T) {
+	red := [3]uint8{255, 0, 0}
+	for _, alpha := range []uint8{0x00, 0xff} {
+		m := image.NewRGBA(image.Rect(0, 0, 8, 8))
+		for i := 0; i < len(m.Pix); i += 4 {
+			m.Pix[i+0], m.Pix[i+1], m.Pix[i+2], m.Pix[i+3] = red[0], red[1], red[2], alpha
+		}
+
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, m, &jpeg.Options{Quality: JPEGQuality}); err != nil {
+			t.Fatalf("encoding with alpha byte 0x%02x: %v", alpha, err)
+		}
+		decoded, _, err := image.Decode(bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			t.Fatalf("decoding what was written with alpha byte 0x%02x: %v", alpha, err)
+		}
+		bounds := decoded.Bounds()
+		r, g, b, _ := decoded.At(bounds.Dx()/2, bounds.Dy()/2).RGBA()
+		got := [3]uint8{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8)}
+
+		// Both rows must read RED. If the encoder premultiplied, the 0x00 row would
+		// be black and this is where that says so.
+		if diff(got[0], red[0]) >= 12 || diff(got[1], red[1]) >= 12 || diff(got[2], red[2]) >= 12 {
+			t.Errorf(
+				"with the alpha byte 0x%02x the encoder wrote %v, want %v — %s",
+				alpha, got, red,
+				"either Go now premultiplies in color.RGBA.RGBA(), or this package's "+
+					"comment about reading raw channels is wrong and both need fixing together",
+			)
+		}
+	}
+}
+
+// TestTheResampleKernelIsSharperThanBiLinear holds the KERNEL choice, which is
+// otherwise a comment.
+//
+// `Encode` uses `draw.CatmullRom` because it is the closest thing
+// `golang.org/x/image/draw` offers to the Rust `Lanczos3` it replaces. A test
+// asserting "high quality" in the abstract would be a test asserting nothing, so
+// this asserts the thing that is actually true and matters: the pipeline's
+// kernel preserves more of a sharp edge than the soft alternative in the same
+// package, and swapping the two would change the answer.
+//
+// Measured as the mean absolute horizontal gradient — total variation — of the
+// resized luminance. On a hard vertical edge, a kernel that blurs across it
+// spends its output range on the transition and leaves less contrast on either
+// side; that is what "soft" means, and it is arithmetic rather than taste.
+func TestTheResampleKernelIsSharperThanBiLinear(t *testing.T) {
+	// A 512x64 black-and-white comb: 4px bars, so downscaling to 128 forces real
+	// frequency content above the Nyquist limit and the two kernels disagree
+	// about what to do with it. A smooth gradient would not: both kernels pass it
+	// through almost unchanged, which is the same trap as the size comparison's
+	// fixture.
+	const (
+		sourceWidth  = 512
+		sourceHeight = 64
+		targetWidth  = 128
+	)
+	img := image.NewNRGBA(image.Rect(0, 0, sourceWidth, sourceHeight))
+	for y := range sourceHeight {
+		for x := range sourceWidth {
+			v := uint8(0)
+			if (x/4)%2 == 0 {
+				v = 255
+			}
+			img.SetNRGBA(x, y, color.NRGBA{R: v, G: v, B: v, A: 255})
+		}
+	}
+
+	shrink := func(scaler draw.Scaler) float64 {
+		dst := image.NewNRGBA(image.Rect(0, 0, targetWidth, sourceHeight))
+		scaler.Scale(dst, dst.Bounds(), img, img.Bounds(), draw.Src, nil)
+		// Luma, then the mean absolute difference between horizontally adjacent
+		// columns — the comb's edges run vertically, so this is measuring exactly
+		// the transition the kernel had to decide about.
+		row := make([]int, targetWidth)
+		for x := range targetWidth {
+			row[x] = int(dst.NRGBAAt(x, sourceHeight/2).R)
+		}
+		total := 0
+		for x := 1; x < targetWidth; x++ {
+			total += int(math.Abs(float64(row[x] - row[x-1])))
+		}
+		return float64(total) / float64(targetWidth-1)
+	}
+
+	// What the pipeline actually does: CatmullRom.
+	fromPipeline := shrink(draw.CatmullRom)
+	fromBiLinear := shrink(draw.BiLinear)
+
+	if fromPipeline <= fromBiLinear {
+		t.Errorf(
+			"CatmullRom's mean edge gradient is %.2f and BiLinear's is %.2f — the pipeline's "+
+				"kernel must be the sharper of the two, or Encode is using the wrong one",
+			fromPipeline, fromBiLinear,
+		)
+	}
+	// And the margin is a real one rather than floating-point noise, so a kernel
+	// change that made them nearly equal would also be caught.
+	if fromPipeline < fromBiLinear*1.2 {
+		t.Errorf(
+			"CatmullRom's %.2f is not meaningfully above BiLinear's %.2f; this test would stop "+
+				"holding the kernel choice if the two ever got this close",
+			fromPipeline, fromBiLinear,
+		)
 	}
 }
 
