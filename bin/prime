@@ -134,6 +134,15 @@ assert_go_suite ./internal/objectstore 21
 assert_go_suite ./internal/checksum 6
 assert_go_suite ./internal/storagekey 4
 assert_go_suite ./internal/darkroomdb/pgtest 15
+assert_go_suite ./internal/domain 7
+assert_go_suite ./internal/problem 7
+# THE SERVICE SUITE IS THE ONE THAT MOST NEEDS A FLOOR, because it is where the
+# correctness properties live and it is also the suite whose tests are DATABASE
+# tests — so on a machine with no PostgreSQL every one of them SKIPS, and a skipped
+# suite is `ok` with a count of zero. `go test -list` runs without a database, which
+# is the whole reason this step exists at all: the floor holds on a bare machine and
+# the `-v` tier below is what proves the tests actually ran.
+assert_go_suite ./internal/service 29
 
 # The variant pipeline, and `-v` for a second reason that is not the skips.
 #
@@ -198,6 +207,12 @@ if [[ "${1:-}" == "--db" ]]; then
   # holds it rather than assuming it.
   step "go test -v ./internal/darkroomdb/... (against TEST_DATABASE_URL)"
   go test -v -count=1 ./internal/darkroomdb/...
+  # THE SERVICE TIER IS HERE AND NOT IN THE DEFAULT ONE, because every test in it
+  # needs a database: `pgtest` skips the whole package without one, and a skipped
+  # package is `ok`. Its floor in the `-list` step above is what holds on a bare
+  # machine; this is what proves the tests RAN.
+  step "go test -v ./internal/service/... (against TEST_DATABASE_URL)"
+  go test -v -count=1 ./internal/service/...
 fi
 
 step "ok"
