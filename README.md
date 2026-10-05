@@ -528,6 +528,32 @@ box" is the worst possible property for something whose purpose is surviving a
 timeout. A failed handler **releases** its reservation, so a client that got a
 503 and retried gets a real attempt rather than a permanent 409.
 
+Two details of the wire half that a client can observe:
+
+- **`Idempotency-Replayed` is only ever `true`, never `false`.** The document types
+  it as an `enum: ['true']`, so absence means "not a replay" and a client testing for
+  a replay should test for the header's presence.
+- **A replayed body is the ledger's, not the original response's bytes.** The row
+  stores `jsonb`, and Postgres re-serialises what it was given — key order and
+  spacing come back its way. The replay is byte-identical to what the ledger holds,
+  which is the ledger's promise, and the same JSON *value* as the first response,
+  which is the contract's. A client comparing bytes rather than parsing JSON would see
+  the difference; every client parsing JSON does not.
+
+The layer is a middleware rather than a handler concern because capturing the
+response is the whole problem: a handler chooses its status in the same statement it
+writes its body, so it cannot see what it produced. It sits **inside** the credential
+gate — the ledger's scope is `(key, endpoint, principal)`, and an anonymous caller
+must not be able to burn a key. The `endpoint` is the route (`POST /v1/uploads`),
+never the request's own path, so one key reused across two completions of the same
+asset is one key rather than two.
+
+The set of idempotent operations is a list in `internal/httpapi` next to the router,
+and `TestTheIdempotentRoutesAreExactlyTheDocumentOnes` holds it against
+`openapi/v1.yaml` in both directions — a route the document makes idempotent that
+the router does not wrap, and a route the router wraps that the document does not.
+That is what makes the list acceptable rather than a second inventory.
+
 `mark_ready` is also a compare-and-set (`and status = 'pending'`), so two
 concurrent completes cannot both win and the second emits no second
 `darkroom.asset.ready`.
@@ -858,7 +884,24 @@ would be a flake waiting for a loaded CI box.
   tested; nothing calls it on a schedule yet. `PENDING_SWEEP_AFTER` is twice
   the presign TTL so a client mid-PUT is never swept.
 - **The idempotency-key retention sweep.** 24 hours per core; the index makes
-  it a range scan when it is written. Until then the table grows.
+  it a range scan when it is written. Until then the table grows. A leaked
+  reservation is the visible symptom: a `status_code = 0` row answers every later
+  request under that key with `409 conflict` until the sweep, which is why a
+  failed handler releases its reservation rather than leaving the row.
+- **A concurrent-replay test.** Two identical keyed requests arriving at the same
+  instant is the case the ledger's own unit test covers by reserving twice in one
+  goroutine. End to end through the router it would need real concurrency, and the
+  honest options are a barrier or a sleep — a result that depends on scheduling.
+  A flaky test is worse than an absent one, so it is absent and named here.
+- **The two `oapi-codegen` binding refusals that bypass this service's envelope.**
+  A `Idempotency-Key` header sent twice, or one whose value fails the generated
+  binder's format check, is answered by `siw.ErrorHandlerFunc`, which
+  `httpapi.New` leaves unset — so the runtime's default writes `text/plain` with a
+  bare sentence. Every other refusal in this service is
+  `application/problem+json` with the documented code, so those two responses are
+  the exception. The fix is `ErrorHandlerFunc` in `api.ChiServerOptions`, which is a
+  routing decision affecting every operation rather than an idempotency one, and it
+  is not taken here.
 - **An orphaned-object sweeper.** If storage deletion fails during
   `DELETE /v1/assets/{id}`, the row is still removed and the object leaks. That
   is the deliberate trade (a row that says "gone" over a surviving gigabyte is
