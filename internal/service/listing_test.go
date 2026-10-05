@@ -135,9 +135,23 @@ func TestBothDirectionsReturnTheSamePageInOppositeOrder(t *testing.T) {
 // THE PLANTED DIVERGENCE THIS TEST CATCHES: an implementation that sorts ascending
 // and keeps the descending predicate (`(created_at, id) < ($1, $2)`). Page one is
 // right, page two starts from the wrong end of the ordering and repeats what page
-// one already returned, and the walk either loops or ends with rows missing. It was
-// planted here to confirm the test goes red, and the cursor carrying its direction is
-// what stops a client from reaching that state.
+// one already returned, and the walk either loops or ends with rows missing.
+//
+// PLANTED AND MEASURED, not asserted. Making [SortOrder.comparison] return `<`
+// unconditionally — one line, the predicate no longer flipping — produces:
+//
+//	--- FAIL: TestPaginationWalksEveryRowExactlyOnceInEitherDirection (0.15s)
+//	    listing_test.go:205: order=asc visited 3 distinct assets, want 7
+//	    listing_test.go:209: order=asc visited 843ece7b-… 2 times, want once
+//	    listing_test.go:209: order=asc visited 24db2465-… 2 times, want once
+//	    listing_test.go:214: the order=asc walk holds 5 assets, want 7
+//
+// Seven rows in, three distinct out, two of them twice: a plausible-looking page and
+// a silent loss, which is the defect in its exact shape. Note that the first page is
+// CORRECT under this plant, so an assertion about the first page alone would have
+// stayed green — the failure is only visible because the walk is followed to the end.
+// `desc` is unaffected throughout, so the plant is invisible to every other test in
+// this package, which is what makes this one load-bearing.
 func TestPaginationWalksEveryRowExactlyOnceInEitherDirection(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -338,7 +352,18 @@ func TestATenantPredicateIsRecognised(t *testing.T) {
 // Both planted divergences were run against it — a `where account_id = $1` appended
 // to `listAssets`'s SQL, and an ascending sort keeping the descending predicate — and
 // the first caught this one, the second caught
-// [TestPaginationWalksEveryRowExactlyOnceInEitherDirection].
+// [TestPaginationWalksEveryRowExactlyOnceInEitherDirection]. The first plant's output:
+//
+//	--- FAIL: TestTheListQueryNeverNamesTheTenantItself (0.00s)
+//	    listing_test.go:365: store.go:211 names the tenant in a query:
+//	      from assets where account_id = $1 and id = $2
+//	          the tenant is the POLICY's job; a query cannot forget what a policy already does
+//
+// and it names the LINE, which is the difference between a guard that reports a
+// finding and one that reports a mood. The same plant also turned
+// [TestListAssetsSeesOnlyTheCallersAccount] and
+// [TestBothDirectionsReturnTheSamePageInOppositeOrder] red, so the behavioural half
+// below is not the only thing standing in the way.
 //
 // It is a second copy of the rule and not a replacement for the behavioural half:
 // `pgtest`'s policy guards read the live policies' `pg_get_expr`, and

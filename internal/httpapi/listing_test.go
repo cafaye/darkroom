@@ -19,6 +19,26 @@ package httpapi_test
 // Postgres (`listing_test.go`). A 200 shape is not asserted here for the same reason
 // this file asserts no successful body: doing it honestly needs a seeded database, and
 // a body decoded from a `nil` store is not an answer.
+//
+// # THE PANIC ABOVE IS A GUARD, AND IT HAS BEEN PLANTED
+//
+// The reason a nil store is a virtue here rather than a hole is that it makes a
+// MISSING refusal fail loudly, and that was checked rather than hoped for. Planting
+// `order = service.OrderDesc` after the parse — the handler reading the parameter,
+// validating it, and then handing the service the default anyway — makes
+// [TestListAssetsRefusesACursorFromTheOtherDirection] fall through `AgreesWith` and
+// reach the service, and the run dies with:
+//
+//	--- FAIL: TestListAssetsRefusesACursorFromTheOtherDirection (0.19s)
+//	panic: runtime error: invalid memory address or nil pointer dereference
+//	… darkroomdb.(*Store).InTx … service.(*Service).ListAssets
+//
+// So the wiring is held by something other than the 422 assertions: a handler that
+// quietly stops forwarding `order` cannot pass this file green, even though both of
+// its own assertions are about REFUSALS and neither one would otherwise notice. The
+// same plant on `service`'s side (a cursor whose direction is never checked) reproduces
+// the identical panic, which is the evidence that the refusal really does happen
+// before the call in both layers.
 
 import (
 	"encoding/json"
