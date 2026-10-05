@@ -644,8 +644,8 @@ read:
 |---|---|---|
 | default | `go test -v ./internal/variants/` | 24 `--- PASS:` rows |
 | database | `go test -v ./internal/darkroomdb/...` | 15 `--- PASS:` rows, 0 skipped |
-| database | `go test -v ./internal/service/...` | 29 `--- PASS:` rows, 0 skipped |
-| database | `go test -v ./internal/httpapi/` | 19 `--- PASS:` rows |
+| database | `go test -v ./internal/service/...` | 39 `--- PASS:` rows, 0 skipped |
+| database | `go test -v ./internal/httpapi/` | 21 `--- PASS:` rows |
 | default | `go test -list '.*'` | ten packages, floored in `bin/prime` itself |
 
 One of those is an identity rather than a constant: **the number of tests
