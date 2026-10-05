@@ -34,15 +34,16 @@
 # run by default. `./bin/prime` with no flag is green on a bare machine with no
 # Postgres and no Docker, which is what makes it usable as a pre-commit hook and
 # is exactly why it is not enough here: every database test calls
-# `pgtest.Require`, which SKIPS at runtime with a named reason, and `go test`
-# reports a package whose tests all skipped as `ok`. There is no `#[ignore]`
-# marker in Go to mark them, so a skipped test is indistinguishable from a
-# passing one in the output. A CI run of `./bin/prime` without the flag is a run
-# that has never touched a database, and darkroom is a service whose entire job
-# is putting bytes in one. So `gate` sets the environment and calls
-# `bin/prime --db`, and `bin/tier-counts` reads the counts afterwards so a green
-# run has to mean the database tests actually passed rather than merely did not
-# fail.
+# `pgtest.Require`, which SKIPS at runtime with a named reason rather than
+# failing. The default tier runs `go test ./...` with no `-v`, and `go test`
+# discards a passing package's output entirely, so those `--- SKIP:` rows are
+# invisible on that run — and Go has no `#[ignore]` marker to make a skip
+# countable the way cargo's `ignored` count made one. A CI run of
+# `./bin/prime` without the flag is a run that has never touched a database, and
+# darkroom is a service whose entire job is putting bytes in one. So `gate` sets
+# the environment and calls `bin/prime --db`, and `bin/tier-counts` reads the
+# counts afterwards so a green run has to mean the database tests actually
+# passed rather than merely did not fail.
 #
 # The database tier runs IN PARALLEL, with no `-p 1` and no serialisation flag,
 # because each test applies the migrations into a schema of its own — see
