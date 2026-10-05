@@ -113,7 +113,17 @@ set -euo pipefail
 VARIANT_TESTS=24
 PGTEST_DB_TESTS=15
 SERVICE_DB_TESTS=29
-HTTPAPI_TESTS=19
+# 31, and it MOVED because the idempotency packet added twelve tests to a package
+# that previously had none needing a database. Both halves of that are load-bearing
+# and both are why the number is a claim rather than a constant:
+#
+#   - `go test -list` enumerates 31 without a database (the eleven `pgtest.New`
+#     tests skip at runtime rather than disappearing), and the identity below
+#     requires that count to equal this one. So a test that stopped running in the
+#     `--db` tier is a failure in BOTH directions.
+#   - `HTTPAPI_TESTS` is also the floor for `internal/httpapi` in `bin/prime`'s
+#     `-list` step, where it has to hold on a bare machine.
+HTTPAPI_TESTS=31
 
 usage() {
   echo "usage: bin/tier-counts <log-of-'bin/prime --db'>" >&2
@@ -246,12 +256,14 @@ expect "database  harness and role checks" \
 expect "database  service checks" \
   "$(count_go 'go test -v ./internal/service/... (against TEST_DATABASE_URL)' 'github.com/cafaye/darkroom/internal/service')" \
   "$SERVICE_DB_TESTS"
-# The HTTP surface runs in the `--db` branch today with no database tests in it,
-# which is a FINDING packet 05 recorded rather than an accident. It is counted
-# here anyway, because a step whose count is not read is a step nobody is holding
-# in place.
+# `internal/httpapi` was counted here with no database tests in it, which was a
+# FINDING packet 05 recorded rather than an accident: it was counted anyway, because
+# a step whose count is not read is a step nobody is holding in place. The
+# `Idempotency-Key` packet answered it — the ledger is only observable through the
+# router and only against a real schema — so this is a database tier now, and the
+# SKIP check below covers it.
 expect "database  httpapi checks" \
-  "$(count_go 'go test -v ./internal/httpapi/ (against TEST_DATABASE_URL; nothing new to run)' 'github.com/cafaye/darkroom/internal/httpapi')" \
+  "$(count_go 'go test -v ./internal/httpapi/ (against TEST_DATABASE_URL; the Idempotency-Key ledger)' 'github.com/cafaye/darkroom/internal/httpapi')" \
   "$HTTPAPI_TESTS"
 
 # A tier that reported a SKIP where a pass was expected is the failure this whole
@@ -259,7 +271,8 @@ expect "database  httpapi checks" \
 # skipped because no database answered, with a green `ok` underneath it.
 for pair in \
   "go test -v ./internal/darkroomdb/... (against TEST_DATABASE_URL):github.com/cafaye/darkroom/internal/darkroomdb/pgtest" \
-  "go test -v ./internal/service/... (against TEST_DATABASE_URL):github.com/cafaye/darkroom/internal/service"
+  "go test -v ./internal/service/... (against TEST_DATABASE_URL):github.com/cafaye/darkroom/internal/service" \
+  "go test -v ./internal/httpapi/ (against TEST_DATABASE_URL; the Idempotency-Key ledger):github.com/cafaye/darkroom/internal/httpapi"
 do
   step="${pair%%:*}"; pkg="${pair##*:}"
   skipped="$(awk -v scope="$step" '

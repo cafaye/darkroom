@@ -239,7 +239,7 @@ func TestAKeyedUploadIsRecordedAndItsReplayReturnsTheOriginal(t *testing.T) {
 	if recorded[0].endpoint != "POST /v1/uploads" {
 		t.Errorf("the ledger recorded endpoint %q, want the document's `POST /v1/uploads`", recorded[0].endpoint)
 	}
-	if recorded[0].principal != service.PrincipalScope("user-1", idemAccountOne) {
+	if recorded[0].principal != service.PrincipalScope(idemUserOne, idemAccountOne) {
 		t.Errorf("the ledger recorded principal %q, want user_id:account_id of the caller", recorded[0].principal)
 	}
 	if recorded[0].statusCode != http.StatusCreated {
@@ -488,8 +488,16 @@ func TestAReplayIsScopedToThePrincipal(t *testing.T) {
 	if again.Header().Get("Idempotency-Replayed") != "true" {
 		t.Errorf("alice's own replay is not marked as one: %s", again.body)
 	}
-	if got := pg.assetCount(t, idemAccountOne); got != 2 {
-		t.Errorf("alice's account owns %d assets, want 2 (alice's and carol's, which is a different user in the same account)", got)
+	// ONE asset, and this is the assertion that makes the three-reservations claim
+	// mean something: the LEDGER's scope is the principal while the ASSET's scope is
+	// the account. Carol and alice are two principals holding two reservations on
+	// one key, and both uploads carry the same checksum, so `assets`'s
+	// `unique (account_id, checksum)` resolves carol's to alice's existing row —
+	// which is the service's duplicate decision, and it is why alice receiving
+	// carol's replay would have been a cross-user data leak rather than a
+	// duplicated upload. Bob's account is unaffected by either.
+	if got := pg.assetCount(t, idemAccountOne); got != 1 {
+		t.Errorf("alice's account owns %d assets, want 1 — a second user in one account uploading the same checksum resolves to the duplicate", got)
 	}
 	if got := pg.assetCount(t, idemAccountTwo); got != 1 {
 		t.Errorf("bob's account owns %d assets, want 1 — bob's own upload, and nothing of alice's", got)
@@ -575,14 +583,23 @@ func TestAnOversizedBodyIsStill413ThroughTheIdempotencyLedger(t *testing.T) {
 	if rec.status != http.StatusRequestEntityTooLarge {
 		t.Fatalf("a keyed oversized request answered %d, want 413: %s", rec.status, rec.body)
 	}
-	if rows := pg.rows(t); len(rows) != 1 {
-		// The reservation is RELEASED, not recorded: a 413 is a failure. One row
-		// here is the released one only if release ran; a recorded 413 would have a
-		// problem body in response_body, which this asserts against below.
-		t.Fatalf("the ledger holds %d rows, want 1 (the released reservation): %+v", len(rows), rows)
+	// NO ROW AT ALL, and this is the sharpest thing the ledger has to get right.
+	//
+	// The layer reads the body to hash it, and here that read FAILS partway through
+	// the ceiling. Reserving on a hash of half a body would be a reservation whose
+	// `request_hash` no retry could ever match — so every subsequent request under
+	// that key would be a 409 `idempotency_key_reused` until the 24-hour sweep, for a
+	// client that never sent a broken body. So an unreadable body reserves nothing
+	// and falls through to the handler, which answers the document's 413 itself.
+	if rows := pg.rows(t); len(rows) != 0 {
+		t.Fatalf("the ledger holds %d rows for a body that could not be read, want 0: %+v", len(rows), rows)
 	}
-	if pg.rows(t)[0].statusCode != 0 {
-		t.Errorf("the ledger recorded status %d for a refused request, want 0 — only a 2xx is recorded", pg.rows(t)[0].statusCode)
+
+	// AND THE KEY IS STILL USABLE, which is the observable consequence of reserving
+	// nothing rather than something.
+	retry := pg.do(t, pg.keyed(t, http.MethodPost, "/v1/uploads", create("photo.png"), "key-7", map[string]any{"account_id": idemAccountOne}))
+	if retry.status != http.StatusCreated {
+		t.Fatalf("the retry after a 413 answered %d, want 201 — an unreadable body must not poison the key: %s", retry.status, retry.body)
 	}
 }
 

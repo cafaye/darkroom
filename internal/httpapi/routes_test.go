@@ -74,6 +74,28 @@ type operation struct {
 	// [TestEveryUnauthenticatedRouteIsOneTheDocumentExempts] holds the exemption
 	// against the document rather than against a list in this repository.
 	anonymous bool
+
+	// idempotent is "this operation declares the `Idempotency-Key` parameter", read
+	// out of the document's own `components.parameters` by [ref]. It is what
+	// [TestTheIdempotentRoutesAreExactlyTheDocumentOnes] compares
+	// `httpapi`'s route list against, in both directions — so the ledger's scope is
+	// the document's and not a second spelling of it.
+	idempotent bool
+}
+
+// ref is the LAST segment of a YAML reference, which is all the identity a `$ref`
+// carries here.
+//
+// `Idempotency-Key` is declared once under `components.parameters` and referenced
+// as `IdempotencyKey`, so the pointer to compare is the name and not the path. A
+// `$ref` written as a full path would make this return `IdempotencyKey` still,
+// because the last segment is what both spellings end in — which is the property
+// this relies on and the reason it is a function rather than a string slice.
+func ref(value string) string {
+	if index := strings.LastIndex(value, "/"); index >= 0 {
+		return value[index+1:]
+	}
+	return value
 }
 
 func (o operation) String() string { return o.method + " " + o.path }
@@ -102,19 +124,62 @@ func declaredRoutes(t *testing.T) []operation {
 		Paths map[string]map[string]struct {
 			OperationID string `yaml:"operationId"`
 			Security    *[]any `yaml:"security"`
+			Parameters  []struct {
+				Ref string `yaml:"$ref"`
+			} `yaml:"parameters"`
 		} `yaml:"paths"`
+
+		// The parameter's own `name`, because the reference is what an operation
+		// carries and the header spelling is what a client sends. Both matter: the
+		// ref says which shared parameter an operation opted into, and the name says
+		// what that parameter is on the wire. Reading only the ref would make this
+		// test unable to notice the document renaming the header while keeping the
+		// component name — which is exactly the change `httpapi.HeaderIdempotencyKey`
+		// would then disagree with.
+		Components struct {
+			Parameters map[string]struct {
+				Name string `yaml:"name"`
+				In   string `yaml:"in"`
+			} `yaml:"parameters"`
+		} `yaml:"components"`
 	}
 	if err := yaml.Unmarshal(raw, &document); err != nil {
 		t.Fatalf("cannot parse %s: %v", documentPath, err)
 	}
 
+	// Matched on the parameter's `name` AND `in: header`, not on the component key.
+	//
+	// The component key is `IdempotencyKey` and the header is `Idempotency-Key`, and
+	// they differ — so which one identifies the ledger? The HEADER, because that is
+	// what `httpapi.HeaderIdempotencyKey` is and what a client sends. Matching the
+	// component key instead would leave this test unable to notice the document
+	// renaming the header while keeping the component, which is precisely the change
+	// that would then make the service read a header nobody sends.
+	//
+	// `in: header` is required because a shared parameter reference could in
+	// principle describe a query or a cookie, and a route that took its key that way
+	// is not the header this package reads.
+	headerParameters := map[string]bool{}
+	for component, spec := range document.Components.Parameters {
+		if spec.In == "header" && spec.Name == httpapi.HeaderIdempotencyKey {
+			headerParameters[component] = true
+		}
+	}
+
 	var operations []operation
 	for path, byMethod := range document.Paths {
 		for method, spec := range byMethod {
+			idempotent := false
+			for _, parameter := range spec.Parameters {
+				if headerParameters[ref(parameter.Ref)] {
+					idempotent = true
+				}
+			}
 			operations = append(operations, operation{
 				method:      strings.ToUpper(method),
 				path:        path,
 				operationID: spec.OperationID,
+				idempotent:  idempotent,
 				// `security: []` is an EMPTY list and unmarshals to a non-nil pointer to
 				// an empty slice. A pointer rather than a slice because a path with no
 				// `security` key inherits the document's global `security` — so ABSENT
@@ -322,6 +387,84 @@ func TestTheScopesAreTheDocumentOnes(t *testing.T) {
 	if declared.Read[0] != auth.ScopeRead || declared.Write[0] != auth.ScopeWrite {
 		t.Fatalf("the document says read=%s write=%s and this service uses read=%s write=%s",
 			declared.Read[0], declared.Write[0], auth.ScopeRead, auth.ScopeWrite)
+	}
+}
+
+// TestTheIdempotentRoutesAreExactlyTheDocumentOnes holds `httpapi`'s route list
+// against the document, in both directions, and it is why that list can exist at
+// all.
+//
+// # THE PROBLEM IT SOLVES
+//
+// `httpapi.idempotentRoutes` is a second copy of one fact about `openapi/v1.yaml`:
+// which operations accept `Idempotency-Key`. A second copy is how `src/http.rs`'s
+// `http::OPERATIONS` became a liability — its own README admits "a planted `.route()`
+// on a new path left all nine drift tests green" — so the question is not whether a
+// list drifts but what notices. This test is the answer, and it notices in both
+// directions:
+//
+//   - the document declares an idempotent operation and `httpapi` does not wrap it —
+//     a client's replay creates a SECOND asset, and the document promised it would
+//     not;
+//   - `httpapi` wraps a route the document does not declare idempotent — the ledger
+//     has rows for an operation the contract says nothing about, and a client that
+//     sends no key is unaffected while one that does gets a behaviour no document
+//     describes.
+//
+// # WHY THE COMPARISON IS OBSERVABLE AND NOT BY INSPECTION
+//
+// The forward direction cannot be read off the router: the layer is invisible from
+// outside, which is the point of a middleware. So it is asserted the only honest
+// way — by behaviour. `idempotency_test.go` proves the two declared routes reserve
+// and replay; this test proves there are exactly two of them, so a third route the
+// document declares idempotent cannot be silently unwrapped.
+func TestTheIdempotentRoutesAreExactlyTheDocumentOnes(t *testing.T) {
+	declared := map[string]bool{}
+	for _, one := range declaredRoutes(t) {
+		if one.idempotent {
+			declared[one.String()] = true
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatalf("%s declares no operation with the %s parameter, so this check would pass against an empty set",
+			documentPath, httpapi.HeaderIdempotencyKey)
+	}
+
+	// What the router actually wraps. `declaredRoutes` spells paths as the document
+	// does (`/v1/uploads`) and `chi.Walk` as the router does, and this is where the
+	// two spellings are reconciled — once, in a test, rather than by a conversion
+	// somewhere in production code.
+	wrapped := map[string]bool{}
+	var walked int
+	if err := chi.Walk(newRouter(t), func(method, pattern string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		walked++
+		// The pattern `chi` reports is the MOUNTED one, so it carries the `/v1`
+		// prefix the document spells out.
+		// `chi.Walk` on the ROOT router reports the MOUNTED path, so `pattern`
+		// already carries `/v1` — which is why this needs no prefix of its own, and
+		// why adding one would compare against a spelling nothing produces. `New`
+		// sees the stripped pattern instead, which is why it re-adds the prefix
+		// before consulting the same list.
+		if httpapi.DeclaresIdempotencyKey(strings.ToUpper(method) + " " + pattern) {
+			wrapped[strings.ToUpper(method)+" "+pattern] = true
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walking the router: %v", err)
+	}
+	if walked == 0 {
+		t.Fatal("chi.Walk found no routes, so every comparison below passes vacuously")
+	}
+
+	for name := range declared {
+		if !wrapped[name] {
+			t.Errorf("the document makes %s idempotent and the router does not wrap it, so a replay of that request is not a replay", name)
+		}
+	}
+	for name := range wrapped {
+		if !declared[name] {
+			t.Errorf("the router wraps %s with the idempotency ledger and the document does not declare it idempotent", name)
+		}
 	}
 }
 

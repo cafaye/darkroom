@@ -146,7 +146,13 @@ assert_go_suite ./internal/service 29
 # 401 is exercised. Both were unmapped while `src/http.rs` was the tree being
 # tested, and an unmapped suite is the failure mode this step exists to catch.
 assert_go_suite ./internal/auth 12
-assert_go_suite ./internal/httpapi 19
+# 31, not 19: the idempotency packet added twelve cases here and this floor is what
+# makes an emptied `idempotency_test.go` — or a `pgtest.New` that started skipping
+# unconditionally — a failure rather than a green suite reporting nothing. It holds
+# on a bare machine because `go test -list` enumerates without a database, which is
+# the whole reason this step exists; `bin/tier-counts` carries the same figure and
+# the identity that the enumerated count and the passed count are the same number.
+assert_go_suite ./internal/httpapi 31
 
 # The variant pipeline, and `-v` for a second reason that is not the skips.
 #
@@ -297,17 +303,19 @@ if [[ "${1:-}" == "--db" ]]; then
   # machine; this is what proves the tests RAN.
   step "go test -v ./internal/service/... (against TEST_DATABASE_URL)"
   go test -v -count=1 ./internal/service/...
-  # `internal/httpapi` has no database tests today, so nothing new runs here. The
-  # step is listed because that is a FINDING and not an accident: packet 05's
-  # handoff says so ("No cross-tenant 404 test end to end ... the next packet
-  # should add `internal/httpapi` cases that drive the router against a seeded
-  # `pgtest` schema"), and a gate that silently stops growing a tier is the shape
-  # of the bug this whole script exists to prevent.
+  # `internal/httpapi` HAS database tests as of the idempotency packet, and that is
+  # the answer to the finding packet 05 recorded here: "No cross-tenant 404 test end
+  # to end ... the next packet should add `internal/httpapi` cases that drive the
+  # router against a seeded `pgtest` schema". They exist — the `Idempotency-Key`
+  # ledger is only observable through the router and only against a real schema — so
+  # this step now proves twelve of them RAN rather than listing a step whose count
+  # nobody read.
   #
-  # UNLESS one is added, in which case this step runs
-  # `go test -v -count=1 ./internal/httpapi/` and `bin/tier-counts` gains a
-  # constant for it. Written here rather than left to be rediscovered.
-  step "go test -v ./internal/httpapi/ (against TEST_DATABASE_URL; nothing new to run)"
+  # It was already running the package before then, which is the shape of the bug
+  # this script exists to prevent: a step that executes and whose result is not read
+  # is a step nobody is holding in place. `bin/tier-counts` now counts it as a
+  # database tier and fails on a SKIP in it.
+  step "go test -v ./internal/httpapi/ (against TEST_DATABASE_URL; the Idempotency-Key ledger)"
   go test -v -count=1 ./internal/httpapi/
 fi
 

@@ -172,7 +172,31 @@ func New(options Options) (http.Handler, error) {
 	// moving a route across the boundary means editing the contract.
 	probes, v1 := chi.NewRouter(), chi.NewRouter()
 	splitRoutes(generatedRoutes, probes, func(method, pattern string, h http.Handler) {
-		v1.Method(method, pattern, server.guarded(method, pattern, h))
+		// INSIDE the credential gate, and the nesting is the whole point: the layer
+		// needs a verified principal to name `principal_key`, and it must not be
+		// reachable by an anonymous caller who would otherwise get to burn a key.
+		// `guarded(method, pattern, inner)` puts the gate on the OUTSIDE of `inner`,
+		// so `inner` has to be this layer — wrapping `guarded` instead would run the
+		// ledger first, and `auth.TenantOf` would panic on every anonymous request.
+		//
+		// And only for the routes the document declares idempotent, which is
+		// [idempotentRoutes]' job and whose agreement with `openapi/v1.yaml` is
+		// asserted in both directions in `routes_test.go`.
+		//
+		// The route is named by its DOCUMENT path — `/v1/uploads`, with the prefix —
+		// and NOT by `pattern`, which `splitRoutes` has already stripped. Two
+		// spellings of the same route in one package is how a list stops matching the
+		// code that uses it, so the list, the ledger's `endpoint` column and the
+		// migration's own example are all the document's spelling. The endpoint
+		// string is derived from the same value, which is what keeps a replay's scope
+		// and this list from ever disagreeing.
+		endpoint := method + " " + APIV1Prefix + pattern
+
+		inner := h
+		if declaresIdempotencyKey(endpoint) {
+			inner = server.idempotency(endpoint, h)
+		}
+		v1.Method(method, pattern, server.guarded(method, pattern, inner))
 	})
 
 	// The probe group has NO auth middleware to remove, which is the structural half
@@ -240,6 +264,63 @@ func splitRoutes(generated chi.Routes, probe *chi.Mux, guarded func(method, patt
 		// vacuously. The guard is that the walk must have FOUND something.
 		panic("httpapi: the generated router registered no routes, so nothing is served and nothing is gated")
 	}
+}
+
+// idempotentRoutes are the routes the ledger wraps, as chi patterns.
+//
+// # WHY THIS IS A LIST AND NOT A WALK OF THE DOCUMENT, STATED PLAINLY
+//
+// The document is the inventory, and this list is a second copy of one fact about
+// it — so `TestTheIdempotentRoutesAreExactlyTheDocumentOnes` in `routes_test.go`
+// holds the two against each other in BOTH directions, and that test is what makes
+// this acceptable rather than a drift waiting to happen. A route added to
+// `openapi/v1.yaml` with `Idempotency-Key` and not to this list fails the suite; a
+// route added here that the document does not declare idempotent fails it too.
+//
+// # WHAT WAS TRIED AND WHY IT IS WORSE
+//
+// The obvious move is to ask the GENERATED types — reflect over
+// `api.ServerInterfaceWrapper`'s methods and look for a `Params` struct with an
+// `IdempotencyKey` field, which really would make the generated file the inventory.
+// It does not work, and the reason is worth recording: `chi.Walk` hands this package
+// a route's `http.Handler`, and by then the generated binder has collapsed
+// `CreateUpload`'s method into an anonymous `http.HandlerFunc` closure. There is no
+// longer a method value to inspect and no `Params` type to reach from a
+// `http.Handler`, so the answer would have to come from the handler's runtime type —
+// which is `http.HandlerFunc` for all nine operations, identically.
+//
+// Getting the same answer from the generated SOURCE by reading `api.gen.go` as text
+// is what `AGENTS.md` warns against: the Rust tree held an `account_id` predicate
+// in place with `include_str!`, and a text guard pins a SPELLING rather than a
+// behaviour, so it breaks on a harmless reformat and passes on a real divergence
+// spelled differently.
+//
+// So the list is here, it is tiny, and a test in `routes_test.go` — which already
+// reads `openapi/v1.yaml` and compares it to this router — is what keeps it honest.
+var idempotentRoutes = map[string]bool{
+	http.MethodPost + " /v1/uploads":               true,
+	http.MethodPost + " /v1/uploads/{id}/complete": true,
+}
+
+// declaresIdempotencyKey reports whether the ledger wraps this operation.
+//
+// `operation` is the document's `METHOD /v1/path`, which is what
+// [idempotentRoutes] is keyed by and what the ledger's `endpoint` column stores.
+func declaresIdempotencyKey(operation string) bool {
+	return idempotentRoutes[operation]
+}
+
+// DeclaresIdempotencyKey is [declaresIdempotencyKey] exported, for the one caller
+// outside this package: the drift test that holds this list against
+// `openapi/v1.yaml`.
+//
+// Exported rather than tested through the router because the layer is a middleware
+// and a middleware is invisible from outside — so the only way to ask "is this route
+// wrapped" is to ask the code that wraps it. That is a weaker check than the
+// behaviour in `idempotency_test.go`, and both exist: the behaviour proves the two
+// declared routes work, and this proves there are exactly two.
+func DeclaresIdempotencyKey(operation string) bool {
+	return declaresIdempotencyKey(operation)
 }
 
 // errNotConfigured is a configuration this package cannot serve. A sentinel, so a
