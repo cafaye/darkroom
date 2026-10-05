@@ -469,10 +469,17 @@ func (s *Service) fail(ctx context.Context, accountID, assetID, reason string) {
 //
 // `Limit` is clamped by [clampPageLimit] rather than rejected, so a caller may pass
 // 0 for "the default" and 1000 for "as much as you will give me" and get a sensible
-// page either way.
+// page either way. `Order` is the direction, and it is a [SortOrder] rather than a
+// string because this package refuses every value the document does not enumerate
+// (see [ParseSortOrder]) — a caller of the service and a caller of the wire cannot
+// disagree about what `order` means, which is the whole reason the decision lives
+// here.
 type ListQuery struct {
 	Limit  int
 	Cursor *Cursor
+	// Order is the direction to walk. The zero value is [OrderDesc], which is what
+	// omitting `order` on the wire means, so `ListQuery{}` is newest-first.
+	Order SortOrder
 }
 
 // AssetPage is one page plus the cursor for the next one.
@@ -486,14 +493,32 @@ type AssetPage struct {
 	NextToken string
 }
 
-// ListAssets returns one page, newest first, scoped to the caller's account.
+// ListAssets returns one page in the requested direction, scoped to the caller's
+// account.
+//
+// # THE FIRST CHECK IS THE DIRECTION THE CURSOR WAS MINTED UNDER
+//
+// Before the query, and it is a refusal. The cursor's row-value comparison is only
+// correct for the direction it was minted in — see [Cursor.AgreesWith] for the walk
+// that goes wrong otherwise — so a request that names one direction and carries a
+// cursor from the other has no page this function could honestly return.
+//
+// It is here as well as in the handler because this is the method that would perform
+// the walk: a caller that reaches the rules directly, with no HTTP layer above it,
+// gets the same refusal the wire does. That is the weaker of the two guarantees this
+// repository has and it is a weaker one on purpose — `AGENTS.md` records the same
+// trade for tenant scoping, where the Go rule is "a single entry point" rather than a
+// property of every signature.
 func (s *Service) ListAssets(ctx context.Context, caller Caller, q ListQuery) (*AssetPage, *problem.Error) {
+	if pErr := q.Cursor.AgreesWith(q.Order); pErr != nil {
+		return nil, pErr
+	}
 	limit := clampPageLimit(q.Limit)
 
 	// ONE EXTRA ROW to find out whether there is a next page, without a second
 	// count query.
 	rows, err := s.readAll(ctx, caller.AccountID, func(tx pgxTx) ([]*domain.Asset, error) {
-		return listAssets(ctx, tx, limit+1, q.Cursor)
+		return listAssets(ctx, tx, q.Order, limit+1, q.Cursor)
 	})
 	if err != nil {
 		return nil, problem.FromDB(err)
@@ -503,11 +528,12 @@ func (s *Service) ListAssets(ctx context.Context, caller Caller, q ListQuery) (*
 	if page.HasMore {
 		rows = rows[:limit]
 		// The next cursor is the LAST row of THIS page, which is where the next
-		// query's `<` comparison starts — not the last row read, which is one
-		// further on and would skip an asset.
+		// query's comparison starts — not the last row read, which is one further on
+		// and would skip an asset. It carries `q.Order`, because that is the direction
+		// this page was walked in and the only one its position means anything in.
 		last := rows[len(rows)-1]
-		page.Next = &Cursor{CreatedAt: last.CreatedAt, ID: last.ID}
-		page.NextToken = EncodeCursor(page.Next.CreatedAt, page.Next.ID)
+		page.Next = &Cursor{CreatedAt: last.CreatedAt, ID: last.ID, Order: q.Order}
+		page.NextToken = EncodeCursor(*page.Next)
 	}
 	page.Assets = rows
 	return page, nil

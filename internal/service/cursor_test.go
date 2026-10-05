@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -38,18 +39,25 @@ func TestTheLimitIsClampedAndNotRejected(t *testing.T) {
 
 func TestCursorsRoundTrip(t *testing.T) {
 	at := time.Date(2026, 10, 4, 12, 30, 15, 123456789, time.UTC)
-	id := NewUUID()
 
-	token := EncodeCursor(at, id)
-	back, pErr := DecodeCursor(token)
-	if pErr != nil {
-		t.Fatalf("the cursor this test just encoded does not decode: %v", pErr)
-	}
-	if !back.CreatedAt.Equal(at) {
-		t.Errorf("time round-tripped to %v, want %v", back.CreatedAt, at)
-	}
-	if back.ID != id {
-		t.Errorf("id round-tripped to %q, want %q", back.ID, id)
+	// BOTH DIRECTIONS, because the third segment is half of what a cursor now is and a
+	// round trip that only ever mints `desc` would pass with it dropped.
+	for _, order := range []SortOrder{OrderDesc, OrderAsc} {
+		id := NewUUID()
+		token := EncodeCursor(Cursor{CreatedAt: at, ID: id, Order: order})
+		back, pErr := DecodeCursor(token)
+		if pErr != nil {
+			t.Fatalf("the %s cursor this test just encoded does not decode: %v", order, pErr)
+		}
+		if !back.CreatedAt.Equal(at) {
+			t.Errorf("time round-tripped to %v, want %v", back.CreatedAt, at)
+		}
+		if back.Order != order {
+			t.Errorf("a %s cursor round-tripped to %s", order, back.Order)
+		}
+		if back.ID != id {
+			t.Errorf("id round-tripped to %q, want %q", back.ID, id)
+		}
 	}
 }
 
@@ -58,7 +66,7 @@ func TestACursorIsBase64url(t *testing.T) {
 	// has not heard of them, and core specifies base64url. Encoded with the PADDED
 	// alphabet they appear often enough that 200 cursors is not a contrived sample.
 	for range 200 {
-		token := EncodeCursor(time.Now(), NewUUID())
+		token := EncodeCursor(Cursor{CreatedAt: time.Now(), ID: NewUUID(), Order: OrderDesc})
 		for _, r := range token {
 			switch {
 			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
@@ -70,7 +78,7 @@ func TestACursorIsBase64url(t *testing.T) {
 	// And a NONCE, not a fresh URL-safe encoding of the same value: padding is the
 	// other half of "base64url" and it is what makes a cursor ugly in a query string.
 	at := time.Unix(0, 1_700_000_000_000_000_000).UTC()
-	if strings.ContainsRune(EncodeCursor(at, NewUUID()), '=') {
+	if strings.ContainsRune(EncodeCursor(Cursor{CreatedAt: at, ID: NewUUID(), Order: OrderDesc}), '=') {
 		t.Error("the cursor is padded; base64url here is RawURLEncoding")
 	}
 }
@@ -86,8 +94,18 @@ func TestEveryMalformedCursorIsTheSame422NamingTheField(t *testing.T) {
 		"YWJj",       // base64 for "abc": no separator
 		"MTIzfGV4dA", // "123|ext": not a uuid
 		"not-base64|also-text",
-		EncodeCursor(time.Unix(0, 0), ""), // a timestamp with no id
-		EncodeCursor(time.Unix(0, 0), "has space"), // an id that is not an id
+		EncodeCursor(Cursor{CreatedAt: time.Unix(0, 0), ID: ""}),
+		EncodeCursor(Cursor{CreatedAt: time.Unix(0, 0), ID: "has space", Order: OrderDesc}),
+		// THE TWO-SEGMENT FORM THIS FUNCTION USED TO ACCEPT, and the reason there is
+		// no shim for it: it carries a valid timestamp and a valid id and NO DIRECTION,
+		// which is exactly the token that cannot say which way the page it points at
+		// was walked. Nothing has ever been handed one, so accepting the old shape
+		// would preserve a token whose whole defect is the field it is missing.
+		base64.RawURLEncoding.EncodeToString([]byte("123|" + NewUUID())),
+		// And a three-segment token whose direction is not one of the two words.
+		base64.RawURLEncoding.EncodeToString([]byte("123|" + NewUUID() + "|oldest")),
+		base64.RawURLEncoding.EncodeToString([]byte("123|" + NewUUID() + "|")),
+		base64.RawURLEncoding.EncodeToString([]byte("123|" + NewUUID() + "|asc|extra")),
 	}
 	for _, raw := range bad {
 		_, pErr := DecodeCursor(raw)

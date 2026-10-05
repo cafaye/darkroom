@@ -190,26 +190,36 @@ func markFailed(ctx context.Context, tx pgx.Tx, id, reason string) (*domain.Asse
 	return asset, nil
 }
 
-// listAssets is one cursor page, newest first.
+// listAssets is one cursor page, in the direction `order` names.
 //
-// `order by created_at desc, id desc` is the same order as
-// `assets_account_created_idx`, so a page is an index range scan rather than a sort,
-// and the cursor's row-value comparison `(created_at, id) < ($1, $2)` is
+// `order by created_at <dir>, id <dir>` is the same order as
+// `assets_account_created_idx` — `(account_id, created_at desc, id desc)` — read in
+// one direction or the other, so a page is an index range scan rather than a sort,
+// and the cursor's row-value comparison `(created_at, id) < ($1, $2)` (or `>`) is
 // LEXICOGRAPHIC ON THE SAME PAIR — which is why the cursor carries BOTH columns.
 // Ordering on `created_at` alone would drop or repeat every row sharing a timestamp,
 // and `now()` is a timestamp.
-func listAssets(ctx context.Context, tx pgx.Tx, limit int, cursor *Cursor) ([]*domain.Asset, error) {
+//
+// `order` IS A PARAMETER AND NOT READ FROM THE CURSOR, and the two are the same value
+// in every call because [Service.ListAssets] refuses a cursor whose direction differs
+// (see [Cursor.AgreesWith]). Passing it separately is what makes a first page — the
+// one call with NO cursor to read it from — come back in the direction the request
+// asked for, and the predicate and the sort are derived from this one argument, so
+// they cannot disagree with each other inside this function even if a future caller
+// gets the pairing wrong.
+func listAssets(ctx context.Context, tx pgx.Tx, order SortOrder, limit int, cursor *Cursor) ([]*domain.Asset, error) {
 	query := `select ` + assetColumns + ` from assets`
 	var args []any
 	if cursor != nil {
-		query += ` where (created_at, id) < ($1, $2::uuid)`
+		query += ` where (created_at, id) ` + order.comparison() + ` ($1, $2::uuid)`
 		args = append(args, cursor.CreatedAt, cursor.ID)
 	}
 	// ONE EXTRA ROW tells the caller whether there is a next page, without a second
 	// `count(*)`. `limit + 1` in the service, `limit` here, so this function does
 	// not have to know why the number is one larger than the page.
 	args = append(args, limit)
-	query += fmt.Sprintf(" order by created_at desc, id desc limit $%d", len(args))
+	query += " order by created_at " + order.direction() + ", id " + order.direction() +
+		fmt.Sprintf(" limit $%d", len(args))
 
 	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
