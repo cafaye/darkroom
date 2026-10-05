@@ -39,11 +39,16 @@ package httpapi_test
 // because a test that does would be a test whose result depends on scheduling.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/cafaye/darkroom/internal/auth"
 	"github.com/cafaye/darkroom/internal/darkroomdb"
@@ -57,8 +62,19 @@ const (
 	// Two accounts and two users in one of them, because `PrincipalScope` is
 	// `user_id:account_id` and the isolation test has to be able to vary either
 	// half independently.
+	//
+	// ALL FOUR ARE UUIDs, which is the schema's requirement rather than a tidiness
+	// choice: `assets.owner_user_id` is a `uuid` column, so a `sub` of `"user-1"`
+	// reaches `insertAsset` and fails at `invalid input syntax for type uuid` —
+	// which the service reports as an `internal` 500, because a database refusing a
+	// value the identity service minted is not something a client did wrong. The
+	// shared `mint` in `httpapi_test.go` defaults `sub` to `"user-1"`, and every
+	// test in that file stops at the credential gate, so nothing there reaches a
+	// column. `sub` is therefore overridden on every request this file makes.
 	idemAccountOne = "3f6c1e6c-0000-4000-8000-00000000000a"
 	idemAccountTwo = "3f6c1e6c-0000-4000-8000-00000000000b"
+	idemUserOne    = "7d2b9f10-0000-4000-8000-00000000000a"
+	idemUserTwo    = "7d2b9f10-0000-4000-8000-00000000000b"
 
 	// A syntactically valid sha256, which is all `POST /v1/uploads` asks for at
 	// create time: the claim is recorded here and VERIFIED against the stored
@@ -112,14 +128,26 @@ func create(filename string) map[string]any {
 	}
 }
 
-// keyed is a request carrying `key` as the account and user in `as`.
+// keyed is a request carrying `key`, as the principal described by `as`.
+//
+// `sub` and `account_id` are both defaulted to this file's UUIDs and `as` overrides
+// either, so a caller cannot accidentally inherit the shared `mint`'s non-uuid
+// `"user-1"` and get a 500 that says nothing about idempotency.
 func (l *ledger) keyed(t *testing.T, method, path string, body any, key string, as ...map[string]any) *http.Request {
 	t.Helper()
 
-	r := asCaller(t, l.id, request(method, path, body))
-	for _, override := range as {
-		r.Header.Set("Authorization", "Bearer "+l.id.mint(t, override))
+	r := request(method, path, body)
+	claims := map[string]any{
+		"sub":        idemUserOne,
+		"account_id": idemAccountOne,
+		"scope":      auth.ScopeRead + " " + auth.ScopeWrite,
 	}
+	for _, override := range as {
+		for name, value := range override {
+			claims[name] = value
+		}
+	}
+	r.Header.Set("Authorization", "Bearer "+l.id.mint(t, claims))
 	if key != "" {
 		r.Header.Set("Idempotency-Key", key)
 	}
@@ -152,7 +180,7 @@ func (l *ledger) rows(t *testing.T) []row {
 	t.Helper()
 
 	var out []row
-	err := l.store.InTx(context.Background(), func(tx pgxTx) error {
+	err := l.store.InTx(context.Background(), func(tx pgx.Tx) error {
 		got, err := tx.Query(context.Background(), `select endpoint, principal_key, status_code, request_hash, response_body
 			from idempotency_keys order by endpoint, principal_key, key`)
 		if err != nil {
@@ -181,7 +209,7 @@ func (l *ledger) assetCount(t *testing.T, account string) int {
 	t.Helper()
 
 	count := 0
-	err := l.store.InAccountTx(context.Background(), account, func(tx pgxTx) error {
+	err := l.store.InAccountTx(context.Background(), account, func(tx pgx.Tx) error {
 		return tx.QueryRow(context.Background(), `select count(*) from assets`).Scan(&count)
 	})
 	if err != nil {
@@ -246,10 +274,10 @@ func TestAKeyedUploadIsRecordedAndItsReplayReturnsTheOriginal(t *testing.T) {
 	}
 }
 
-// TestAKeyReusedWithADifferentBodyIs409 is done-means 3: the same key with a
+// TestAnIdempotencyKeyReusedWithADifferentBodyIs409 is done-means 3: the same key with a
 // different body is `idempotency_key_reused` and NOT a `conflict`, because the
 // client's action differs — pick a new key, rather than retry.
-func TestAKeyReusedWithADifferentBodyIs409(t *testing.T) {
+func TestAnIdempotencyKeyReusedWithADifferentBodyIs409(t *testing.T) {
 	pg := newLedger(t)
 
 	first := pg.do(t, pg.keyed(t, http.MethodPost, "/v1/uploads", create("photo.png"), "key-2", map[string]any{"account_id": idemAccountOne}))
@@ -273,10 +301,10 @@ func TestAKeyReusedWithADifferentBodyIs409(t *testing.T) {
 	}
 }
 
-// TestARequestWithNoKeyIsProcessedNormally is done-means 4. The document says it
+// TestARequestWithNoIdempotencyKeyIsProcessedNormally is done-means 4. The document says it
 // outright — "Requests without the key are processed normally" — so the proof is
 // that the ledger is EMPTY afterwards: an unkeyed request reserves nothing.
-func TestARequestWithNoKeyIsProcessedNormally(t *testing.T) {
+func TestARequestWithNoIdempotencyKeyIsProcessedNormally(t *testing.T) {
 	pg := newLedger(t)
 
 	for range 2 {
@@ -300,17 +328,23 @@ func TestARequestWithNoKeyIsProcessedNormally(t *testing.T) {
 	}
 }
 
-// TestAnEmptyKeyIs422RatherThanAbsent is done-means 5, and it needs no database:
-// the refusal happens before any query, which is the point — "a client that meant
-// to send a key and sent a broken one would otherwise get a non-idempotent
-// request and not know why".
-func TestAnEmptyKeyIs422RatherThanAbsent(t *testing.T) {
-	id := newIdentity(t)
-	r := asCaller(t, id, request(http.MethodPost, "/v1/uploads", create("photo.png")))
+// TestAnEmptyIdempotencyKeyIs422RatherThanAbsent is done-means 5, and the refusal
+// happens before any query — which is the point: "a client that meant to send a key
+// and sent a broken one would otherwise get a non-idempotent request and not know
+// why."
+//
+// IT RUNS OVER A REAL SERVICE rather than the `handlerFor` helper, because the
+// difference IS the answer: with nothing built, an empty key falls through to the
+// handler and reaches `service.CreateUpload` with no store behind it, which is a
+// panic rather than a status. The assertion below is about a 422, so the test needs
+// a handler that can reach one either way.
+func TestAnEmptyIdempotencyKeyIs422RatherThanAbsent(t *testing.T) {
+	pg := newLedger(t)
+	r := asCaller(t, pg.id, request(http.MethodPost, "/v1/uploads", create("photo.png")))
 	r.Header["Idempotency-Key"] = []string{""}
 
 	rec := newRecorder()
-	handlerFor(t, id).ServeHTTP(rec, r)
+	pg.router.ServeHTTP(rec, r)
 	rec.read()
 
 	if rec.status != http.StatusUnprocessableEntity {
@@ -331,17 +365,17 @@ func TestAnEmptyKeyIs422RatherThanAbsent(t *testing.T) {
 	}
 }
 
-// TestARepeatedKeyHeaderIs422 is the same reasoning for a second spelling of the
+// TestARepeatedIdempotencyKeyHeaderIs422 is the same reasoning for a second spelling of the
 // same header: `openapi/v1.yaml` types the key as ONE string, and the generated
 // binder's own answer for two values is a bare `text/plain` 400, which is not
 // this service's envelope. So the wire layer refuses it as a broken key.
-func TestARepeatedKeyHeaderIs422(t *testing.T) {
-	id := newIdentity(t)
-	r := asCaller(t, id, request(http.MethodPost, "/v1/uploads", create("photo.png")))
+func TestARepeatedIdempotencyKeyHeaderIs422(t *testing.T) {
+	pg := newLedger(t)
+	r := asCaller(t, pg.id, request(http.MethodPost, "/v1/uploads", create("photo.png")))
 	r.Header["Idempotency-Key"] = []string{"key-a", "key-b"}
 
 	rec := newRecorder()
-	handlerFor(t, id).ServeHTTP(rec, r)
+	pg.router.ServeHTTP(rec, r)
 	rec.read()
 
 	if rec.status != http.StatusUnprocessableEntity {
@@ -352,14 +386,14 @@ func TestARepeatedKeyHeaderIs422(t *testing.T) {
 	}
 }
 
-// TestAFailedRequestReleasesItsReservation is done-means 6.
+// TestAFailedRequestReleasesItsIdempotencyReservation is done-means 6.
 //
 // The proof is a retry, not a row count: a second request with the same key
 // after a failure would be `409 conflict` if the reservation had survived (the
 // body differs, so a surviving row would be `409 idempotency_key_reused`) and
 // `201` if it was released. "a 500 that poisoned the key would make every
 // subsequent retry fail forever."
-func TestAFailedRequestReleasesItsReservation(t *testing.T) {
+func TestAFailedRequestReleasesItsIdempotencyReservation(t *testing.T) {
 	pg := newLedger(t)
 
 	// A 422 from the service: `byte_size` negative is refused by the state machine.
@@ -381,9 +415,9 @@ func TestAFailedRequestReleasesItsReservation(t *testing.T) {
 	}
 }
 
-// TestAMalformedBodyReleasesItsReservationToo is the same rule one layer out: a
+// TestAMalformedBodyReleasesItsIdempotencyReservationToo is the same rule one layer out: a
 // 400 from `decodeJSON` is a failure, and it must not poison the key either.
-func TestAMalformedBodyReleasesItsReservationToo(t *testing.T) {
+func TestAMalformedBodyReleasesItsIdempotencyReservationToo(t *testing.T) {
 	pg := newLedger(t)
 
 	malformed := asCaller(t, pg.id, request(http.MethodPost, "/v1/uploads", nil))
@@ -462,11 +496,11 @@ func TestAReplayIsScopedToThePrincipal(t *testing.T) {
 	}
 }
 
-// TestTheKeyIsScopedToTheEndpoint proves the third leg of the primary key: the
+// TestTheIdempotencyKeyIsScopedToTheEndpoint proves the third leg of the primary key: the
 // same principal and the same key on a different operation is a different
 // reservation, so a client that reuses one key across operations does not get
 // another operation's response.
-func TestTheKeyIsScopedToTheEndpoint(t *testing.T) {
+func TestTheIdempotencyKeyIsScopedToTheEndpoint(t *testing.T) {
 	pg := newLedger(t)
 	as := map[string]any{"account_id": idemAccountOne}
 
@@ -489,10 +523,10 @@ func TestTheKeyIsScopedToTheEndpoint(t *testing.T) {
 	}
 }
 
-// TestAnUnauthenticatedKeyedRequestReservesNothing is the LAYER ORDER for this
+// TestAnUnauthenticatedIdempotencyRequestReservesNothing is the LAYER ORDER for this
 // layer: the credential gate is outside the ledger, so an anonymous caller cannot
 // burn a key or read a recorded response.
-func TestAnUnauthenticatedKeyedRequestReservesNothing(t *testing.T) {
+func TestAnUnauthenticatedIdempotencyRequestReservesNothing(t *testing.T) {
 	pg := newLedger(t)
 
 	rec := newRecorder()
@@ -509,24 +543,31 @@ func TestAnUnauthenticatedKeyedRequestReservesNothing(t *testing.T) {
 	}
 }
 
-// TestAnOversizedBodyIsStill413ThroughTheLedger is the body limit, seen from
+// TestAnOversizedBodyIsStill413ThroughTheIdempotencyLedger is the body limit, seen from
 // inside this layer. The ledger reads the body to hash it, and a read that hits
 // the ceiling must leave the handler able to answer the DOCUMENT's 413 rather
 // than a truncated parse.
-func TestAnOversizedBodyIsStill413ThroughTheLedger(t *testing.T) {
+func TestAnOversizedBodyIsStill413ThroughTheIdempotencyLedger(t *testing.T) {
 	pg := newLedger(t)
 
-	// Chosen so `ContentLength` is unknown to the layer above — `MaxBytesReader`
-	// is what fails, exactly as the chunked case `decodeJSON` documents.
-	oversized := asCaller(t, pg.id, request(http.MethodPost, "/v1/uploads", create("photo.png")))
+	// VALID JSON that is over the limit, and a length the layer above cannot know:
+	// `MaxBytesReader` is what fails, exactly as the chunked case `decodeJSON`
+	// documents. Both halves matter — a body of bare `a` bytes would be refused as
+	// malformed syntax (a 400 from `decodeJSON`) before the reader ever hit the
+	// ceiling, which would make this test pass for the wrong reason.
+	padded := create("photo.png")
+	padded["filename"] = strings.Repeat("a", httpapi.MaxBodyBytes)
+	oversized := asCaller(t, pg.id, request(http.MethodPost, "/v1/uploads", padded))
 	oversized.Header.Set("Idempotency-Key", "key-7")
-	oversized.Body = http.NoBody
-	oversized.ContentLength = -1
-	body := make([]byte, httpapi.MaxBodyBytes+1)
-	for i := range body {
-		body[i] = 'a'
+	encoded, err := json.Marshal(padded)
+	if err != nil {
+		t.Fatalf("marshalling the oversized body: %v", err)
 	}
-	oversized.Body = newReadCloser(body)
+	if int64(len(encoded)) <= httpapi.MaxBodyBytes {
+		t.Fatalf("the oversized body is %d bytes, which is not over the %d limit — this test would prove nothing", len(encoded), httpapi.MaxBodyBytes)
+	}
+	oversized.Body = newReadCloser(encoded)
+	oversized.ContentLength = -1
 	rec := newRecorder()
 	pg.router.ServeHTTP(rec, oversized)
 	rec.read()
@@ -548,6 +589,17 @@ func TestAnOversizedBodyIsStill413ThroughTheLedger(t *testing.T) {
 // ----------------------------------------------------------------------------
 // helpers
 // ----------------------------------------------------------------------------
+
+// newReadCloser is a body whose length the request does not know.
+//
+// `decodeJSON`'s own header calls this the CHUNKED case: `bodyLimit` refuses an
+// oversized body up front only when `ContentLength` is over the limit, and with an
+// unknown length the refusal falls to `MaxBytesReader` failing inside the handler.
+// A body the request already knows the length of would be refused by the layer above
+// the ledger, and this test is about the other half.
+func newReadCloser(b []byte) io.ReadCloser {
+	return io.NopCloser(bytes.NewReader(b))
+}
 
 // sameValue reports whether two bodies are the same JSON value. See the file
 // header: `response_body` is `jsonb`, so byte comparison against the ORIGINAL
