@@ -48,6 +48,43 @@ set -o pipefail
 # of them cost 4.1s between them.
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
+# --- what `--db` needs, checked before it spends anything ---------------------
+#
+# HERE AND NOT IN THE `--db` BLOCK because a check that runs after twenty seconds of
+# `go test` is a check the caller has already sat through. Two variables, and the
+# second is the one that is easy to leave out.
+#
+# No apostrophes anywhere in these messages: bash parses quotes inside the
+# `${VAR:?word}` expansion, so a single apostrophe — `kit's`, the word these
+# sentences used to contain — turns the whole script into a syntax error at PARSE
+# time, before a single test runs, and the failure names line 44 rather than the
+# mistake. Nothing in this repository's prime run does `bash -n`, so the words are
+# kept out of the strings on purpose.
+if [[ "${1:-}" == "--db" ]]; then
+  : "${TEST_DATABASE_URL:?--db needs TEST_DATABASE_URL, e.g. postgres://darkroom:cafaye@localhost:15500/darkroom?sslmode=disable -- that URL is the HOST side of the shared cluster kit ships, so the port is KIT_POSTGRES_PORT (15500), not 5432. See .env.example}"
+  # AND THE APPLICATION ROLE, BECAUSE ONE TEST IN THE DATABASE TIER IS ABOUT THE
+  # APPLICATION ROLE and no other URL can stand in for it.
+  #
+  # `TestTheLoginRoleCanDoTheWork` opens a pool as `darkroom_app` — the login role,
+  # the one RLS applies to — as opposed to the owner role the rest of `pgtest` uses,
+  # because the harness needs CREATE on the database to make a schema at all. It skips
+  # without this variable, and it is the ONLY test in the repository that proves the
+  # role boundary end to end: every other test in that tier is the owner talking to
+  # itself.
+  #
+  # REQUIRED HERE RATHER THAN LOWERING `bin/tier-counts`' FLOOR is the whole
+  # decision. Left optional, the tier runs 14 of 15 on every run forever, the
+  # honest-skip contract hides a permanent gap, and the floor of 15 in two files is a
+  # number nothing can ever satisfy. Required, the gate names what it needs in the
+  # first second, and `bin/tier-counts` counts 15 for the first time.
+  : "${DARKROOM_DATABASE_URL:?--db also needs DARKROOM_DATABASE_URL, e.g. postgres://darkroom_app:cafaye@localhost:15500/darkroom?sslmode=disable -- that is the LOGIN ROLE, deliberately not TEST_DATABASE_URL, and one test in the pgtest tier is only meaningful with it. Both are in .env.example}"
+  # Exported rather than merely SET: `${VAR:?}` is satisfied by a shell variable that
+  # is not in the environment, and a non-exported one is invisible to every `go test`
+  # below — which would turn this guard into a check that passes and a suite that
+  # still skips.
+  export TEST_DATABASE_URL DARKROOM_DATABASE_URL
+fi
+
 # --- the Go rewrite, and it is the whole default tier ------------------------
 #
 # `gofmt -l` rather than `gofmt -w`, and the difference is the whole point: `-w`
@@ -175,7 +212,16 @@ assert_go_suite ./internal/service 39
 # 401 is exercised. Both were unmapped while `src/http.rs` was the tree being
 # tested, and an unmapped suite is the failure mode this step exists to catch.
 assert_go_suite ./internal/auth 12
-assert_go_suite ./internal/httpapi 21
+# 33, and the number is the SUM OF TWO PACKETS that each read the tree rather than
+# the base: 19, plus the listing packet's two, plus the idempotency packet's twelve.
+#
+# It is this floor and not a comment that makes an emptied `idempotency_test.go`, or
+# a `pgtest.New` that started skipping unconditionally, a FAILURE rather than a green
+# suite reporting nothing. It holds on a bare machine because `go test -list`
+# enumerates without a database, which is the whole reason this step exists;
+# `bin/tier-counts` carries the same figure and the identity that the enumerated count
+# and the passed count are the same number.
+assert_go_suite ./internal/httpapi 33
 
 # The variant pipeline, and `-v` for a second reason that is not the skips.
 #
@@ -297,13 +343,12 @@ else
 fi
 
 if [[ "${1:-}" == "--db" ]]; then
-  # No apostrophes anywhere in this message: bash parses quotes inside the
-  # `${VAR:?word}` expansion, so a single apostrophe below — `kit's`, the word
-  # this sentence used to contain — turns the whole script into a syntax error
-  # at parse time, before a single test runs, and the failure names line 44
-  # rather than the mistake. Nothing in this repository's prime run does
-  # `bash -n`, so the word is kept out of the string on purpose.
-  : "${TEST_DATABASE_URL:?--db needs TEST_DATABASE_URL, e.g. postgres://darkroom:cafaye@localhost:15500/darkroom?sslmode=disable -- that URL is the HOST side of the shared cluster kit ships, so the port is KIT_POSTGRES_PORT (15500), not 5432. See .env.example}"
+  # `TEST_DATABASE_URL` AND `DARKROOM_DATABASE_URL` WERE BOTH CHECKED BEFORE THE
+  # FIRST `go build` near the top of this file, because a guard that runs after
+  # twenty seconds of compiling has already cost the caller everything it was going
+  # to save them. They are exported there too, which is the half that matters: a
+  # variable that satisfies `${VAR:?}` without being in the environment is invisible
+  # to every `go test` below.
 
   # THE GO DATABASE TIERS, `-v` BECAUSE `go test` THROWS THE OUTPUT AWAY.
   #
@@ -377,18 +422,25 @@ if [[ "${1:-}" == "--db" ]]; then
   # needs a database: `pgtest` skips the whole package without one, and a skipped
   # package is `ok`. Its floor in the `-list` step above is what holds on a bare
   # machine; this is what proves the tests RAN.
-  go test -v -count=1 ./internal/service/... >"$db_logs/service" 2>&1 &
+go test -v -count=1 ./internal/service/... >"$db_logs/service" 2>&1 &
   db_service=$!
-  # `internal/httpapi` has no database tests today, so nothing new runs here. The
-  # step is listed because that is a FINDING and not an accident: packet 05's
-  # handoff says so ("No cross-tenant 404 test end to end ... the next packet
-  # should add `internal/httpapi` cases that drive the router against a seeded
-  # `pgtest` schema"), and a gate that silently stops growing a tier is the shape
-  # of the bug this whole script exists to prevent.
+  # `internal/httpapi` HAS database tests as of the idempotency packet, and that is
+  # the answer to the finding packet 05 recorded here: "No cross-tenant 404 test end
+  # to end ... the next packet should add `internal/httpapi` cases that drive the
+  # router against a seeded `pgtest` schema". They exist — the `Idempotency-Key`
+  # ledger is only observable through the router and only against a real schema — so
+  # this step now proves twelve of them RAN rather than listing a step whose count
+  # nobody read.
   #
-  # UNLESS one is added, in which case this step runs
-  # `go test -v -count=1 ./internal/httpapi/` and `bin/tier-counts` gains a
-  # constant for it. Written here rather than left to be rediscovered.
+  # It was already running the package before then, which is the shape of the bug
+  # this script exists to prevent: a step that executes and whose result is not read
+  # is a step nobody is holding in place. `bin/tier-counts` now counts it as a
+  # database tier and fails on a SKIP in it.
+  #
+  # And it is now one of the THREE THAT RUN AT ONCE, which is a fact about the
+  # ledger rather than about this script: eleven of the thirty-three `httpapi` tests
+  # open their own `pgtest` schema, so the tier's cost is database connections, and
+  # three pools at once is what the shared cluster's `rolconnlimit` is sized for.
   go test -v -count=1 ./internal/httpapi/ >"$db_logs/httpapi" 2>&1 &
   db_httpapi=$!
 
@@ -402,7 +454,7 @@ if [[ "${1:-}" == "--db" ]]; then
   cat "$db_logs/darkroomdb"
   step "go test -v ./internal/service/... (against TEST_DATABASE_URL)"
   cat "$db_logs/service"
-  step "go test -v ./internal/httpapi/ (against TEST_DATABASE_URL; nothing new to run)"
+  step "go test -v ./internal/httpapi/ (against TEST_DATABASE_URL; the Idempotency-Key ledger)"
   cat "$db_logs/httpapi"
 
   # EVERY TIER IS REPLAYED BEFORE THIS, EVEN WHEN ONE FAILED. A tier that stopped
