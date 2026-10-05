@@ -15,13 +15,78 @@
 // somebody has to remember. `TestARolledBackTransactionLeavesZeroOutboxRows` asserts
 // the negative, and `bin/prime` runs it.
 //
-// # WHY THERE IS NO PUBLISHER LOOP
+// # WHY THERE IS NO PUBLISHER LOOP, AND NO READ PATH
 //
-// The Rust version has none, and that is deliberate rather than unfinished-by-
-// oversight: a publisher that cannot publish is better absent than silently
-// no-oping. The table and the insert path are the half that carries the correctness
-// guarantee, and both are here. `claimUnpublished` exists for the publisher that a
-// later packet adds, and it is the only read path in this file.
+// A publisher that cannot publish is worse than an absent one, so there is none,
+// and that is a decision rather than an unfinished-by-oversight. The Rust tree
+// reached the same decision for the same reason — its `src/outbox.rs` said "The
+// publisher loop that moves rows to NATS is **not** in this packet […] a publisher
+// loop that cannot publish is better absent than silently no-op" — and
+// `README.md`'s "Not done" carries the bullet forward, so the absence is stated
+// where a reader will look for it. What is here is the table
+// (`migrations/0002_outbox_events.sql`) and the insert path, which is the half
+// that carries the correctness guarantee.
+//
+// # AND THERE IS NO READ PATH IN THIS FILE
+//
+// Not one, and that is the whole of the honest statement. An earlier version of
+// this comment said "`claimUnpublished` exists for the publisher that a later
+// packet adds, and it is the only read path in this file", and `grep -rn
+// claimUnpublished .` returned that sentence and nothing else. It was wrong twice:
+// there is no such function, and the only read path in this file was — and still
+// is — [countOutbox], a test-only `select count(*)` used by
+// `TestARolledBackTransactionLeavesZeroOutboxRows` and by nobody else. Nothing in
+// a request path reads the queue.
+//
+// The Rust tree DID have it, and losing it is worth recording rather than
+// quietly leaving as a gap: `src/outbox.rs` carried a real `claim_unpublished`
+// with `OutboxRow`, `where published_at is null order by created_at limit $1 for
+// update skip locked`, and the Go rewrite did not port it. It was not written
+// again here on purpose, and the reason is specific rather than general: every
+// function in this tree is reached by something — a handler, another function,
+// or a test — and a read path with no caller would be the first one whose
+// coverage depended on a reader of this comment rather than on a call site. It
+// would also be in the one place where being wrong is a double-publish: an
+// unexercised `for update skip locked` that turned out to be a plain `for
+// update`, or to none, is a bug no compiler catches and no test in the tree
+// would.
+//
+// # WHAT A PUBLISHER'S READ PATH HAS TO GET RIGHT
+//
+// Four things, none of which are this file's business until there is a publisher
+// and none of which are obvious:
+//
+//   - `published_at is null` is the ONLY definition of unpublished.
+//     `migrations/0002_outbox_events.sql` adds `published_at timestamptz null`
+//     with no default and a partial index `outbox_events_unpublished_idx on
+//     outbox_events (created_at) where published_at is null`, and that index's
+//     comment states the intent: the publisher's only query is `where
+//     published_at is null order by created_at`. So a row is published when
+//     `published_at` is set, and unpublished until then — NOT when `attempts` is
+//     zero, and not when some in-memory queue says so. `attempts` exists as a
+//     column and nothing in this tree writes it.
+//
+//   - `order by created_at`, and the reason is per-subject ordering. `time` is the
+//     moment of the STATE CHANGE, not the moment of the insert
+//     ([NewEvent]'s argument), so two events for one asset can sit in
+//     `created_at` order differently from the order the state changed in. A
+//     consumer that builds a thumbnail from `darkroom.asset.ready` and one that
+//     deletes from `darkroom.asset.deleted` will see them reordered if the claim
+//     sorts by anything else.
+//
+//   - `for update skip locked`, or an equivalent, and this is the multi-replica
+//     problem. A plain `select … limit n` from N replicas hands the same n rows
+//     to every one of them, and every one of them publishes. `skip locked` makes
+//     the second replica walk past rows the first has locked, which is what lets
+//     replicas run without contending. A bare `for update` is worse than no lock
+//     here: the replicas serialise on the same head-of-queue rows instead of
+//     skipping them, so correctness improves and throughput collapses.
+//
+//   - The claim and the `published_at` write belong in ONE transaction, or a
+//     publisher that crashes between them republishes forever. That is also why
+//     [Event.ID] is minted before the insert: "a retry publishes the same `id`
+//     and the consumer's dedupe key actually dedupes" ([Event.Envelope]). A
+//     duplicate delivery is survivable; an unbounded one is not.
 //
 // # NO EVENT FOR A `pending` ASSET, AND NO EVENT FOR A FAILURE
 //
