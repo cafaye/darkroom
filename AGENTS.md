@@ -280,6 +280,19 @@ shared cluster, and all three are consequences of kit's defaults rather than
 choices. The service's own `DATABASE_URL`, inside the compose network, uses the
 service name `postgres` in place of `localhost`.
 
+**`--db` ALSO NEEDS `DARKROOM_DATABASE_URL`, AND REFUSES TO START WITHOUT IT.** Not
+a second database — a second ROLE on the same one. `TestTheLoginRoleCanDoTheWork` is
+the only test in this repository that connects as `darkroom_app`, the login role the
+RLS policies apply to, and every other test in that tier connects as `darkroom`, the
+owner, because the harness needs `CREATE` on the database to make a schema at all.
+With `TEST_DATABASE_URL` alone the tier runs 14 of its 15 tests and the fifteenth
+skips with a stated reason — an honest skip, which is what made the gap survive: the
+job meant to hold this service to its contract was itself failing a floor of 15 that
+nothing could satisfy, and the one test proving the role boundary works had never run
+in CI anywhere. Required instead, `bin/prime` names the missing variable in under a
+second, before it compiles anything. CI creates the role itself, from the same
+attributes kit's `templates/compose/postgres/initdb/10-cluster.sh` uses.
+
 **THE GO HARNESS DOES THE SAME THING AND NEEDS ONE EXTRA THING.** `pgtest` gives
 each test a schema named `t_<12 hex>`, applies `migrations/` into it with that
 schema on the connection's `search_path`, and drops it with `cascade`. Because
