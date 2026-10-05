@@ -97,8 +97,28 @@ go vet ./...
 # did not run and why. `go test` discards a passing package's output, so the skip
 # rows are invisible without `-v` — which is why the `--db` run below is not
 # optional and why this one is not a substitute for it.
+#
+# `env -u TEST_DATABASE_URL` IS NOT DEFENSIVENESS, it is what the step's own name
+# means. `--db` cannot work without that variable exported, so a `--db` run used to
+# hand it to THIS step too — and the skip paragraph above then described a step that
+# skipped nothing. `internal/darkroomdb/pgtest` runs its real tests whenever the URL
+# is present, so on a `--db` run the database suites ran here AND again in the tiers
+# below: twice the connections for a result the tiers report properly.
+#
+# It failed as a red gate before it failed as slow, and that is the useful part. The
+# `darkroom` role on the SHARED cluster carries `rolconnlimit` 20, `go test ./...`
+# runs packages in parallel, and each package's pool checks that limit on connect —
+# so the duplication surfaced as
+#
+#   FATAL: too many connections for role "darkroom" (SQLSTATE 53300)
+#
+# inside `TestTheHarnessGivesEachTestItsOwnSchema`, which then reported "two tests
+# share a schema". That second sentence is the failure mode that matters: the
+# isolation test could not open its schema, and its own message blamed the harness
+# for sharing one. A connection limit is not an isolation defect, and the test that
+# exists to prove isolation was the thing reporting the false one.
 step "go test ./... (no database)"
-go test ./...
+env -u TEST_DATABASE_URL go test ./...
 
 # A GO SUITE THAT LOSES ITS TESTS IS STILL GREEN, AND THAT IS THE POINT OF THIS
 # STEP. `go test ./...` prints `ok` for a package with no test files at all, and
