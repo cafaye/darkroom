@@ -56,8 +56,10 @@ POST /v1/uploads/{id}/complete ──▶ 200 { asset: ready }
 
 The bytes never pass through this service. That is the entire point: a 1 GiB
 upload is one request to the bucket, not a stream through an API process that
-has to buffer it, spool it to disk, and time out on a slow client. Two tests
-assert it — `internal/service`'s and `internal/objectstore`'s `Stats` counters.
+has to buffer it, spool it to disk, and time out on a slow client. Two
+`Stats` counters assert it: `TestTheClientBytesNeverPassThroughTheService`
+wants `Puts == 0`, and `TestAClientsWriteNeverGoThroughPut` wants the same from
+the other side of the interface.
 
 ### The presigned URL
 
@@ -75,9 +77,12 @@ overwriting another tenant's object; a URL with no length cap is a way to write
 a 10 GiB file into a bucket someone pays for; a URL with no content-type scope
 lets an HTML document be stored at an image's key.
 
-`internal/httpapi` and `internal/service` assert all three, including that asset
-A's URL cannot
-be used to write at asset B's key.
+All three axes are asserted in `internal/objectstore`, not spread across the
+layers above it: `TestAPresignedPutIsScopedToOneKeyOneContentTypeAndOneLength`
+covers the three together, `TestAssetAsPresignedURLCannotWriteAtAssetBsKey` is
+the cross-key one — asset A's URL cannot be used to write at asset B's key — and
+`TestAPresignedPutWithNoCeilingIsRefused` is the case where a leak writes an
+arbitrary number of bytes into a bucket someone pays for.
 
 ### The checksum is verified by reading the object back, not trusted
 
@@ -370,7 +375,7 @@ every header R2 rejects. The refusals are asserted in
 `cmd/darkroom`'s `TestTheR2RulesLiveInTheStore` at the layer that actually
 refuses (`objectstore.New`, before any client exists), and
 `TestAnS3ConfigurationIsCarriedThroughUnexamined` holds the boundary that keeps
-those rules out of `config.go`. **Nothing runs the built binary to watch it
+those rules out of `cmd/darkroom/config.go`. **Nothing runs the built binary to watch it
 refuse** — that is a gap, not a claim, and the R2 section below is the manual
 check that stands in for it.
 
