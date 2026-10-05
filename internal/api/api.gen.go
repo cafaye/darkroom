@@ -415,8 +415,10 @@ type ListAssetsParams struct {
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 
 	// Cursor Opaque base64url. Clients must not parse it.
-	Cursor *string                `form:"cursor,omitempty" json:"cursor,omitempty"`
-	Order  *ListAssetsParamsOrder `form:"order,omitempty" json:"order,omitempty"`
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Order Walk direction over the `(created_at, id)` pair. `desc` is newest first and `asc` is oldest first. Defaults to `desc`. A cursor records the direction its page was walked in, so a cursor minted by an `asc` walk is refused with 422 when presented with `order=desc`, and the reverse; restart the walk from the first page instead. A value that is neither `asc` nor `desc` is a 422, not a fall back to the default.
+	Order *ListAssetsParamsOrder `form:"order,omitempty" json:"order,omitempty"`
 }
 
 // ListAssetsParamsOrder defines parameters for ListAssets.

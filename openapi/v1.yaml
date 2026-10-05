@@ -342,6 +342,14 @@ paths:
             type: string
         - name: order
           in: query
+          description: >
+            Walk direction over the `(created_at, id)` pair. `desc` is newest first and
+            `asc` is oldest first. Defaults to `desc`.
+            A cursor records the direction its page was walked in, so a cursor minted
+            by an `asc` walk is refused with 422 when presented with `order=desc`, and
+            the reverse; restart the walk from the first page instead.
+            A value that is neither `asc` nor `desc` is a 422, not a fall back to the
+            default.
           schema:
             type: string
             enum: [asc, desc]

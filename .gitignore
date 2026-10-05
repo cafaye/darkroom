@@ -10,5 +10,11 @@
 # source and `go build ./...` will make one in every directory that has a `main`.
 /darkroom
 /darkroomdb
+# `bin/` holds TRACKED scripts (`bin/prime`, `bin/tier-counts`), so it cannot be
+# ignored wholesale — and `/darkroom` above is root-anchored, so it does not cover
+# the binary `go build -o bin/darkroom ./cmd/darkroom` writes, which the gate's own
+# build step performs. That combination is how a 21 MB artefact gets committed by a
+# `git add -A` during verification.
+/bin/darkroom
 *.test
 *.out

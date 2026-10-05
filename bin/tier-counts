@@ -40,12 +40,18 @@
 # build-time marker and no count of tests-that-would-have-been-ignored. Measured
 # on this tree, against no database:
 #
-#   ./internal/darkroomdb/pgtest    4 PASS, 11 SKIP, 15 total
-#   ./internal/service              9 PASS, 20 SKIP, 29 total
+#   ./internal/darkroomdb/pgtest    3 PASS, 12 SKIP, 15 total
+#   ./internal/service             16 PASS, 23 SKIP, 39 total
 #
-# Nine of `service`'s tests and four of `pgtest`'s genuinely need no database, so
+# Sixteen of `service`'s tests and three of `pgtest`'s genuinely need no database, so
 # "skipped == passed" is not merely unavailable, it is FALSE here: the skipped
-# counts are 31 and the passed counts would be 44.
+# counts are 35 and the passed counts would be 19.
+#
+# The `pgtest` figure depends on the ENVIRONMENT and not only on the tree:
+# `TestTheLoginRoleCanDoTheWork` reads `DARKROOM_DATABASE_URL` rather than
+# `TEST_DATABASE_URL` (`AGENTS.md`), so it PASSES on a machine that has it exported
+# and counts 4 rather than 3. That is why the number is a floor and not an equality
+# for this package, and why the `--db` gate sets both.
 #
 # So this script asserts the identity that IS true and IS checkable from one log:
 #
@@ -53,8 +59,8 @@
 #   number the database tiers PASS with one.**
 #
 # Both halves are already in the same log. The `go test -list` step prints
-# `    ./internal/service: 29 tests` for every package, and the `--db` step prints
-# 29 `--- PASS:` rows for it. The two disagreeing is the failure: a test that
+# `    ./internal/service: 39 tests` for every package, and the `--db` step prints
+# 39 `--- PASS:` rows for it. The two disagreeing is the failure: a test that
 # stopped running in the database tier, a test that stopped being enumerated, a
 # package that stopped compiling. And unlike a constant compared against a
 # constant, this one keeps holding as tests are added — which is the direction a
@@ -72,8 +78,8 @@
 # | `go test -list` | enumerated per package | ten packages, floors in `bin/prime` |
 # | `go test -v ./internal/variants/` | `--- PASS:` rows | 24 |
 # | `go test -v ./internal/darkroomdb/...` | `--- PASS:` rows | 15 |
-# | `go test -v ./internal/service/...` | `--- PASS:` rows | 29 |
-# | `go test -v ./internal/httpapi/` | `--- PASS:` rows | 19 |
+# | `go test -v ./internal/service/...` | `--- PASS:` rows | 39 |
+# | `go test -v ./internal/httpapi/` | `--- PASS:` rows | 21 |
 #
 # The step labels below are the ones `bin/prime` prints. Rewording a step there
 # breaks this script, loudly and on the first run, which is the intended coupling:
@@ -101,7 +107,7 @@
 #     exists is a guard over nothing.
 #   - `OPENAPI_DRIFT_TESTS` was `tests/openapi_document.rs`. The Go equivalent is
 #     `internal/httpapi`'s drift tests against `openapi/v1.yaml`, which compare the
-#     DOCUMENT to the router in both directions and are floored at 19 in
+#     DOCUMENT to the router in both directions and are floored at 21 in
 #     `bin/prime`.
 #
 # Neither is a loss the rewrite caused; both are the same properties expressed in
@@ -112,8 +118,8 @@ set -euo pipefail
 # The floors. Read out of this tree, not carried forward from the Rust script.
 VARIANT_TESTS=24
 PGTEST_DB_TESTS=15
-SERVICE_DB_TESTS=29
-HTTPAPI_TESTS=19
+SERVICE_DB_TESTS=39
+HTTPAPI_TESTS=21
 
 usage() {
   echo "usage: bin/tier-counts <log-of-'bin/prime --db'>" >&2
@@ -176,12 +182,12 @@ count_go() {
 
 # Read back what `bin/prime`'s `-list` step enumerated for one package.
 #
-# The line is `    ./internal/service: 29 tests`, printed by `assert_go_suite`.
+# The line is `    ./internal/service: 39 tests`, printed by `assert_go_suite`.
 # Reading it rather than recomputing it is the point of the identity below: this
 # is the half of the comparison that ran WITHOUT a database, taken from the same
 # log as the half that ran WITH one.
 listed() {
-  # The line is `    ./internal/service: 29 tests`, so the COUNT is field 2 and the
+  # The line is `    ./internal/service: 39 tests`, so the COUNT is field 2 and the
   # first field carries the trailing colon. Reading field 3 reads the word "tests"
   # and every package below would print the same thing.
   awk -v pkg="$1" '

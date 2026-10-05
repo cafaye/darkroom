@@ -148,14 +148,14 @@ assert_go_suite ./internal/problem 7
 # suite is `ok` with a count of zero. `go test -list` runs without a database, which
 # is the whole reason this step exists at all: the floor holds on a bare machine and
 # the `-v` tier below is what proves the tests actually ran.
-assert_go_suite ./internal/service 29
+assert_go_suite ./internal/service 39
 # The two packets 05's surface added. `auth` holds the verifier and the tenant
 # accessor every handler's first statement depends on; `httpapi` holds the drift
 # checks that make the DOCUMENT the routing table, and it is the only place the
 # 401 is exercised. Both were unmapped while `src/http.rs` was the tree being
 # tested, and an unmapped suite is the failure mode this step exists to catch.
 assert_go_suite ./internal/auth 12
-assert_go_suite ./internal/httpapi 19
+assert_go_suite ./internal/httpapi 21
 
 # The variant pipeline, and `-v` for a second reason that is not the skips.
 #

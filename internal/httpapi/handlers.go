@@ -152,10 +152,34 @@ func (s *Server) CompleteUpload(w http.ResponseWriter, r *http.Request, id api.A
 // ----------------------------------------------------------------------------
 
 // ListAssets is `GET /v1/assets`. One cursor page, scoped to the caller's account.
+//
+// THREE THINGS ARE TRANSLATED HERE AND NONE OF THEM IS DECIDED HERE: the limit, the
+// cursor, and the order. Each is turned into the value `service` takes — a clamped
+// number, an opaque position, a [service.SortOrder] — and the service answers. The
+// two refusals below are the same refusals `service` would make, moved ahead of the
+// call so that a request this server can answer without touching a database answers
+// without touching a database; `service.ListAssets` makes both of them again for a
+// caller that arrives without an HTTP layer in front of it.
 func (s *Server) ListAssets(w http.ResponseWriter, r *http.Request, params api.ListAssetsParams) {
 	tenant := auth.TenantOf(r)
 
-	query := service.ListQuery{Limit: defaultPageLimit}
+	// THE ORDER IS PARSED, NOT ASSUMED. The generated binder asks for
+	// `Type: "string"` and never checks the document's `enum: [asc, desc]` — nothing
+	// upstream of this handler catches a value that is neither — so `order` arrives
+	// here as whatever the query string held. `service.ParseSortOrder` is the one
+	// parser for it and it refuses with a 422 naming `order`, which is the answer for
+	// a value the document enumerates rather than clamps.
+	order := service.OrderDesc
+	if params.Order != nil {
+		parsed, pErr := service.ParseSortOrder(string(*params.Order))
+		if pErr != nil {
+			writeProblemError(w, r, pErr)
+			return
+		}
+		order = parsed
+	}
+
+	query := service.ListQuery{Limit: defaultPageLimit, Order: order}
 	if params.Limit != nil {
 		// Clamped by `service.clampPageLimit`, not rejected: the document says "A
 		// larger request is clamped, not rejected", and the decision belongs to the
@@ -178,6 +202,15 @@ func (s *Server) ListAssets(w http.ResponseWriter, r *http.Request, params api.L
 		query.Cursor = cursor
 	}
 
+	// A CURSOR FROM THE OTHER DIRECTION IS REFUSED, and this is the check that keeps a
+	// UI which re-sorts mid-walk from being served a page that skips and repeats rows.
+	// `service.Cursor.AgreesWith` is where the rule lives; asking here rather than
+	// waiting for `ListAssets` is what saves the refusal a database round trip.
+	if pErr := query.Cursor.AgreesWith(query.Order); pErr != nil {
+		writeProblemError(w, r, pErr)
+		return
+	}
+
 	page, pErr := s.service.ListAssets(r.Context(), tenant.Caller(), query)
 	if pErr != nil {
 		writeProblemError(w, r, pErr)
@@ -197,11 +230,6 @@ func (s *Server) ListAssets(w http.ResponseWriter, r *http.Request, params api.L
 		next = &token
 	}
 
-	// `params.Order` is NOT used. The document accepts `order` and the Go service
-	// lists newest-first only, so an `asc` request is served newest-first rather than
-	// refused. That is a divergence from `src/http.rs` and it is recorded in the
-	// packet's report and in README "Not done" rather than papered over here with a
-	// parameter the service does not take.
 	writeJSON(w, r, http.StatusOK, api.AssetList{
 		Data: data,
 		Page: api.Page{HasMore: page.HasMore, NextCursor: next},

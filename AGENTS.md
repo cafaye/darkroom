@@ -350,7 +350,7 @@ counts instead, with `bin/tier-counts`:
 ./bin/tier-counts /tmp/prime.log
 ```
 
-It asserts 24 variants / 15 harness / 29 service / 19 httpapi, **and** one
+It asserts 24 variants / 15 harness / 39 service / 21 httpapi, **and** one
 identity: the number `bin/prime` enumerated without a database equals the number
 the database tiers passed with one, because they are the same tests. **Adding a
 test means raising the number in `bin/tier-counts` in the same commit** — that is
@@ -376,7 +376,7 @@ POLICY, set by `migrations/0004_account_isolation.sql`. So the structural half i
 of a source file: what they hold in place is the database's answer rather than a
 text file's spelling. The behavioural half is `internal/service`'s two-account
 fixture against real Postgres, covering read, list, update and delete, and it is
-floored at 29.
+floored at 39.
 
 **A guard has to be shown to fail, and the predicate has to be tested too.** The
 first draft of the Rust `tests/tenant_scoping.rs` shipped three ways of not
@@ -476,7 +476,7 @@ discards the count from a package that passes, so an emptied file or a build tag
 that stopped matching is a green gate reporting zero. `bin/prime` enumerates
 every suite with `go test -list` and fails below a floor — cmd/darkroom 7,
 objectstore 21, checksum 6, storagekey 4, pgtest 15, domain 7, problem 7,
-service 29, auth 12, httpapi 19. Adding a test means raising the number in the
+service 39, auth 12, httpapi 21. Adding a test means raising the number in the
 same commit, which is the point of the constant: *"a security check that reports
 zero is worse than one that is absent: it looks like coverage."*
 
