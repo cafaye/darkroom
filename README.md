@@ -63,7 +63,7 @@ assert it — `internal/service`'s and `internal/objectstore`'s `Stats` counters
 
 | | |
 |---|---|
-| **TTL** | **900 seconds (15 minutes)**, in `objectstore::PRESIGN_TTL` |
+| **TTL** | **900 seconds (15 minutes)**, in `objectstore.PresignTTL` |
 | **Scope** | exactly one storage key, one content type, one maximum byte size |
 | **Signature** | SigV4 presigning (S3) / a signed `(key, expiry)` pair (in-memory) |
 
@@ -145,7 +145,7 @@ requirement that a client send `x-amz-sdk-checksum-algorithm` on a header the
 presigner had put in the signature. `curl -T file "$upload_url"` works again.
 
 The SDK is also told not to add checksums on its own
-(`RequestChecksumCalculation::WhenRequired`), because its default attaches a
+(`aws.RequestChecksumCalculationWhenRequired`), because its default attaches a
 CRC-32 — and CRC-64/NVME in current AWS SDK releases, which R2 rejects — to
 every `PutObject` and `UploadPart` that nobody asked about.
 
@@ -189,20 +189,26 @@ that another uploaded something.
 
 ## Tenant isolation
 
-`account_id` comes from the verified token and from nowhere else. There is no
-account field in any request body — `CreateUploadBody` does not have one, so
-serde drops it, and `a_create_body_cannot_name_an_account` is the regression
-guard for the day someone adds one.
+`account_id` comes from the verified token and from nowhere else. No request
+body in `openapi/v1.yaml` has an account field, so the generated
+`api.CreateUploadRequest` cannot carry one — and a client that sends
+`account_id` anyway gets nothing, because `internal/httpapi` builds
+`service.CreateUpload` from four named fields and takes the account from
+`tenant.Caller()`. (`CreateUploadRequest` is `additionalProperties: true`, so an
+extra key is a valid request and refusing it would contradict the contract;
+ignoring it is the correct answer.)
 
-Two things make this structural rather than a convention repeated in eleven
-places by hand:
+Two things make this structural rather than a convention repeated at seven
+handler sites by hand:
 
-- `auth::Tenant` has exactly one constructor, `from_principal`. There is no
-  `Tenant::from_request`, so a handler physically cannot scope a query to an
+- `auth.Tenant` has exactly one constructor, `auth.NewTenant`, it takes a
+  verified `*Principal`, and its fields are unexported. There is no
+  `auth.TenantFromRequest`, so a handler physically cannot scope a query to an
   account the caller named.
-- Every repository function takes a `Tenant` (or a literal `account_id` in the
-  `where` clause) and puts it in the query. A repository method that forgot
-  would not typecheck against `Tenant`.
+- `darkroomdb.InAccountTx` is the only way to start a transaction through that
+  package, so a repository function cannot run at all without naming the
+  account. That is the Go answer to the Rust rule a signature carried, and
+  `AGENTS.md` is candid that it is the weaker guarantee.
 
 ### Absence, not refusal
 
@@ -218,9 +224,13 @@ This is the rule the rest of the platform should copy. Every service that holds
 another service's data has to answer "what do I say when the caller is
 authenticated and the row is not theirs?", and there is one correct answer: the
 same thing you say when the row does not exist. It holds below the wire too —
-`store::find_asset` returns `Ok(None)` for another account's row, never a
-`*problem.Error`, because a distinguishable error is the same oracle one layer
-down.
+`findAsset` in `internal/service/store.go` returns `pgx.ErrNoRows` for another
+account's row and for no row at all, and `Service.find` maps that one sentinel
+onto one `problem.NotFound`. A distinguishable error is the same oracle one
+layer down.
+
+`TestACrossTenantReadIsTheSame404AsAMissingOne` is the regression guard on the
+service side and `TestAnUnroutedPathIsTheSameDocument` is its wire-side twin.
 
 ### What holds the predicates in place
 
@@ -393,7 +403,7 @@ talks to one, and none can. To confirm it works end to end:
 4. **Derive a variant.** `POST /v1/assets/{id}/variants` exercises the service's
    own `PutObject`, which is the operation the SDK's default checksum headers
    break against R2. A `200` here is the evidence that
-   `RequestChecksumCalculation::WhenRequired` is doing its job.
+   `aws.RequestChecksumCalculationWhenRequired` is doing its job.
 5. **In the R2 dashboard**, the object is there and its size matches. R2 does
    not store a `FULL_OBJECT` SHA-256 for you, and darkroom no longer expects
    one — the row's checksum came from reading the object back.
@@ -492,8 +502,9 @@ requires the publisher's own name — the brief asked for `media.asset.*` and
 `caf contract lint` rejects it. `media` is the domain; `darkroom` is the
 service. A rename is a new type, so these are the names from the start.
 
-There is exactly one way to write an event: `Outbox::enqueue`, which takes a
-`&mut Transaction`. A function that holds a transaction cannot publish outside
+There is exactly one way to write an event: `enqueue` in
+`internal/service/outbox.go`, which takes a `pgx.Tx`. A function that holds a
+transaction cannot publish outside
 it, and a function that does not hold one has no way to publish at all. **No
 event is emitted at `pending`** — a consumer that built a thumbnail on a
 `pending` asset would find no bytes, and a consumer that notified a user would
@@ -822,13 +833,14 @@ would be a flake waiting for a loaded CI box.
 ## Not done, and why
 
 - **Streaming verification for large objects.** `complete` reads the object
-  through `ObjectStore::get` and hashes it, so a 1 GiB upload is buffered in the
-  API process at complete time. It is released as soon as it is hashed, and the
-  hash itself is already available in a streaming form
-  (`checksum::sha256_hex_streaming`, tested equivalent to the one-shot path), but
-  the trait hands over `Bytes` and the read is what it is. The honest options are
-  a sixth trait method that streams, or a lower `MAX_UPLOAD_BYTES`; both are
-  contract changes and neither belongs in the change that made R2 work.
+  through `objectstore.Store.Get` and hashes it, so a 1 GiB upload is buffered
+  in the API process at complete time. It is released as soon as it is hashed,
+  and the hash itself is already available in a streaming form
+  (`checksum.SHA256HexStreaming`, tested equivalent to the one-shot path), but
+  the interface hands over `[]byte` and the read is what it is. The honest
+  options are a sixth interface method that streams, or a lower
+  `objectstore.MaxUploadBytes`; both are contract changes and neither belongs
+  in the change that made R2 work.
 - **A live R2 integration test.** Nothing in this repository can reach a real
   bucket, and adding something that could would put a credential in CI. What is
   tested is configuration, the credential scope, the signed-header list and the
@@ -854,9 +866,15 @@ would be a flake waiting for a loaded CI box.
 - **The outbox publisher loop.** Needs a NATS client and a deployment. The
   table and the insert path — the half with the correctness guarantee — are
   here; a publisher loop that cannot publish is worse than an absent one.
-- **The stale-`pending` sweeper.** `store::find_stale_pending` exists and is
-  tested; nothing calls it on a schedule yet. `PENDING_SWEEP_AFTER` is twice
-  the presign TTL so a client mid-PUT is never swept.
+- **The stale-`pending` sweeper.** Not built at all, and the README used to say
+  otherwise: it named `store::find_stale_pending` and called it "tested", which
+  was a Rust-tree function that the rewrite did not carry over. There is no
+  sweeper query, no sweeper test and no caller in this tree. What *is* here is
+  `service.PendingSweepAfter`, twice the presign TTL, so an upload whose URL is
+  still valid is never swept out from under a client that is mid-PUT — the
+  number lives in `internal/service` because it is a property of the state
+  machine and a second copy of it elsewhere would drift. Sweeping is the
+  remaining work, not unscheduling something.
 - **The idempotency-key retention sweep.** 24 hours per core; the index makes
   it a range scan when it is written. Until then the table grows.
 - **An orphaned-object sweeper.** If storage deletion fails during
