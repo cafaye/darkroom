@@ -132,9 +132,9 @@ mode this service exists to prevent. So the fallback became the only path, and
 reintroduced by accident.
 
 **What it costs:** one read of the object per completed upload, in the API
-process, bounded by `MAX_UPLOAD_BYTES` (1 GiB). That is a real cost and it is
-paid on purpose. The read-count assertion is in `internal/service`'s tests and
-the number is *exactly one*, so the trade cannot be quietly reversed into a
+process, bounded by `objectstore.MaxUploadBytes` (1 GiB). That is a real cost and
+it is paid on purpose. The read-count assertion is in `internal/service`'s tests
+and the number is *exactly one*, so the trade cannot be quietly reversed into a
 header lookup by someone who finds the read expensive.
 
 **What it does not cost:** anything on the S3 path. S3 still verifies at
@@ -525,15 +525,17 @@ requires the publisher's own name — the brief asked for `media.asset.*` and
 service. A rename is a new type, so these are the names from the start.
 
 There is exactly one way to write an event: `enqueue` in
-`internal/service/outbox.go`, which takes a `pgx.Tx`. A function that holds a
-transaction cannot publish outside
-it, and a function that does not hold one has no way to publish at all. **No
+`internal/service/outbox.go`, and it takes a `pgx.Tx` — there is no variant that
+takes a pool, no queue in memory, and no second entry point. A function that
+holds a transaction cannot publish outside it, and a function that does not hold
+one has no way to publish at all. **No
 event is emitted at `pending`** — a consumer that built a thumbnail on a
 `pending` asset would find no bytes, and a consumer that notified a user would
 be telling them about an upload that has not landed.
 
-`TestARolledBackTransactionLeavesZeroOutboxRows` writes a domain row and an event in
-one transaction, rolls it back, and asserts **both** tables are empty. Asserting
+`TestARolledBackTransactionLeavesZeroOutboxRows` writes a domain row and an event
+in one transaction, rolls it back, and asserts **both** tables are empty.
+Asserting
 only the domain row would still pass if the event were written outside the
 transaction.
 
@@ -769,11 +771,16 @@ a method the generated client does not have. It follows courier's
 `test/courier_web/openapi_document_test.exs`, which is the same tripwire shape
 pantry's has fired three times against.
 
-It compares **paths, never counts** — a count comparison passes on a rename and
-fails on a pure addition, which is backwards. Both of its readers raise rather
-than under-read: an unparseable document, a missing `paths:` key, a path item
-with no operation under it, or an empty route table is a failure, because a
-green check over nothing is worse than no check.
+It compares **keys, never counts** — a count comparison passes on a rename and
+fails on a pure addition, which is backwards. The key is `(method, path)`, and the
+method being part of it is exactly what the Rust tree could not get: there, "the
+method a `MethodRouter` answers is baked into the value `get(handler)` returns
+and there is no accessor for it", so the drift check could only compare paths.
+Both of its readers raise rather than under-read: `declaredRoutes` fails if the
+document yields zero operations, `servedRoutes` fails if `chi.Walk` finds none,
+and a green check over nothing is worse than no check. The document is **parsed
+as YAML, not scanned** for `operationId:` lines, because a scan reads lines
+without knowing they sit under a path and a method.
 
 **THE ROUTER'S SIDE IS NOW THE DOCUMENT, NOT A TABLE — AND THE REASON IS WORTH
 THE WHOLE SECTION.** The Rust tree's problem was that axum cannot be asked what
@@ -796,37 +803,37 @@ router with `chi.Walk` and re-registers every route it finds. So:
 And `bin/prime` regenerates and diffs on every run, so the generated file is the
 document rather than a stale copy of it.
 
-One thing the generated table cannot state, because the method a chi route
-answers is baked into the value `r.Get(handler)` returns with no accessor for it,
-is closed by asking the router: a request with an undeclared verb is answered,
-and a path the router does not know is `404`. That distinction is what makes the
-probe possible, and
-`a_path_the_router_does_not_serve_is_404_and_not_405` is the control that says
-the distinction is real.
+**What this closes, which is why the walk is the whole answer.** In the Rust tree
+the router-side probe read a path it already knew about, so it caught a method
+registered on a known path outside the table and did **not** catch a whole new
+path registered outside it. Both halves were measured by planting a `.route()`
+call beside the fold: a planted `put` on `/v1/assets` turned the method test red
+while both document tests stayed green, and a planted `get` on `/v1/brand-new`
+left all nine tests green. "Nothing in axum enumerates the paths a `Router`
+holds, so that gap is not closable from inside a test." `chi.Walk` enumerates
+them, so here there is one inventory and neither gap has a shape.
 
-**What it cannot see, stated plainly.** The probe reads a path it already knows
-about, so it catches a method registered on a known path outside the table — and
-it does **not** catch a whole new path registered outside the table. Both halves
-were measured by planting a `.route()` call beside the fold: a planted `put` on
-`/v1/assets` turned the method test red while both document tests stayed green,
-and a planted `get` on `/v1/brand-new` left all nine tests green. Nothing in
-axum enumerates the paths a `Router` holds, so that gap is not closable from
-inside a test. What narrows it is structural rather than a guarantee: `router()`
-is a fold over `OPERATIONS`, so there is one line in this repository where a
-route can be registered by hand.
+The other half of that is asking the router directly: a path it does not know is
+`404`, and `TestAnUnroutedPathIsTheSameDocument` is the control that says the
+distinction is real — it requires `404`, code `not_found` and
+`application/problem+json` from `/v1/nope`, from `/`, and from `POST /healthz`,
+which is a verb the document does not pair with that path.
 
 **`/healthz` and `/readyz` are in the document**, under a `probes` tag with
-`security: []`, so the omission list is empty. courier excludes them; excluding
-them here would mean deleting correct documentation to satisfy a carve-out. The
-list is still a closed list keyed by method *and* path rather than a prefix
-match, it is empty rather than absent, and two tests hold it: one fails if a
-first omission appears, and one fails if an omission stops naming something the
-router serves, so a rename cannot hide behind a stale carve-out.
+`security: []`, and there is no omission list at all: the document's own
+`security: []` IS the exemption. courier excludes the probes; excluding them here
+would mean deleting correct documentation to satisfy a carve-out.
+`TestEveryUnauthenticatedRouteIsOneTheDocumentExempts` reads that out of the YAML
+in **both** directions — nothing is served without a gate unless the document says
+so, and nothing the document exempts is missing from the router, so a rename
+cannot hide behind a stale carve-out.
 
 This check needs neither a database nor a socket, so it is in the default tier
-and runs on a bare machine. It reads its subject out of `exposes.api` in
-`cafaye.yml` rather than hardcoding a filename, so it cannot end up checking a
-document the platform does not ship.
+and runs on a bare machine. It reaches the document through a hardcoded
+`../../openapi/v1.yaml` rather than through `exposes.api` in `cafaye.yml` — the
+Rust tree read the service's own pointer and this one does not, which is a real
+difference and a small gap: the two files could be pointed at different
+documents without this test noticing.
 
 ### The coverage gate
 
