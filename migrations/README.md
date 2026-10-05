@@ -2,20 +2,27 @@
 
 Plain SQL, applied in filename order. They are compiled into the binary — there is
 no `migrations/` directory to lose in a distroless image — by `migrations/embed.go`
-under Go, and by `sqlx::migrate!` under the Rust tree this repository still carries.
+under Go. That reason is the whole of it, and it is why it survived the rewrite
+from the Rust tree (which embedded the same bytes through `sqlx::migrate!`, and
+which no longer exists here): a migration set read from the filesystem at boot is
+a migration set a distroless image cannot have, whichever language the service is
+written in. The embedding is `//go:embed *.sql`, and the reason `migrations/`
+carries a `package` clause at all is that `go:embed` refuses a `..` in its
+pattern — see the header of `migrations/embed.go`.
 
 ## Rules
 
 **Migrations are a deploy step, not a boot step.** The service never runs them
-at startup. Apply them with `psql` or `sqlx-cli` before the new binary starts.
+at startup. Apply them with `psql` before the new binary starts.
 
 **Never edit an applied migration.** Write a new one. A file that has run in any
 environment is history; editing it means the next deploy silently does nothing
 and the two versions of the service disagree about the schema.
 
 **No up/down markers, so a down is COMMENTED SQL.** Every file here is plain SQL
-with no `-- +migrate Down` marker, so there is no mechanism that would split one
-and appending an *executable* down to a file means `psql -f` applies the up half
+and the runner in `migrations/embed.go` has no notion of a down half at all — its
+`File` is a name and a body, and `Apply` executes each body in filename order.
+So appending an *executable* down to a file means `psql -f` applies the up half
 and then immediately undoes it. That was measured, not reasoned: `0004` shipped
 with an executable down, and applying it left `relrowsecurity = false` on both
 tables with `relforcerowsecurity = true` — the one catalog column that says the

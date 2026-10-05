@@ -4,21 +4,24 @@
 #
 # ## The division, and why it falls where it does
 #
-#   ci       kit's reusable workflow, language: rust. Conventions, and the
+#   ci       kit's reusable workflow, language: go. Conventions, and the
 #            coverage gate — the one check `bin/prime` does not have.
-#   gate     `bin/prime --db` against a real Postgres. The three tiers.
+#   gate     `bin/prime --db` against a real Postgres. The database tier, which
+#            is the one that does not run without the flag.
 #   contract cafaye.yml against core's schema, using cafaye/caf's own tool.
 #
-# `gate` cannot live in kit. kit's rust job is `cargo fetch`, `cargo fmt
-# --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and a
-# coverage step: the test command is hardcoded, there is no `services:` block,
-# there is no `TEST_DATABASE_URL`, and there is no second feature set. Every
-# one of those is a fact about *this* service — that its gate is a script, that
-# its third tier needs a database, that its second tier needs `--features s3`.
-# kit is config with no dependencies by design, so a job that calls one
-# repository's `bin/prime` is not something kit can grow without becoming the
-# thing it exists to prevent. Raised for the manager as a possible future
-# `gate-command:` input; until it exists, the job is here.
+# `gate` cannot live in kit. The inputs `ci` above passes are the whole of the
+# interface — a `language`, a `working-dir`, a `versions` map and a
+# `coverage-fail-under` — and none of them is a command, a service container or
+# an environment variable: the test command is kit's, there is no `services:`
+# block, and nothing puts a `TEST_DATABASE_URL` in the runner's environment.
+# Every one of those is a fact about *this* service — that its gate is a script
+# (`bin/prime`), that the database tier needs a Postgres to talk to, and that a
+# green default tier proves nothing about the tier that matters. kit is config
+# with no dependencies by design, so a job that calls one repository's
+# `bin/prime` is not something kit can grow without becoming the thing it exists
+# to prevent. Raised for the manager as a possible future `gate-command:` input;
+# until it exists, the job is here.
 #
 # `contract` cannot live in kit either, for a sharper reason: it checks out
 # `cafaye/caf` — a *different* cafaye repository — and runs their Go CLI
@@ -27,24 +30,33 @@
 #
 # ## The thing this file exists to prevent
 #
-# `bin/prime` has three tiers and the third one does not run by default. Tier 6
-# is `cargo test -- --ignored` against `TEST_DATABASE_URL`, and its tests are
-# `#[ignore]`d, so a plain `cargo test` reports them as ignored and exits zero.
-# A CI run that stops at tier 5 is a run that has never touched a database, and
-# darkroom is a service whose entire job is putting bytes in one. So `gate` sets
-# the environment and calls `bin/prime --db`, and `bin/tier-counts` reads the
-# counts afterwards so a green run has to mean the database tests actually
-# passed rather than merely did not fail.
+# `bin/prime` has a default tier and a database tier, and the second one does not
+# run by default. `./bin/prime` with no flag is green on a bare machine with no
+# Postgres and no Docker, which is what makes it usable as a pre-commit hook and
+# is exactly why it is not enough here: every database test calls
+# `pgtest.Require`, which SKIPS at runtime with a named reason, and `go test`
+# reports a package whose tests all skipped as `ok`. There is no `#[ignore]`
+# marker in Go to mark them, so a skipped test is indistinguishable from a
+# passing one in the output. A CI run of `./bin/prime` without the flag is a run
+# that has never touched a database, and darkroom is a service whose entire job
+# is putting bytes in one. So `gate` sets the environment and calls
+# `bin/prime --db`, and `bin/tier-counts` reads the counts afterwards so a green
+# run has to mean the database tests actually passed rather than merely did not
+# fail.
 #
-# Tier 6 runs in PARALLEL, with no `--test-threads=1`, because each test applies
-# the migrations into a schema of its own — see `tests/common/mod.rs` and
-# `tests/schema_isolation.rs`. The flag used to be there because the suites
-# shared one set of tables and each truncated them; the schemas are why it is
-# not. That distinction matters for this file: `gate` provisions ONE postgres
-# service for the whole job, so a suite that had quietly gone back to sharing
-# tables would pass locally on a developer's eight cores and fail here for
-# reasons this file cannot report, and a `--test-threads=1` reappearing in
-# `bin/prime` would hide it. The tier-counts check below is what notices.
+# The database tier runs IN PARALLEL, with no `-p 1` and no serialisation flag,
+# because each test applies the migrations into a schema of its own — see
+# `internal/darkroomdb/pgtest`. A flag used to be there because the suites shared
+# one set of tables and each truncated them; the schemas are why it is not, and
+# `TestTheHarnessGivesEachTestItsOwnSchema` is the property itself: six
+# goroutines, one row each, and each asserting it sees exactly ONE row rather
+# than "each asserting it wrote its own" — a harness where every schema is the
+# same schema satisfies the second and fails the first. That distinction matters
+# for this file: `gate` provisions ONE postgres service for the whole job, so a
+# suite that had quietly gone back to sharing tables would pass locally on a
+# developer's eight cores and fail here for reasons this file cannot report, and
+# a serialisation flag reappearing in `bin/prime` would hide it. The tier-counts
+# check below is what notices.
 name: ci
 
 on:
@@ -71,7 +83,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# `ci` and `gate` both compile the crate, on separate runners, so the suite is
+# `ci` and `gate` both build the service, on separate runners, so the tree is
 # built twice per push. That is the cost of the shared half being shared rather
 # than inlined, and it is the right trade: `gate` runs `bin/prime` — the command
 # a developer runs, which kit cannot do — and `ci` brings the coverage gate and
