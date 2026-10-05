@@ -264,13 +264,19 @@ the case a scoping bug hides in: an unscoped lookup by checksum does not error
 and does not return nothing, it returns a row and the wrong one, while every
 id-keyed test stays green.
 
-These guards were themselves wrong three times before they were right — a
-quadratic scanner that hung two of the twelve tests for eleven minutes, a
-"names a row" predicate that `account_id = $2` satisfied because `id = $` is a
-substring of it, and a set comparison that asserted an accident of file layout.
-Each is written up in `REPORT-darkroom-09-isolation.md`, and each is the reason
-`sql_statements` is linear and `naming_a_row_is_anchored_to_a_whole_identifier`
-exists. The habit to copy: **plant a divergence, watch the guard go red, and treat
+*(The Rust guards were themselves wrong three times before they were right — a
+quadratic scanner that hung two of the twelve tests for eleven minutes, a "names
+a row" predicate that `account_id = $2` satisfied because `id = $` is a substring
+of it, and a set comparison that asserted an accident of file layout. Those three
+are why `sql_statements` was made linear and why
+`naming_a_row_is_anchored_to_a_whole_identifier` existed at all, and they are in
+`REPORT-darkroom-09-isolation.md`.)* The Go equivalents took the lesson rather
+than the code: the structural scan is `TestEveryHelperCallInAPolicyIsWrapped`,
+the predicate it uses is `isWrappedAt`, and `TestIsWrappedAt` is the table that
+had to be written before the predicate was believed — its first version trimmed
+whitespace on one side only and read all eight correct policies as bare.
+
+The habit to copy: **plant a divergence, watch the guard go red, and treat
 a guard that hangs or passes on broken source as a finding about the guard.**
 
 The full enumeration, the counts per operation kind, and the five tripwires proven
@@ -298,8 +304,11 @@ which present as code defects and are not:
 - **The cluster provisions ONCE PER VOLUME.** `KIT_POSTGRES_DATABASES` is read
   by an init script that runs only against a fresh `postgres-data` volume, so a
   developer who already has one gets a healthy cluster that has never been told
-  `darkroom` exists. `bin/dev db grant darkroom`, or one volume recreation, is
-  the fix; nothing shorter applies a new name.
+  `darkroom` exists. One volume recreation is the fix — `docker compose down -v`
+  against the shared stack, then `up -d --wait` again — and nothing shorter
+  applies a new name. (This README used to name `bin/dev db grant darkroom`.
+  There is no `bin/dev` in this repository: `bin/` holds `prime`, `tier-counts`
+  and `gate-self-test` and nothing else, so the command did not exist.)
 
 ## The storage boundary
 
@@ -319,31 +328,34 @@ then" above the line and no policy below it.
 
 Two implementations:
 
-- **`InMemoryObjectStore`** — always compiled, used by every test and by
-  `DARKROOM_OBJECT_STORE=memory`. Its presigned URLs are really signed and
-  really scoped: `apply_presigned_put` verifies the signature, the key, the
-  content type, the length cap and the expiry, and refuses anything outside
-  them. A fake that merely "worked" would let a bug in scope or TTL ship,
-  because nothing in the test would notice.
-- **`S3ObjectStore`** — compiled only with `--features s3`, which is the
-  deployment image's build. The AWS SDK is not a default dependency at all, so
-  the default build **cannot construct a real object-storage client**. That is
-  what makes "tests never hit the network" a property of the dependency graph
-  rather than a promise in a document.
+- **`objectstore.Memory`** (`objectstore.NewMemory`) — always compiled, used by
+  every test and by `DARKROOM_OBJECT_STORE=memory`. Its presigned URLs are
+  really signed and really scoped: `Memory.ApplyPresignedPut` verifies the
+  signature, the key, the content type, the length cap and the expiry, and
+  refuses anything outside them. A fake that merely "worked" would let a bug in
+  scope or TTL ship, because nothing in the test would notice.
+- **`objectstore.S3`** (`objectstore.New`) — always compiled too, because **Go
+  has no feature flags here: one build is the deployment build.** The AWS SDK
+  is a default dependency and always linked, so what keeps a test off the
+  network is not the dependency graph but the constructors: `New` REFUSES a
+  static credential and takes the SDK's own chain, so a test that needs one
+  calls `NewS3ForTest` instead. `TestProductionRefusesAStaticCredential` is the
+  guard on that.
 
-Client uploads go through the presigned URL, never through `put` — `put` is the
-service's own path, used by variant generation to store a derived image. A test
-asserts the client's bytes do not increment it.
+Client uploads go through the presigned URL, never through `Put` — `Put` is the
+service's own path, used by variant generation to store a derived image.
+`TestAClientsWriteNeverGoThroughPut` asserts the client's bytes do not increment
+it.
 
 ### AWS, MinIO and Cloudflare R2 are one implementation
 
-There is no `R2ObjectStore`, and that is the point. The services differ in four
-ways, all of them *request shaping*, and request shaping is entirely below the
-trait:
+There is no R2-specific store type, and that is the point. The services differ in
+four ways, all of them *request shaping*, and request shaping is entirely below
+the interface:
 
 | | R2 | how darkroom handles it |
 |---|---|---|
-| region | `auto`; `us-east-1` and `""` alias to it, but SigV4 must be signed as `auto` | an R2 endpoint resolves to `auto` in `config.rs`; a real region is **refused at startup**, naming the variable and the value |
+| region | `auto`; `us-east-1` and `""` alias to it, but SigV4 must be signed as `auto` | an R2 endpoint resolves to `auto` in `internal/objectstore/s3config.go`; a real region is **refused at startup**, naming the variable and the value |
 | endpoint | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`, account-scoped, no global endpoint | always configuration, never a constant; `region=auto` with no endpoint is refused so a bucket-only config cannot resolve `s3.amazonaws.com` |
 | checksums | SHA-256 is `COMPOSITE` only; `FULL_OBJECT` is offered for CRC-64/NVME | darkroom never asks: `ObjectMeta` has no checksum field and `complete` reads the bytes back |
 | headers | no `x-amz-acl`, `x-amz-grant-*`, `x-amz-expected-bucket-owner`, no object lock | darkroom never sets them and has no configuration that could; `objectstore.S3Config` has no field for any of them, which is the stronger form of the same claim |
@@ -354,13 +366,19 @@ whole host), and the flag is still honoured for anything else.
 `internal/objectstore` runs **the same presign assertions against all of
 them** — one body, five configurations, no per-backend branch — and checks the
 region in the SigV4 credential scope, the signed-header list, and the absence of
-every header R2 rejects. The startup refusals are tested against the real
-binary, not only against the parser.
+every header R2 rejects. The refusals are asserted in
+`cmd/darkroom`'s `TestTheR2RulesLiveInTheStore` at the layer that actually
+refuses (`objectstore.New`, before any client exists), and
+`TestAnS3ConfigurationIsCarriedThroughUnexamined` holds the boundary that keeps
+those rules out of `config.go`. **Nothing runs the built binary to watch it
+refuse** — that is a gap, not a claim, and the R2 section below is the manual
+check that stands in for it.
 
 ### Running against R2
 
-Build with the feature, point the four variables at the bucket, and give the
-service an R2 API token. There is no secret in this repository: the token is
+There is nothing to build differently: one build is the deployment build. Point
+the four variables at the bucket and give the service an R2 API token. There is
+no secret in this repository: the token is
 read by the AWS SDK's own chain from the environment.
 
 ```sh
@@ -438,16 +456,20 @@ thumbnail. **This is the one place a dependency decision is deferred**; it is
 called out in the report.
 
 Alpha is composited over white explicitly, as integer arithmetic:
-`out = src·a + 255·(1−a)`, rounded to nearest. `DynamicImage::to_rgb8` *drops*
-the alpha channel rather than compositing it, so a transparent black pixel would
-stay black in the served image. A test caught exactly that, and the Go port has
-the same test plus a resized-transparent variant, because compositing correctly
+`out = src·a + 255·(1−a)`, rounded to nearest. JPEG has no alpha channel and the
+easy conversion from RGBA **drops** the alpha rather than compositing it, so a
+transparent black pixel would stay black in the served image — which is why
+`variants.go` walks the pixels and calls `matteOverWhite` on each channel
+itself. A test caught exactly that in the Rust tree, and the Go port has the
+same test plus a resized-transparent variant, because compositing correctly
 and then resizing premultiplied RGBA both produce plausible images and only one
 of them is right.
 
-The original row and its object are never touched. `variant_created_is_emitted_
-and_the_original_is_untouched` asserts the original's checksum, byte size and
-`updated_at` are all unchanged after a variant is derived.
+The original row and its object are never touched. `service.CreateVariant` reads
+the original and writes a variant into a **different key namespace**, and never
+opens an update against `assets`; `TestCreateAndListVariants` asserts the
+variant's key differs from the original's, that the derived bytes really are in
+storage, and that a re-requested kind replaces rather than accumulates.
 
 Accepted inputs: **PNG, JPEG, GIF, WebP**. Accepted by `internal/variants/`
 (decoding) and by `AssetKind` (declaring) — a decode failure is a 422 naming
@@ -510,7 +532,7 @@ event is emitted at `pending`** — a consumer that built a thumbnail on a
 `pending` asset would find no bytes, and a consumer that notified a user would
 be telling them about an upload that has not landed.
 
-`a_rolled_back_transaction_emits_nothing` writes a domain row and an event in
+`TestARolledBackTransactionLeavesZeroOutboxRows` writes a domain row and an event in
 one transaction, rolls it back, and asserts **both** tables are empty. Asserting
 only the domain row would still pass if the event were written outside the
 transaction.
@@ -539,7 +561,7 @@ box" is the worst possible property for something whose purpose is surviving a
 timeout. A failed handler **releases** its reservation, so a client that got a
 503 and retried gets a real attempt rather than a permanent 409.
 
-`mark_ready` is also a compare-and-set (`and status = 'pending'`), so two
+`markReady` is also a compare-and-set (`and status = 'pending'`), so two
 concurrent completes cannot both win and the second emits no second
 `darkroom.asset.ready`.
 
@@ -557,12 +579,24 @@ concurrent completes cannot both win and the second emits no second
 | `POST` | `/v1/assets/{id}/variants` | `assets:write` | 201. |
 | `GET` | `/v1/assets/{id}/variants` | `assets:read` | |
 
-`/healthz` and `/readyz` are exempt from authentication by an explicit path
-allow-list, **not** by route order — axum's `Router::layer` applies to every
-route the router holds, so registering the probes "before" the auth layer does
-not exempt them. A `/healthz` behind the auth middleware returns 401, an
-orchestrator marks every instance unhealthy, and the deployment rolls back with
-no indication of why. A test caught exactly this.
+`/healthz` and `/readyz` are exempt from authentication **structurally**: the
+router is built from three `chi.Router`s, and the probe router simply has no
+auth middleware to remove. `internal/httpapi.New` walks the generated router
+with `chi.Walk` and routes everything outside `APIV1Prefix` onto the probe
+router and everything inside it onto the guarded one, so the split is on the
+PATH and not on a list of names.
+
+*(Why the Rust tree could not do this: axum's `Router::layer` applies to every
+route the router holds, so "register the probes before the auth layer" does not
+exempt them, and there is a test over there saying so. chi's `Use` has the
+opposite property — it applies to routes registered *after* the call and to no
+others — so the exemption here does not depend on ordering at all. A `/healthz`
+behind the auth middleware returns 401, an orchestrator marks every instance
+unhealthy, and the deployment rolls back with no indication of why.)*
+
+`TestEveryUnauthenticatedRouteIsOneTheDocumentExempts` holds the set this code
+exempts against the set `openapi/v1.yaml` exempts, so adding an unauthenticated
+route means editing the document.
 
 ## Storage keys
 
