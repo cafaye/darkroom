@@ -33,6 +33,30 @@ never runs it.
 **Every migration is reversible**, or carries a comment saying why it cannot be.
 `0001`–`0003` drop only tables this service owns; `0004` drops the substrate.
 
+**And reversible is not free, so the cost of each is written down.** "You can undo
+it" answers the wrong question; the question an operator reaching for `psql` is
+asking is *what does undoing it lose that I cannot get back*. Two of these are not
+symmetric with the rest, and neither is recoverable from the other side:
+
+- **`0002`, the outbox.** A row in `outbox_events` is an event that has been
+  committed but **not yet published**, and `published_at is null` is this
+  repository's only definition of "not published". Dropping the table deletes
+  undelivered events, and unlike a published one they **cannot be reconstructed
+  from the consumer's side** — the consumer never saw them. The order that avoids
+  that is the order this repository already documents everywhere else: drain the
+  outbox first, then roll back the schema.
+- **`0003`, the idempotency ledger.** Dropping `idempotency_keys` makes retries
+  unsafe again, and **no test in this repository can observe that**, because the
+  tests exercise the code path and the table is what the code path consults. A
+  client whose response was lost retries and is served the request a second time:
+  a second charge, a second upload, a second email. Every other table in this
+  schema loses rows that describe the past; this one loses the record of what has
+  already happened, which is the only thing making a repeat safe.
+
+The general shape: the two tables that look like the least important ones to drop
+are the two whose loss is the most permanent, and in both cases the damage is
+invisible to everything still running.
+
 ```sh
 psql "$DATABASE_URL" -f migrations/0001_assets.sql
 psql "$DATABASE_URL" -f migrations/0002_outbox_events.sql
