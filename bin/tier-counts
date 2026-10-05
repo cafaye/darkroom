@@ -119,17 +119,17 @@ set -euo pipefail
 VARIANT_TESTS=24
 PGTEST_DB_TESTS=15
 SERVICE_DB_TESTS=39
-# 33, and it MOVED TWICE. 19, then the listing packet's two, then the idempotency
-# packet's twelve. Both halves of that are load-bearing and both are why the number
+# 34, and it MOVED THREE TIMES. 19, then the listing packet's two, then the
+# idempotency packet's twelve, then the honest packet's one. Both halves of that are load-bearing and both are why the number
 # is a claim rather than a constant:
 #
-#   - `go test -list` enumerates 33 without a database (the eleven `pgtest.New`
+#   - `go test -list` enumerates 34 without a database (the eleven `pgtest.New`
 #     tests skip at runtime rather than disappearing), and the identity below
 #     requires that count to equal this one. So a test that stopped running in the
 #     `--db` tier is a failure in BOTH directions.
 #   - `HTTPAPI_TESTS` is also the floor for `internal/httpapi` in `bin/prime`'s
 #     `-list` step, where it has to hold on a bare machine.
-HTTPAPI_TESTS=33
+HTTPAPI_TESTS=34
 
 usage() {
   echo "usage: bin/tier-counts <log-of-'bin/prime --db'>" >&2

@@ -212,7 +212,7 @@ assert_go_suite ./internal/service 39
 # 401 is exercised. Both were unmapped while `src/http.rs` was the tree being
 # tested, and an unmapped suite is the failure mode this step exists to catch.
 assert_go_suite ./internal/auth 12
-# 33, and the number is the SUM OF TWO PACKETS that each read the tree rather than
+# 34, and the number is the SUM OF THREE PACKETS that each read the tree rather than
 # the base: 19, plus the listing packet's two, plus the idempotency packet's twelve.
 #
 # It is this floor and not a comment that makes an emptied `idempotency_test.go`, or
@@ -221,7 +221,7 @@ assert_go_suite ./internal/auth 12
 # enumerates without a database, which is the whole reason this step exists;
 # `bin/tier-counts` carries the same figure and the identity that the enumerated count
 # and the passed count are the same number.
-assert_go_suite ./internal/httpapi 33
+assert_go_suite ./internal/httpapi 34
 
 # The variant pipeline, and `-v` for a second reason that is not the skips.
 #
