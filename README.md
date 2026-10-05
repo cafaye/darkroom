@@ -614,8 +614,9 @@ anyone who guessed an asset id could presign a PUT over the *original*. The
 randomness is what makes the presigned URL the only way to write there. The
 account prefix is for bucket lifecycle rules, not authorisation.
 
-`Asset` has no `storage_key` field. A client that can read it will eventually
-try to build a URL from it.
+`Asset` has no serialised storage key: the field is unexported (`storageKey`)
+and reachable only through `Asset.StorageKey()`. A client that can read it will
+eventually try to build a URL from it.
 
 ## Running it
 
@@ -639,9 +640,15 @@ docker compose --project-directory . \
 psql "$DATABASE_URL" -f migrations/0001_assets.sql
 psql "$DATABASE_URL" -f migrations/0002_outbox_events.sql
 psql "$DATABASE_URL" -f migrations/0003_idempotency_keys.sql
+psql "$DATABASE_URL" -f migrations/0004_account_isolation.sql   # no RLS without this one
 
 DARKROOM_OBJECT_STORE=memory go run ./cmd/darkroom
 ```
+
+**All four migrations, in order.** This used to list three and omit
+`0004_account_isolation.sql`, which is the one that makes the tenant boundary the
+database's — a database built from the first three answers every query, correctly,
+for every account.
 
 `DARKROOM_OBJECT_STORE=memory` is the default, and the binary warns at startup
 that uploads are lost on restart. There is no `dev-auth` build flag: the Go tree
@@ -722,24 +729,42 @@ every other number still read correctly.
 ### One schema per test, which is why the database tiers run in parallel
 
 There is no test-serialising flag anywhere in this repository, and there was one
-in `bin/prime` until each `test_store()` started giving its test a schema of its
-own. `internal/darkroomdb/pgtest` creates `t_` plus hex characters of a fresh
-uuid, applies `migrations/` **into that schema**, and puts that schema on the
-pool's `search_path`, so every connection the test gets is inside it. `truncate`
-still runs, and still names its tables unqualified — that is the isolation, not
-an oversight: the names resolve through the search path, so it empties this
-test's tables and cannot reach another's.
+in `bin/prime` until each `pgtest.New` started giving its test a schema of its
+own. `internal/darkroomdb/pgtest` builds a name of `SchemaPrefix` (`t_`) plus
+exactly `SchemaSuffixLen` (12) hex characters — four from a hash of `t.Name()` so
+a failure names the test that made the schema, and eight from `crypto/rand` so
+two cases of one table-driven test cannot collide — applies `migrations/` **into
+that schema**, and puts that schema on the pool's `search_path`, so every
+connection the test gets is inside it.
 
-Three reasons it is a schema and not something else, because all three were
-available:
+**There is no `truncate` in this harness.** This paragraph used to say one
+"still runs, naming its tables unqualified", which was the Rust tree's harness:
+there, tests shared one set of tables and a `truncate` was how a test got a clean
+one. Here each test starts from a schema that did not exist a moment earlier, so
+there is nothing to empty, and the only unqualified-SQL hazard that matters is
+gone with it. What reaps a test is `drop schema … cascade`, and
+`droppable(schema)` refuses anything whose name is not `t_` plus twelve characters
+from the fixed alphabet — the guard is a prefix test plus a length test, because
+`drop schema` is unconditional SQL and this function is the only thing standing
+between a bug in `uniqueSuffix` and a developer's `public`.
+
+Two reasons it is a schema and not something else, both still live:
 
 - **Not a database per test.** `TEST_DATABASE_URL` names one database, and
   changing its shape is a different decision than this one.
-- **Not a transaction rolled back per test.** `Service` holds a transaction open
-  across an `await` on object storage — that is the outbox rule — so a test's own
-  writes are not visible inside one, which a rollback-based harness cannot do.
 - **Not a mutex.** That is `--test-threads=1` under another name, and it costs
-  the whole suite to protect one test.
+  the whole suite to protect one test. The migration step serialises behind
+  `pg_advisory_xact_lock(hashtext('darkroom.pgtest.migrate'))` — a Postgres lock,
+  not a process one, because `go test ./...` runs several packages as separate
+  processes and six concurrent `0004` applications failed with
+  `tuple concurrently updated` on a loaded machine. Everything else — connecting,
+  seeding, querying, dropping — runs concurrently.
+
+*(The Rust tree's third reason is history and does not apply here: `Service` there
+held a transaction open across an `await` on object storage, so a test's own
+writes were not visible inside one. In this tree `CompleteUpload` does its `Head`,
+its `Get` and its hashing BEFORE `InAccountTx`, and the transaction covers only
+`markReady` and the `enqueue` beside it.)*
 
 The search path is the one schema and **not** `t_<hex>, public`, and the reason
 was measured rather than reasoned about: the fallback does not break the
