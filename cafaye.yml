@@ -4,10 +4,24 @@
 #
 # `language: go`, changed from `rust` when the Go module built and `go vet ./...`
 # went clean. Nothing else in this file moved, and that is deliberate in both
-# directions: `exposes.api` still points at the same `openapi/v1.yaml` because the
-# packet that introduces the Go HTTP layer is not this one, and a contract that
-# changes while the thing implementing it does not is a contract that lies about
-# what is deployed.
+# directions: `exposes.api` points at the same `openapi/v1.yaml` it pointed at
+# before the rewrite, because the document is the contract and the rewrite was
+# not an opportunity to restate it. That has since held across the arrival of the
+# Go HTTP layer, which is not a claim about a packet — `internal/httpapi` builds
+# its router by GENERATING from this exact document (`internal/api/api.gen.go`,
+# oapi-codegen v2.8.0) and reading the routes back off the generated
+# `*chi.Mux` with `chi.Walk`, so the pointer below names the file the running
+# service was generated from rather than a document waiting for an
+# implementation.
+#
+# Both directions of the same rule, because both have happened here. A contract
+# that changes while the thing implementing it does not is a contract that lies
+# about what is deployed, and a generated router left behind by an uncommitted
+# regeneration answers the OLD routes under the NEW document's promises — so an
+# operation is a document edit and `go generate ./internal/api/` in the SAME
+# commit, and `internal/httpapi/routes_test.go` walks the live router with
+# `chi.Walk` and compares it to the document in both directions
+# (`TestEveryServedRouteIsInTheDocument`, `TestEveryDeclaredRouteIsServed`).
 name: darkroom
 description: Media service — signed uploads, tenant-scoped asset registry, and derived variants.
 language: go
