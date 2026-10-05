@@ -16,10 +16,12 @@
 #
 # Both directions of the same rule, because both have happened here. A contract
 # that changes while the thing implementing it does not is a contract that lies
-# about what is deployed, and a document that falls behind its router answers
-# the old routes under the new promises — so an operation is a document edit and
-# `go generate ./internal/api/` in the SAME commit, and `internal/httpapi`'s
-# drift tests compare the document to the router in both directions.
+# about what is deployed, and a generated router left behind by an uncommitted
+# regeneration answers the OLD routes under the NEW document's promises — so an
+# operation is a document edit and `go generate ./internal/api/` in the SAME
+# commit, and `internal/httpapi/routes_test.go` walks the live router with
+# `chi.Walk` and compares it to the document in both directions
+# (`TestEveryServedRouteIsInTheDocument`, `TestEveryDeclaredRouteIsServed`).
 name: darkroom
 description: Media service — signed uploads, tenant-scoped asset registry, and derived variants.
 language: go
