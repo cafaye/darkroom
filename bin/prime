@@ -37,6 +37,15 @@ set -o pipefail
 # owns a schema, so there is nothing left for a serialisation flag to protect.
 # The step headers below are the ones `bin/tier-counts` matches on; rewording one
 # breaks that script loudly, which is the intended coupling.
+#
+# THAT PARALLELISM WAS A COMMENT BEFORE IT WAS TRUE, and the comment is the
+# finding worth carrying. This line said the tiers run in parallel while the three
+# `go test` invocations below sat three lines apart, strictly one after another,
+# because separate invocations are separate commands. The isolation the paragraph
+# describes was real; the concurrency was not. Measured on an idle machine, the
+# three tiers were 3.0s + 3.6s + 4.2s of a 19s warm gate — 57% of the whole run
+# spent waiting for one `go test` at a time. They now start together and the three
+# of them cost 4.1s between them.
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
 # --- the Go rewrite, and it is the whole default tier ------------------------
@@ -276,7 +285,7 @@ if [[ "${1:-}" == "--db" ]]; then
   # `bash -n`, so the word is kept out of the string on purpose.
   : "${TEST_DATABASE_URL:?--db needs TEST_DATABASE_URL, e.g. postgres://darkroom:cafaye@localhost:15500/darkroom?sslmode=disable -- that URL is the HOST side of the shared cluster kit ships, so the port is KIT_POSTGRES_PORT (15500), not 5432. See .env.example}"
 
-  # THE GO DATABASE TIER, `-v` BECAUSE `go test` THROWS THE OUTPUT AWAY.
+  # THE GO DATABASE TIERS, `-v` BECAUSE `go test` THROWS THE OUTPUT AWAY.
   #
   # This is not a style preference. `go test` discards a passing package's output
   # entirely, so a suite that prints its own `skip:` rows — the honest-skip
@@ -289,14 +298,67 @@ if [[ "${1:-}" == "--db" ]]; then
   # Every package whose tests need a database runs here, and `-count=1` for the
   # reason the variants step above carries it: a cached run prints no `--- PASS:`
   # rows and `bin/tier-counts` would count zero in a step that ran everything.
-  step "go test -v ./internal/darkroomdb/... (against TEST_DATABASE_URL)"
-  go test -v -count=1 ./internal/darkroomdb/...
+  #
+  # # THE THREE RUN AT ONCE, AND THE OUTPUT IS REPLAYED UNDER ITS OWN HEADER
+  #
+  # Each tier is still its own `go test` invocation with its own step header, and
+  # the three start together rather than one after another. The header-immediately-
+  # followed-by-its-own-output shape is the reason it is NOT one combined
+  # invocation, and a combined invocation is both faster to write and was measured
+  # at the same speed:
+  #
+  #   one invocation, three patterns   4.12s, 4.25s
+  #   three invocations, concurrent    4.32s, 3.93s
+  #
+  # That is inside the noise of each other, so the tie is broken on what each one
+  # costs the gate's other half. A single invocation prints ONE `==>` header, so
+  # `gate.yml`'s `database-harness` and `database-service` proofs would have to be
+  # rewritten, and `bin/tier-counts` attributes `--- PASS:` rows to the package
+  # named on the FOLLOWING `ok` line *within the current `==>` group* — with one
+  # group covering all three packages, two of the three counts read zero and the
+  # script fails on a run that passed every test. Keeping three invocations leaves
+  # `gate.yml`, `bin/tier-counts` and `bin/gate-self-test` byte-for-byte
+  # unchanged, which is the whole argument: this packet is about wall clock, and
+  # the cheapest way to spend it is not to touch the three files that decide what
+  # the gate proves.
+  #
+  # THE CONCURRENCY IS SAFE BECAUSE pgtest WAS BUILT FOR IT, and that is worth
+  # reading rather than assuming. `internal/darkroomdb/pgtest/pgtest.go` takes a
+  # `pg_advisory_xact_lock(hashtext('darkroom.pgtest.migrate'))` around the
+  # migration step, and its own comment says why a process-local mutex was not
+  # enough: `go test ./...` "builds and runs several packages as separate
+  # processes", `internal/service` and `internal/httpapi` "each open their own
+  # schemas and apply 0004 at the same time", and the contention Postgres resolves
+  # it with is `tuple concurrently updated`. That lock has been carrying
+  # cross-package concurrency for the whole life of this harness; this change is
+  # its first caller in `bin/prime`, not the thing that introduced the hazard.
+  # Every schema is one this harness made (`t_<hex>`, dropped with `cascade`), so
+  # the three invocations share a database and nothing else.
+  #
+  # THE OUTPUT IS CAPTURED AND REPLAYED rather than streamed, and the cost is
+  # real: the gate prints nothing at all for the ~4s the tiers are running. It
+  # buys the ordering above — a header immediately followed by the rows it
+  # describes, which is what makes `bin/tier-counts` able to count at all. A
+  # `==>`-less progress line goes out before the wait instead, so a stall reads as
+  # a missing completion rather than a silent screen. The gate is a batch job
+  # whose whole output the checker captures into `--log-dir`; progressive
+  # rendering was never anything a proof read.
+  db_logs="$(mktemp -d "${TMPDIR:-/tmp}/darkroom-prime-db.XXXXXX")"
+  trap 'rm -rf "$db_logs"' EXIT
+  # One exit code for the three, and `wait` is what reads it. `set -e` does not
+  # fire on a background job, so a tier that failed here would otherwise be
+  # reported by the replay below as output and nothing else — a red tier read as
+  # a green gate, which is the exact failure this script exists to prevent. The
+  # FIRST non-zero code is the one kept, and it is returned at the end.
+  db_rc=0
+  go test -v -count=1 ./internal/darkroomdb/... >"$db_logs/darkroomdb" 2>&1 &
+  db_harness=$!
   # The service tier is here and not in the default one, because every test in it
   # needs a database: `pgtest` skips the whole package without one, and a skipped
   # package is `ok`. Its floor in the `-list` step above is what holds on a bare
   # machine; this is what proves the tests RAN.
-  step "go test -v ./internal/service/... (against TEST_DATABASE_URL)"
-  go test -v -count=1 ./internal/service/...
+  go test -v -count=1 ./internal/service/... >"$db_logs/service" 2>&1 &
+  db_service=$!
   # `internal/httpapi` has no database tests today, so nothing new runs here. The
   # step is listed because that is a FINDING and not an accident: packet 05's
   # handoff says so ("No cross-tenant 404 test end to end ... the next packet
@@ -307,8 +369,31 @@ if [[ "${1:-}" == "--db" ]]; then
   # UNLESS one is added, in which case this step runs
   # `go test -v -count=1 ./internal/httpapi/` and `bin/tier-counts` gains a
   # constant for it. Written here rather than left to be rediscovered.
+  go test -v -count=1 ./internal/httpapi/ >"$db_logs/httpapi" 2>&1 &
+  db_httpapi=$!
+
+  echo "    the three database tiers are running concurrently; each one's output is" >&2
+  echo "    replayed below under its own step header." >&2
+  wait "$db_harness" || db_rc=$?
+  wait "$db_service" || db_rc=$?
+  wait "$db_httpapi" || db_rc=$?
+
+  step "go test -v ./internal/darkroomdb/... (against TEST_DATABASE_URL)"
+  cat "$db_logs/darkroomdb"
+  step "go test -v ./internal/service/... (against TEST_DATABASE_URL)"
+  cat "$db_logs/service"
   step "go test -v ./internal/httpapi/ (against TEST_DATABASE_URL; nothing new to run)"
-  go test -v -count=1 ./internal/httpapi/
+  cat "$db_logs/httpapi"
+
+  # EVERY TIER IS REPLAYED BEFORE THIS, EVEN WHEN ONE FAILED. A tier that stopped
+  # the ones after it would print less, and the smaller report is the one that
+  # hides WHICH of the three went red — so the run gets louder when it fails,
+  # which is the opposite of a fail-fast step and is deliberate here.
+  if [[ "$db_rc" -ne 0 ]]; then
+    echo "    a database tier exited ${db_rc}. All three are reported above, and" >&2
+    echo "    the first non-zero exit code is this gate's own." >&2
+    exit "$db_rc"
+  fi
 fi
 
 step "ok"
