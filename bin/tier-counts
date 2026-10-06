@@ -79,7 +79,7 @@
 # | `go test -v ./internal/variants/` | `--- PASS:` rows | 24 |
 # | `go test -v ./internal/darkroomdb/...` | `--- PASS:` rows | 15 |
 # | `go test -v ./internal/service/...` | `--- PASS:` rows | 39 |
-# | `go test -v ./internal/httpapi/` | `--- PASS:` rows | 21 |
+# | `go test -v ./internal/httpapi/` | `--- PASS:` rows | 34 |
 #
 # The step labels below are the ones `bin/prime` prints. Rewording a step there
 # breaks this script, loudly and on the first run, which is the intended coupling:
@@ -107,11 +107,23 @@
 #     exists is a guard over nothing.
 #   - `OPENAPI_DRIFT_TESTS` was `tests/openapi_document.rs`. The Go equivalent is
 #     `internal/httpapi`'s drift tests against `openapi/v1.yaml`, which compare the
-#     DOCUMENT to the router in both directions and are floored at 21 in
+#     DOCUMENT to the router in both directions and are floored at 34 in
 #     `bin/prime`.
 #
 # Neither is a loss the rewrite caused; both are the same properties expressed in
 # the mechanism each tree has.
+#
+# THE TABLE ABOVE IS A COPY, AND IT WAS WRONG. Its httpapi row said 21 while
+# `HTTPAPI_TESTS` below said 34, because three packets each raised the constant in
+# the same commit that added a test — which is the rule this file exists to
+# enforce — and none of them came back to the table. The same drift hit
+# `.github/workflows/ci.yml`, which restates all four numbers for the same
+# reason. Two hand-kept copies of a number nothing re-derives, both stale, and the
+# constants they were describing were right the whole time.
+#
+# So the rows are named to the constants they mirror, because a reader who finds a
+# disagreement now knows which side is the source: the constants. The gate reads
+# the constants; nothing reads either table.
 
 set -euo pipefail
 

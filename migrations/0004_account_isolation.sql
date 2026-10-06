@@ -139,12 +139,24 @@
 --     using (account_id = (select probe_id()))   ->  1 call
 --     using (account_id = probe_id())            ->  5 calls
 --
--- and `tests/tenancy_test.sh` re-measures it on every run, because a comment
--- saying so is not a measurement and this is the sort of difference that is
--- invisible until the table is large, which is the worst time to find it.
--- `protect_table` only ever writes the wrapped form. A hand-written policy that
--- writes the bare form is correct and slow, and nothing in a normal run will
--- ever notice.
+-- and `TestEveryHelperCallInAPolicyIsWrapped` in `internal/darkroomdb/pgtest`
+-- re-checks it on every run, because a comment saying so is not a measurement
+-- and this is the sort of difference that is invisible until the table is large,
+-- which is the worst time to find it. `protect_table` only ever writes the
+-- wrapped form. A hand-written policy that writes the bare form is correct and
+-- slow, and nothing in a normal run will ever notice.
+--
+-- WHAT THAT TEST IS, PRECISELY, because the two are not the same check and the
+-- older sentence here conflated them. It deparses the live policies with
+-- `pg_get_expr` and asserts the helper call sits inside a `(select …)`, so what
+-- holds on every run is the SPELLING. It does not COUNT calls, and nothing in
+-- this tree does: `1 call` against `5 calls` above is a measurement of this
+-- kit's Postgres, recorded because it is the reason the wrapped form is the one
+-- written rather than because anything re-derives it. A behavioural count needs
+-- a probe function and a fixture of rows, and neither exists here. The Rust tree
+-- had both in `tests/tenancy_test.sh`, deleted with the rest of `tests/`; this
+-- file used to name that script as though the count were still being taken on
+-- every run, and a reader who went looking for it found nothing.
 --
 -- WHAT IS NOT HERE. No JWT parsing, no token format, no session store, and no
 -- `auth.uid()`. How a service turns the credential in its hand into an account
@@ -434,8 +446,12 @@ begin
   --    identity there is `42501`.
   --
   --    The `(select ...)` wrapping is the same InitPlan discipline as every other
-  --    policy in this file, for the same measured reason: `tests/tenancy_test.sh`
-  --    measures 1 call wrapped against 5 bare on five rows, on every run.
+  --    policy in this file, for the same measured reason: 1 call wrapped against
+  --    5 bare on five rows, measured on this kit's Postgres and written down in
+  --    the header of this file rather than re-taken per run.
+  --    `TestEveryHelperCallInAPolicyIsWrapped` holds the wrapped SPELLING on every
+  --    run; the Rust `tests/tenancy_test.sh` that counted the calls is gone with
+  --    the rest of `tests/`, and nothing counts them.
   qual := format('%I = (select cafaye.current_credential_digest())', p_digest_column);
 
   --    DROP before CREATE, so a re-run converges and a corrected qualifier cannot
@@ -483,8 +499,15 @@ $caf$;
 -- and the whole answer in every other one — same database, same policy — and
 -- "no table here can be resolved without an account" is exactly what an operator
 -- auditing credentials as the cluster's own admin role would then be told.
--- `tests/tenancy_test.sh` measures both roles on every run and requires the
--- answers to be equal.
+-- `tests/tenancy_test.sh` used to measure both roles on every run and require the
+-- answers to be equal. It is gone with the rest of `tests/`, and NOTHING REPLACES
+-- IT — which is the one honest gap in this paragraph, so it is stated rather than
+-- rounded off. The query below reads `pg_depend` OIDs rather than a deparsed
+-- expression, so there is no spelling for a `search_path` to change and equal
+-- answers are a property of the MECHANISM rather than a comparison somebody runs;
+-- "see WHAT THAT COSTS" is where the two extra catalogs and the one dependency
+-- join that buys are written down. That is a real weakening of what is checked
+-- per run and it is the price of deleting the script that checked it.
 --
 -- The paragraph this one replaces warned that "an audit query that returns an
 -- empty column forever looks exactly like an audit query that found nothing". The

@@ -251,8 +251,25 @@ jobs:
         # The gate exits zero when it is happy, and `go test` exits zero for a
         # package with no test files in it. Those are the same exit code, so this
         # reads the counts: 24 variant checks with no database, and 15 harness +
-        # 29 service + 19 httpapi against one. Without it a green badge is a
+        # 39 service + 34 httpapi against one. Without it a green badge is a
         # claim about a run that may never have happened.
+        #
+        # These four numbers are `VARIANT_TESTS`, `PGTEST_DB_TESTS`,
+        # `SERVICE_DB_TESTS` and `HTTPAPI_TESTS` in `bin/tier-counts`, restated
+        # here so a reader of this file can see what the step is checking without
+        # opening the script. Which is exactly why they were WRONG until now — they
+        # read 29 service and 19 httpapi, the figures as of the packet that wrote
+        # this step, and three later packets each raised a floor without coming
+        # back here. The constants are what the step runs on and they were right;
+        # this comment was a copy nobody owned. It is the same defect as the
+        # `tests/common/mod.rs` tier list this file used to carry, one level down:
+        # a second inventory of a number, kept by hand, drifting from the first.
+        #
+        # A copy is only safe where something re-derives it, and nothing does here,
+        # so the honest form is a copy that says where it came from — which is why
+        # the constant names are named above. Changing a floor means changing
+        # `bin/tier-counts`; changing one of these four means changing nothing but
+        # this comment, and if the two disagree, the constants are right.
         run: ./bin/tier-counts "$RUNNER_TEMP/prime.log"
 
       - name: go.sum is the lockfile

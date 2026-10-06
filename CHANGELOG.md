@@ -11,6 +11,56 @@ and only `info.version` moves otherwise
 
 ## [Unreleased]
 
+### Fixed
+
+- **Four files still described a tree that was deleted, and one of them was a
+  file CI reads.** `packet/w8-stale-docs`.
+
+  `migrations/0004_account_isolation.sql` pointed a reader at
+  `tests/tenancy_test.sh` in three places, in the present tense, as the thing
+  that re-measures the `(select …)` policy wrapping "on every run". `tests/` was
+  deleted in darkroom-go-06 and no such script exists. This is the same defect
+  the packet's item 2 was — a comment naming a command that is not in the tree —
+  in the same file, three lines apart from the fix for it.
+
+  The replacement is what is actually true rather than a name swap, because the
+  two claims were not the same claim. `TestEveryHelperCallInAPolicyIsWrapped`
+  (`internal/darkroomdb/pgtest`) **does** run on every database tier and **does**
+  hold the wrapped form — by deparsing the live policies with `pg_get_expr` and
+  asserting the helper call sits inside a `(select …)`. What it holds is the
+  SPELLING. Nothing in this tree counts calls: `1 call` against `5 calls` on five
+  rows is a measurement of this kit's Postgres, recorded because it is the reason
+  the wrapped form is the one written. A behavioural count needs a probe function
+  and a row fixture, and neither exists; the Rust tree had both.
+
+  One of the three is an honest **loss** and is now written down as one. The
+  `pg_get_expr` audit of `credential_tables` used to be compared across both
+  roles by that script, because a deparse drops the schema from any name the
+  reader's `search_path` can resolve — so the same policy read as the whole answer
+  in one session and as nothing in another. The query now reads `pg_depend` OIDs
+  instead, which makes equal answers a property of the mechanism rather than a
+  comparison somebody runs, and "see WHAT THAT COSTS" is where the two extra
+  catalogs and the one dependency join that buys are written down. That is a real
+  weakening of what is checked per run and it is the price of deleting the script
+  that checked it; the comment says so rather than rounding it off.
+
+  `.github/workflows/ci.yml` and `bin/tier-counts` each restate the four tier
+  counts, and **both were wrong**: `ci.yml` said `29 service + 19 httpapi`, the
+  `tier-counts` header table said `21` httpapi. The constants they describe —
+  `SERVICE_DB_TESTS=39`, `HTTPAPI_TESTS=34` — were right the whole time, because
+  three later packets each raised a floor in the same commit that added a test,
+  which is the rule those files exist to enforce, and none came back to the
+  copies. A hand-kept copy of a number nothing re-derives is a second inventory
+  and it drifts; `bin/tier-counts`' own header now says which side is the source.
+  **No floor moved.** All four numbers are unchanged and verified against a
+  `bin/prime --db` run: 24 / 15 / 39 / 34, with the enumerated-equals-passed
+  identity holding in all three database packages.
+
+  Executable SQL is byte-identical before and after — all four migration files
+  hash the same with `--` lines stripped — and the `ci.yml` diff is comments
+  only, with the workflow re-parsed and the step's `run` string confirmed
+  unchanged.
+
 ### Changed
 
 - **The database tier runs in parallel. `--test-threads=1` is gone from
