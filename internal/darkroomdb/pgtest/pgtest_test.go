@@ -717,6 +717,157 @@ func TestEveryHelperCallInAPolicyIsWrapped(t *testing.T) {
 	}
 }
 
+// TestTheSelectWrappingIsMeasuredNotAsserted is the behavioural half of the
+// `(select …)` rule, and the half `TestEveryHelperCallInAPolicyIsWrapped` cannot
+// be.
+//
+// That test deparses the live policies and asserts the helper call sits inside
+// a `(select …)`. What it holds is the SPELLING. A comment in
+// migrations/0004 records the measurement the spelling exists for — five rows,
+// one call wrapped against five bare — and nothing re-derived it, so a
+// regression in the PLANNER was invisible: a Postgres that stopped hoisting the
+// wrapped form would keep every policy correctly spelled and silently evaluate
+// its helper once per row, which is the worst time to find out.
+//
+// So this test measures rather than asserts. It builds the two policy forms
+// itself — the wrapped one `protect_table` writes and the bare one a hand-written
+// policy would — over a five-row fixture, and counts how many times the identity
+// function is actually invoked. The instrument is a probe function that
+// increments a counter table every time it is called, so the number is the
+// plan's behaviour on THIS cluster rather than a reading of a document. The two
+// tests meet in the middle: the spelling test holds that `protect_table` writes
+// the wrapped form, and this one holds that the wrapped form is the one that is
+// hoisted.
+//
+// # THE PROBE, AND WHY IT IS WRITTEN THE WAY IT IS
+//
+// It is `volatile`, and that is load-bearing rather than incidental: a
+// non-volatile function cannot update the counter at all — measured on this
+// cluster as `ERROR: UPDATE is not allowed in a non-volatile function`. It is
+// `security definer` so the count works for whichever role queries the fixture;
+// with invoker rights, a role that did not own the counter would be refused the
+// update and the measurement would fail for a reason that has nothing to do with
+// the plan. Both are kit's `tests/tenancy_test.sh` choices, re-derived here
+// rather than copied.
+//
+// # THE MECHANISM, so the number is readable
+//
+// An uncorrelated scalar subquery in a qual is converted into an InitPlan and
+// evaluated once per statement; a bare function call in a qual is evaluated once
+// per candidate row. `EXPLAIN (ANALYZE)` shows the shape directly — the wrapped
+// form plans as `InitPlan 1` with `Filter: (account_id = (InitPlan 1).col1)`,
+// the bare form as `Filter: (account_id = probe_identity())` — and the probe
+// counts what EXPLAIN can only show the shape of. Measured on this cluster
+// (PostgreSQL 17.11): wrapped 1 call, bare 5 calls, on five rows.
+//
+// # WHY THE ROW COUNT IS ASSERTED BESIDE THE CALL COUNT
+//
+// A policy that hides every row also satisfies "the helper was called", so the
+// fixture must prove the query returns its five rows under BOTH forms. Without
+// that, a broken policy would report a call count over zero rows and the number
+// would mean nothing.
+//
+// # WHAT THIS TEST CANNOT CATCH, stated rather than rounded off
+//
+// The divergence it exists for — a planner that stops hoisting the wrapped form
+// — is a Postgres upgrade, and no plant on this cluster can simulate one. What
+// is plantable is a probe that cannot count, and the test goes red on that (the
+// wrapped half wants 1 and a non-counting probe reports 0). The bare half, which
+// wants 5, is the control that demonstrates the probe's sensitivity to per-row
+// evaluation: it fails if the probe cannot observe a per-row call, which is the
+// same blindness a planner regression would produce. The non-counting plant was
+// run before this test was believed, and is recorded in the packet report.
+func TestTheSelectWrappingIsMeasuredNotAsserted(t *testing.T) {
+	tt := pgtest.New(t)
+	ctx := context.Background()
+
+	// The account the probe returns and the fixture rows carry, so the policy
+	// matches all five. Fixed rather than generated: a failure names the same
+	// value every run.
+	const probeAccount = "11111111-1111-1111-1111-111111111111"
+
+	// The counter, the probe, and the fixture. The tables are TEMP so they
+	// leave nothing behind; the probe function is created unqualified, so it
+	// lands in this test's schema — first on the connection's search_path —
+	// and is dropped with it.
+	if _, err := tt.Conn.Exec(ctx, `create temp table probe_counter(n bigint)`); err != nil {
+		t.Fatalf("creating the probe counter: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx, `insert into probe_counter values (0)`); err != nil {
+		t.Fatalf("seeding the probe counter: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx, `create or replace function probe_identity()
+		returns uuid language plpgsql volatile security definer as $fn$
+		begin update probe_counter set n = n + 1; return '`+probeAccount+`'; end $fn$`); err != nil {
+		t.Fatalf("creating the probe function: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx, `create temp table probe_rows(id int primary key, account_id uuid not null)`); err != nil {
+		t.Fatalf("creating the probe fixture: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx, `insert into probe_rows select g, '`+probeAccount+`' from generate_series(1, 5) g`); err != nil {
+		t.Fatalf("seeding the probe fixture: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx, `alter table probe_rows enable row level security`); err != nil {
+		t.Fatalf("enabling RLS on the probe fixture: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx, `alter table probe_rows force row level security`); err != nil {
+		t.Fatalf("forcing RLS on the probe fixture: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx, `grant select on probe_rows to public`); err != nil {
+		t.Fatalf("granting select on the probe fixture: %v", err)
+	}
+
+	// measure runs the query and returns (rows, calls): the rows the policy let
+	// through, and how many times the probe was invoked to let them through.
+	measure := func() (rows, calls int) {
+		t.Helper()
+		if _, err := tt.Conn.Exec(ctx, `update probe_counter set n = 0`); err != nil {
+			t.Fatalf("resetting the probe counter: %v", err)
+		}
+		if err := tt.Conn.QueryRow(ctx, `select count(*) from probe_rows`).Scan(&rows); err != nil {
+			t.Fatalf("counting the probe fixture: %v", err)
+		}
+		if err := tt.Conn.QueryRow(ctx, `select n from probe_counter`).Scan(&calls); err != nil {
+			t.Fatalf("reading the probe counter: %v", err)
+		}
+		return rows, calls
+	}
+
+	// THE WRAPPED FORM — the one `protect_table` writes, held here by behaviour
+	// rather than by spelling: one call per statement, not one per row.
+	if _, err := tt.Conn.Exec(ctx, `create policy probe_wrapped on probe_rows for select to public
+		using (account_id = (select probe_identity()))`); err != nil {
+		t.Fatalf("creating the wrapped policy: %v", err)
+	}
+	rows, calls := measure()
+	if rows != 5 {
+		t.Errorf("the wrapped form returned %d rows, want 5: a policy that hides everything also satisfies 'the helper was called', so the row count is what makes the call count mean something", rows)
+	}
+	if calls != 1 {
+		t.Errorf("the wrapped form called probe_identity %d time(s), want 1. Postgres hoists an uncorrelated scalar subquery into an InitPlan and evaluates it once per statement; if this is not 1, the planner has stopped hoisting and every wrapped policy in migrations/0004 is evaluating its helper once per row.", calls)
+	}
+
+	// THE BARE FORM — the regression. migrations/0004 is blunt about it: "A
+	// hand-written policy that writes the bare form is correct and slow, and
+	// nothing in a normal run will ever notice." This is the run that notices,
+	// and it is the control: a probe that cannot see per-row evaluation reports
+	// 1 here too, and the test goes red.
+	if _, err := tt.Conn.Exec(ctx, `drop policy probe_wrapped on probe_rows`); err != nil {
+		t.Fatalf("dropping the wrapped policy: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx, `create policy probe_bare on probe_rows for select to public
+		using (account_id = probe_identity())`); err != nil {
+		t.Fatalf("creating the bare policy: %v", err)
+	}
+	rows, calls = measure()
+	if rows != 5 {
+		t.Errorf("the bare form returned %d rows, want 5", rows)
+	}
+	if calls != 5 {
+		t.Errorf("the bare form called probe_identity %d time(s), want 5. A bare function call in a qual is evaluated once per candidate row; if this is not 5, the probe is not counting per-row calls and the wrapped half above proves nothing.", calls)
+	}
+}
+
 // TestTheOwnerCannotReadAnotherAccountWithoutSettingAnIdentity is the FORCE
 // consequence, and it is the half that surprises people.
 //

@@ -106,6 +106,50 @@ and only `info.version` moves otherwise
 
 ### Added
 
+- **The `(select …)` wrapping has a behavioural count.**
+  `packet/w41-darkroom-policyprobes-01`.
+
+  `REPORT-darkroom-stale-docs-01.md` closed with two findings it deliberately did
+  not fix, because both needed a real test rather than a comment: "Neither is
+  drift; both are absences." This is the first.
+
+  Every helper call in an RLS policy is wrapped in `(select …)` so the planner
+  evaluates it once per statement rather than once per row.
+  `TestEveryHelperCallInAPolicyIsWrapped` holds the SPELLING — it deparses the
+  live policies and asserts the call sits inside the subquery — and nothing
+  re-derived the `1 call` against `5 calls` figure the migration header records,
+  so a regression in the PLANNER was invisible: a Postgres that stopped hoisting
+  the wrapped form would keep every policy correctly spelled and silently
+  evaluate its helper once per row.
+
+  `TestTheSelectWrappingIsMeasuredNotAsserted` closes it with a probe: a
+  `volatile security definer` function that increments a counter table every
+  time it is called, over a five-row fixture, with the two policy forms built
+  by the test itself. It asserts the wrapped form — the one `protect_table`
+  writes — calls the probe once, and the bare form calls it five times, with the
+  row count asserted beside each so a policy that hides everything cannot
+  produce a meaningless count. Measured on this cluster (PostgreSQL 17.11):
+  wrapped 1, bare 5. The probe is `volatile` because a non-volatile function
+  cannot update the counter at all (`ERROR: UPDATE is not allowed in a
+  non-volatile function`, measured), and `security definer` so the count works
+  for whichever role queries the fixture. Both statistics tools the packet
+  named were checked and both are unavailable here: `pg_stat_user_functions`
+  needs `track_functions`, a superuser-only GUC the `darkroom` role cannot set,
+  and `pg_stat_statements` is not installed and counts statements rather than
+  function invocations — so the self-counting probe is the instrument, and it is
+  stronger than either.
+
+  The test was run red before being believed. The divergence it exists for — a
+  planner that stops hoisting the wrapped form — is a Postgres upgrade and cannot
+  be planted, so it was planted with a non-counting probe and went red on both
+  halves; the bare-form half, which wants 5, is the control that demonstrates
+  the probe's sensitivity to per-row evaluation. The plant was reverted and the
+  migration is byte-identical to its pre-packet state.
+
+  The pgtest floor moves 15 → 16 in `bin/prime`, `bin/tier-counts` and
+  `.github/workflows/ci.yml`, and the enumerated-equals-passed identity holds
+  for the new test.
+
 - **`LICENSE`: darkroom is MIT.** The repository shipped no licence file, which
   is not "unlicensed, therefore free" — it is **all rights reserved**, the
   default copyright position when a public repository grants nothing.
