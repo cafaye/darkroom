@@ -77,7 +77,7 @@
 # |---|---|---|
 # | `go test -list` | enumerated per package | ten packages, floors in `bin/prime` |
 # | `go test -v ./internal/variants/` | `--- PASS:` rows | 24 |
-# | `go test -v ./internal/darkroomdb/...` | `--- PASS:` rows | 15 |
+# | `go test -v ./internal/darkroomdb/...` | `--- PASS:` rows | 17 |
 # | `go test -v ./internal/service/...` | `--- PASS:` rows | 39 |
 # | `go test -v ./internal/httpapi/` | `--- PASS:` rows | 34 |
 #
@@ -129,7 +129,7 @@ set -euo pipefail
 
 # The floors. Read out of this tree, not carried forward from the Rust script.
 VARIANT_TESTS=24
-PGTEST_DB_TESTS=15
+PGTEST_DB_TESTS=17
 SERVICE_DB_TESTS=39
 # 34, and it MOVED THREE TIMES. 19, then the listing packet's two, then the
 # idempotency packet's twelve, then the honest packet's one. Both halves of that are load-bearing and both are why the number

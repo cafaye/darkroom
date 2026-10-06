@@ -573,6 +573,126 @@ func TestTheMigrationsProtectedExactlyTheAccountScopedTables(t *testing.T) {
 	}
 }
 
+// TestCredentialTablesAnswersEveryRoleTheSame is the cross-role comparison the
+// migration header says nothing replaces.
+//
+// `cafaye.credential_tables()` is the audit for "which tables in this database
+// can be read with no account". It used to be written against `pg_get_expr`
+// output, and `pg_get_expr` drops the schema from any name the READER's
+// search_path resolves — so the same policy deparsed as the whole answer in one
+// session and as nothing in another, and an auditor running as the one role whose
+// "$user" schema was `cafaye` was told "no table here can be resolved without an
+// account", which is the most expensive reading in the file to believe. The
+// query now reads `pg_depend` OIDs, so there is no spelling for a search_path
+// to change and equal answers are a property of the mechanism.
+//
+// A property of the mechanism is not a check, though. The packet that closed the
+// stale-docs gap was explicit that the absence of a cross-role comparison is "an
+// absent check rather than a passing one", and this is the check. It asks the
+// audit as the owner and as the login role the application actually holds, under
+// the default search_path and under the one condition that broke the old query —
+// and requires the four answers to be identical and non-empty.
+//
+// # WHY THE APP ROLE IS THE ONE THAT MATTERS
+//
+// The owner is the role migrations run as and the role every other test in this
+// package uses. The login role is the one a request holds, and it is the one that
+// has been wrong before: the old query returned its empty answer to exactly the
+// role whose search_path resolved the function name. A test that only asked the
+// owner would prove the mechanism works for the role that was never broken.
+//
+// # THE FOUR CALLS
+//
+// owner and login, each under the harness's default search_path and under
+// `cafaye` put on the path explicitly. The last two are the old bug's condition
+// reproduced: with `cafaye` resolvable, `pg_get_expr` drops the schema from
+// `cafaye.current_credential_digest()` and a deparse-matching audit finds nothing.
+// The current query reads OIDs and is indifferent.
+//
+// # THE NEGATIVE CONTROL
+//
+// The assertion is that the answer is EXACTLY one row — the fixture credential
+// table. `assets` is protected by the same migration and has no resolve policy,
+// so if it appeared the answer would be two rows and the test would fail: the
+// audit lists credential tables, not every protected table.
+func TestCredentialTablesAnswersEveryRoleTheSame(t *testing.T) {
+	tt := pgtest.New(t)
+	ctx := context.Background()
+
+	// The fixture: a credential table, protected by the substrate's own entry
+	// point. `protect_credential_table` is one call and it protects the table
+	// exactly as `protect_table` does — same four policies, same ENABLE, same
+	// FORCE — and then adds the fifth, the resolve policy this audit is about.
+	if _, err := tt.Conn.Exec(ctx,
+		`create table api_keys (id int primary key, account_id uuid not null, token_digest text not null)`); err != nil {
+		t.Fatalf("creating the credential fixture: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx,
+		`select cafaye.protect_credential_table('api_keys', 'token_digest')`); err != nil {
+		t.Fatalf("protecting the credential fixture: %v", err)
+	}
+
+	// audit runs the audit query as `role` under `searchPath`, in a transaction
+	// that is rolled back, so neither the role nor the path change can leak into
+	// the next call. An empty role or path leaves the connection as it is.
+	audit := func(role, searchPath string) []string {
+		t.Helper()
+		tx, err := tt.Conn.Begin(ctx)
+		if err != nil {
+			t.Fatalf("beginning the audit as %q: %v", role, err)
+		}
+		defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+		if role != "" {
+			if _, err := tx.Exec(ctx, `set role "`+role+`"`); err != nil {
+				t.Fatalf("taking the %s role: %v", role, err)
+			}
+		}
+		if searchPath != "" {
+			if _, err := tx.Exec(ctx, `set search_path = `+searchPath); err != nil {
+				t.Fatalf("setting the search path to %s: %v", searchPath, err)
+			}
+		}
+		rows, err := tx.Query(ctx,
+			`select table_schema, table_name, digest_column
+			   from cafaye.credential_tables()
+			  where table_schema = $1
+			  order by 1, 2, 3`, tt.Schema)
+		if err != nil {
+			t.Fatalf("reading cafaye.credential_tables() as %q under %q: %v", role, searchPath, err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var schema, table, digest string
+			if err := rows.Scan(&schema, &table, &digest); err != nil {
+				t.Fatalf("scanning an audit row as %q: %v", role, err)
+			}
+			out = append(out, schema+"."+table+" ("+digest+")")
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("reading the audit as %q: %v", role, err)
+		}
+		return out
+	}
+
+	// The four calls. The two with `cafaye` on the path are the old bug's
+	// condition; the two with the default path are the harness's own.
+	calls := []struct{ role, path string }{
+		{"", ""},
+		{"darkroom_app", ""},
+		{"", "cafaye, public"},
+		{"darkroom_app", "cafaye, public"},
+	}
+
+	want := tt.Schema + ".api_keys (token_digest)"
+	for _, c := range calls {
+		got := audit(c.role, c.path)
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("cafaye.credential_tables() as %q under search_path %q returned %v, want [%s]. The audit must answer every role identically: the old deparse-based query returned nothing for a role whose search_path resolved the function name, and the app role is the one that has been wrong before.", c.role, c.path, got, want)
+		}
+	}
+}
+
 // TestEveryProtectedTableIsForced is the assertion a grep cannot make.
 //
 // `AGENTS.md` on the Rust side is blunt about the gap this closes: Postgres exempts
@@ -714,6 +834,157 @@ func TestEveryHelperCallInAPolicyIsWrapped(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no policy in this schema has a qualifier or a check. The migrations did not apply, or the policies are somewhere else — either way this test proved nothing.")
+	}
+}
+
+// TestTheSelectWrappingIsMeasuredNotAsserted is the behavioural half of the
+// `(select …)` rule, and the half `TestEveryHelperCallInAPolicyIsWrapped` cannot
+// be.
+//
+// That test deparses the live policies and asserts the helper call sits inside
+// a `(select …)`. What it holds is the SPELLING. A comment in
+// migrations/0004 records the measurement the spelling exists for — five rows,
+// one call wrapped against five bare — and nothing re-derived it, so a
+// regression in the PLANNER was invisible: a Postgres that stopped hoisting the
+// wrapped form would keep every policy correctly spelled and silently evaluate
+// its helper once per row, which is the worst time to find out.
+//
+// So this test measures rather than asserts. It builds the two policy forms
+// itself — the wrapped one `protect_table` writes and the bare one a hand-written
+// policy would — over a five-row fixture, and counts how many times the identity
+// function is actually invoked. The instrument is a probe function that
+// increments a counter table every time it is called, so the number is the
+// plan's behaviour on THIS cluster rather than a reading of a document. The two
+// tests meet in the middle: the spelling test holds that `protect_table` writes
+// the wrapped form, and this one holds that the wrapped form is the one that is
+// hoisted.
+//
+// # THE PROBE, AND WHY IT IS WRITTEN THE WAY IT IS
+//
+// It is `volatile`, and that is load-bearing rather than incidental: a
+// non-volatile function cannot update the counter at all — measured on this
+// cluster as `ERROR: UPDATE is not allowed in a non-volatile function`. It is
+// `security definer` so the count works for whichever role queries the fixture;
+// with invoker rights, a role that did not own the counter would be refused the
+// update and the measurement would fail for a reason that has nothing to do with
+// the plan. Both are kit's `tests/tenancy_test.sh` choices, re-derived here
+// rather than copied.
+//
+// # THE MECHANISM, so the number is readable
+//
+// An uncorrelated scalar subquery in a qual is converted into an InitPlan and
+// evaluated once per statement; a bare function call in a qual is evaluated once
+// per candidate row. `EXPLAIN (ANALYZE)` shows the shape directly — the wrapped
+// form plans as `InitPlan 1` with `Filter: (account_id = (InitPlan 1).col1)`,
+// the bare form as `Filter: (account_id = probe_identity())` — and the probe
+// counts what EXPLAIN can only show the shape of. Measured on this cluster
+// (PostgreSQL 17.11): wrapped 1 call, bare 5 calls, on five rows.
+//
+// # WHY THE ROW COUNT IS ASSERTED BESIDE THE CALL COUNT
+//
+// A policy that hides every row also satisfies "the helper was called", so the
+// fixture must prove the query returns its five rows under BOTH forms. Without
+// that, a broken policy would report a call count over zero rows and the number
+// would mean nothing.
+//
+// # WHAT THIS TEST CANNOT CATCH, stated rather than rounded off
+//
+// The divergence it exists for — a planner that stops hoisting the wrapped form
+// — is a Postgres upgrade, and no plant on this cluster can simulate one. What
+// is plantable is a probe that cannot count, and the test goes red on that (the
+// wrapped half wants 1 and a non-counting probe reports 0). The bare half, which
+// wants 5, is the control that demonstrates the probe's sensitivity to per-row
+// evaluation: it fails if the probe cannot observe a per-row call, which is the
+// same blindness a planner regression would produce. The non-counting plant was
+// run before this test was believed, and is recorded in the packet report.
+func TestTheSelectWrappingIsMeasuredNotAsserted(t *testing.T) {
+	tt := pgtest.New(t)
+	ctx := context.Background()
+
+	// The account the probe returns and the fixture rows carry, so the policy
+	// matches all five. Fixed rather than generated: a failure names the same
+	// value every run.
+	const probeAccount = "11111111-1111-1111-1111-111111111111"
+
+	// The counter, the probe, and the fixture. The tables are TEMP so they
+	// leave nothing behind; the probe function is created unqualified, so it
+	// lands in this test's schema — first on the connection's search_path —
+	// and is dropped with it.
+	if _, err := tt.Conn.Exec(ctx, `create temp table probe_counter(n bigint)`); err != nil {
+		t.Fatalf("creating the probe counter: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx, `insert into probe_counter values (0)`); err != nil {
+		t.Fatalf("seeding the probe counter: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx, `create or replace function probe_identity()
+		returns uuid language plpgsql volatile security definer as $fn$
+		begin update probe_counter set n = n + 1; return '`+probeAccount+`'; end $fn$`); err != nil {
+		t.Fatalf("creating the probe function: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx, `create temp table probe_rows(id int primary key, account_id uuid not null)`); err != nil {
+		t.Fatalf("creating the probe fixture: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx, `insert into probe_rows select g, '`+probeAccount+`' from generate_series(1, 5) g`); err != nil {
+		t.Fatalf("seeding the probe fixture: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx, `alter table probe_rows enable row level security`); err != nil {
+		t.Fatalf("enabling RLS on the probe fixture: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx, `alter table probe_rows force row level security`); err != nil {
+		t.Fatalf("forcing RLS on the probe fixture: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx, `grant select on probe_rows to public`); err != nil {
+		t.Fatalf("granting select on the probe fixture: %v", err)
+	}
+
+	// measure runs the query and returns (rows, calls): the rows the policy let
+	// through, and how many times the probe was invoked to let them through.
+	measure := func() (rows, calls int) {
+		t.Helper()
+		if _, err := tt.Conn.Exec(ctx, `update probe_counter set n = 0`); err != nil {
+			t.Fatalf("resetting the probe counter: %v", err)
+		}
+		if err := tt.Conn.QueryRow(ctx, `select count(*) from probe_rows`).Scan(&rows); err != nil {
+			t.Fatalf("counting the probe fixture: %v", err)
+		}
+		if err := tt.Conn.QueryRow(ctx, `select n from probe_counter`).Scan(&calls); err != nil {
+			t.Fatalf("reading the probe counter: %v", err)
+		}
+		return rows, calls
+	}
+
+	// THE WRAPPED FORM — the one `protect_table` writes, held here by behaviour
+	// rather than by spelling: one call per statement, not one per row.
+	if _, err := tt.Conn.Exec(ctx, `create policy probe_wrapped on probe_rows for select to public
+		using (account_id = (select probe_identity()))`); err != nil {
+		t.Fatalf("creating the wrapped policy: %v", err)
+	}
+	rows, calls := measure()
+	if rows != 5 {
+		t.Errorf("the wrapped form returned %d rows, want 5: a policy that hides everything also satisfies 'the helper was called', so the row count is what makes the call count mean something", rows)
+	}
+	if calls != 1 {
+		t.Errorf("the wrapped form called probe_identity %d time(s), want 1. Postgres hoists an uncorrelated scalar subquery into an InitPlan and evaluates it once per statement; if this is not 1, the planner has stopped hoisting and every wrapped policy in migrations/0004 is evaluating its helper once per row.", calls)
+	}
+
+	// THE BARE FORM — the regression. migrations/0004 is blunt about it: "A
+	// hand-written policy that writes the bare form is correct and slow, and
+	// nothing in a normal run will ever notice." This is the run that notices,
+	// and it is the control: a probe that cannot see per-row evaluation reports
+	// 1 here too, and the test goes red.
+	if _, err := tt.Conn.Exec(ctx, `drop policy probe_wrapped on probe_rows`); err != nil {
+		t.Fatalf("dropping the wrapped policy: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx, `create policy probe_bare on probe_rows for select to public
+		using (account_id = probe_identity())`); err != nil {
+		t.Fatalf("creating the bare policy: %v", err)
+	}
+	rows, calls = measure()
+	if rows != 5 {
+		t.Errorf("the bare form returned %d rows, want 5", rows)
+	}
+	if calls != 5 {
+		t.Errorf("the bare form called probe_identity %d time(s), want 5. A bare function call in a qual is evaluated once per candidate row; if this is not 5, the probe is not counting per-row calls and the wrapped half above proves nothing.", calls)
 	}
 }
 
