@@ -250,7 +250,7 @@ jobs:
       - name: the tiers actually ran
         # The gate exits zero when it is happy, and `go test` exits zero for a
         # package with no test files in it. Those are the same exit code, so this
-        # reads the counts: 24 variant checks with no database, and 16 harness +
+        # reads the counts: 24 variant checks with no database, and 17 harness +
         # 39 service + 34 httpapi against one. Without it a green badge is a
         # claim about a run that may never have happened.
         #

@@ -196,7 +196,7 @@ assert_go_suite ./cmd/darkroom 7
 assert_go_suite ./internal/objectstore 21
 assert_go_suite ./internal/checksum 6
 assert_go_suite ./internal/storagekey 4
-assert_go_suite ./internal/darkroomdb/pgtest 16
+assert_go_suite ./internal/darkroomdb/pgtest 17
 assert_go_suite ./internal/domain 7
 assert_go_suite ./internal/problem 7
 # THE SERVICE SUITE IS THE ONE THAT MOST NEEDS A FLOOR, because it is where the

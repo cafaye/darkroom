@@ -150,6 +150,32 @@ and only `info.version` moves otherwise
   `.github/workflows/ci.yml`, and the enumerated-equals-passed identity holds
   for the new test.
 
+- **`credential_tables()` answers every role the same.**
+  `packet/w41-darkroom-policyprobes-01`.
+
+  The second of the two absences. The audit for "which tables can be read with no
+  account" used to be written against `pg_get_expr` output, which drops the
+  schema from any name the reader's `search_path` resolves — so the same policy
+  read as the whole answer in one session and as nothing in another. The query
+  now reads `pg_depend` OIDs, making equal answers a property of the mechanism,
+  but a property of the mechanism is not a check.
+
+  `TestCredentialTablesAnswersEveryRoleTheSame` asks the audit as the owner and
+  as `darkroom_app` — the login role a request holds, and the one that has been
+  wrong before — under the default `search_path` and under `cafaye` put on the
+  path explicitly, the old bug's condition. All four answers must be identical
+  and non-empty, and the assertion is exactly one row, so `assets` (protected, no
+  resolve policy) cannot appear.
+
+  The test was run red before being believed, planted with the old bug's
+  mechanism — a deparse-matching query — and went red on exactly the two
+  `cafaye`-on-path calls, which is the specific failure it exists to catch. The
+  plant was reverted and the migration is byte-identical to its pre-packet state.
+
+  The pgtest floor moves 16 → 17 in `bin/prime`, `bin/tier-counts` and
+  `.github/workflows/ci.yml`, and the enumerated-equals-passed identity holds
+  for both new tests.
+
 - **`LICENSE`: darkroom is MIT.** The repository shipped no licence file, which
   is not "unlicensed, therefore free" — it is **all rights reserved**, the
   default copyright position when a public repository grants nothing.

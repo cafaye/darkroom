@@ -573,6 +573,126 @@ func TestTheMigrationsProtectedExactlyTheAccountScopedTables(t *testing.T) {
 	}
 }
 
+// TestCredentialTablesAnswersEveryRoleTheSame is the cross-role comparison the
+// migration header says nothing replaces.
+//
+// `cafaye.credential_tables()` is the audit for "which tables in this database
+// can be read with no account". It used to be written against `pg_get_expr`
+// output, and `pg_get_expr` drops the schema from any name the READER's
+// search_path resolves — so the same policy deparsed as the whole answer in one
+// session and as nothing in another, and an auditor running as the one role whose
+// "$user" schema was `cafaye` was told "no table here can be resolved without an
+// account", which is the most expensive reading in the file to believe. The
+// query now reads `pg_depend` OIDs, so there is no spelling for a search_path
+// to change and equal answers are a property of the mechanism.
+//
+// A property of the mechanism is not a check, though. The packet that closed the
+// stale-docs gap was explicit that the absence of a cross-role comparison is "an
+// absent check rather than a passing one", and this is the check. It asks the
+// audit as the owner and as the login role the application actually holds, under
+// the default search_path and under the one condition that broke the old query —
+// and requires the four answers to be identical and non-empty.
+//
+// # WHY THE APP ROLE IS THE ONE THAT MATTERS
+//
+// The owner is the role migrations run as and the role every other test in this
+// package uses. The login role is the one a request holds, and it is the one that
+// has been wrong before: the old query returned its empty answer to exactly the
+// role whose search_path resolved the function name. A test that only asked the
+// owner would prove the mechanism works for the role that was never broken.
+//
+// # THE FOUR CALLS
+//
+// owner and login, each under the harness's default search_path and under
+// `cafaye` put on the path explicitly. The last two are the old bug's condition
+// reproduced: with `cafaye` resolvable, `pg_get_expr` drops the schema from
+// `cafaye.current_credential_digest()` and a deparse-matching audit finds nothing.
+// The current query reads OIDs and is indifferent.
+//
+// # THE NEGATIVE CONTROL
+//
+// The assertion is that the answer is EXACTLY one row — the fixture credential
+// table. `assets` is protected by the same migration and has no resolve policy,
+// so if it appeared the answer would be two rows and the test would fail: the
+// audit lists credential tables, not every protected table.
+func TestCredentialTablesAnswersEveryRoleTheSame(t *testing.T) {
+	tt := pgtest.New(t)
+	ctx := context.Background()
+
+	// The fixture: a credential table, protected by the substrate's own entry
+	// point. `protect_credential_table` is one call and it protects the table
+	// exactly as `protect_table` does — same four policies, same ENABLE, same
+	// FORCE — and then adds the fifth, the resolve policy this audit is about.
+	if _, err := tt.Conn.Exec(ctx,
+		`create table api_keys (id int primary key, account_id uuid not null, token_digest text not null)`); err != nil {
+		t.Fatalf("creating the credential fixture: %v", err)
+	}
+	if _, err := tt.Conn.Exec(ctx,
+		`select cafaye.protect_credential_table('api_keys', 'token_digest')`); err != nil {
+		t.Fatalf("protecting the credential fixture: %v", err)
+	}
+
+	// audit runs the audit query as `role` under `searchPath`, in a transaction
+	// that is rolled back, so neither the role nor the path change can leak into
+	// the next call. An empty role or path leaves the connection as it is.
+	audit := func(role, searchPath string) []string {
+		t.Helper()
+		tx, err := tt.Conn.Begin(ctx)
+		if err != nil {
+			t.Fatalf("beginning the audit as %q: %v", role, err)
+		}
+		defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+		if role != "" {
+			if _, err := tx.Exec(ctx, `set role "`+role+`"`); err != nil {
+				t.Fatalf("taking the %s role: %v", role, err)
+			}
+		}
+		if searchPath != "" {
+			if _, err := tx.Exec(ctx, `set search_path = `+searchPath); err != nil {
+				t.Fatalf("setting the search path to %s: %v", searchPath, err)
+			}
+		}
+		rows, err := tx.Query(ctx,
+			`select table_schema, table_name, digest_column
+			   from cafaye.credential_tables()
+			  where table_schema = $1
+			  order by 1, 2, 3`, tt.Schema)
+		if err != nil {
+			t.Fatalf("reading cafaye.credential_tables() as %q under %q: %v", role, searchPath, err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var schema, table, digest string
+			if err := rows.Scan(&schema, &table, &digest); err != nil {
+				t.Fatalf("scanning an audit row as %q: %v", role, err)
+			}
+			out = append(out, schema+"."+table+" ("+digest+")")
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("reading the audit as %q: %v", role, err)
+		}
+		return out
+	}
+
+	// The four calls. The two with `cafaye` on the path are the old bug's
+	// condition; the two with the default path are the harness's own.
+	calls := []struct{ role, path string }{
+		{"", ""},
+		{"darkroom_app", ""},
+		{"", "cafaye, public"},
+		{"darkroom_app", "cafaye, public"},
+	}
+
+	want := tt.Schema + ".api_keys (token_digest)"
+	for _, c := range calls {
+		got := audit(c.role, c.path)
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("cafaye.credential_tables() as %q under search_path %q returned %v, want [%s]. The audit must answer every role identically: the old deparse-based query returned nothing for a role whose search_path resolved the function name, and the app role is the one that has been wrong before.", c.role, c.path, got, want)
+		}
+	}
+}
+
 // TestEveryProtectedTableIsForced is the assertion a grep cannot make.
 //
 // `AGENTS.md` on the Rust side is blunt about the gap this closes: Postgres exempts
