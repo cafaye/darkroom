@@ -340,7 +340,7 @@ func TestThreeWayDenialListAssets(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("noIdentity: %v", err)
 	}
-	if len(noIdentity) != 0 {
+	if !empty(noIdentity) {
 		t.Errorf("noIdentity: a transaction with no identity listed %d assets", len(noIdentity))
 	}
 
@@ -389,7 +389,7 @@ func TestThreeWayDenialListStorageKeys(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("noIdentity: %v", err)
 	}
-	if len(noIdentity) != 0 {
+	if !empty(noIdentity) {
 		t.Errorf("noIdentity: a transaction with no identity read %d storage keys", len(noIdentity))
 	}
 
@@ -402,7 +402,7 @@ func TestThreeWayDenialListStorageKeys(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("otherAccount: %v", err)
 	}
-	if len(otherAccount) != 0 {
+	if !empty(otherAccount) {
 		t.Errorf("otherAccount: bob read %d of alice's storage keys", len(otherAccount))
 	}
 
@@ -497,7 +497,7 @@ func TestThreeWayDenialListVariants(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("noIdentity: %v", err)
 	}
-	if len(noIdentity) != 0 {
+	if !empty(noIdentity) {
 		t.Errorf("noIdentity: a transaction with no identity listed %d variants", len(noIdentity))
 	}
 
@@ -510,7 +510,7 @@ func TestThreeWayDenialListVariants(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("otherAccount: %v", err)
 	}
-	if len(otherAccount) != 0 {
+	if !empty(otherAccount) {
 		t.Errorf("otherAccount: bob listed %d of alice's variants", len(otherAccount))
 	}
 
@@ -527,3 +527,10 @@ func TestThreeWayDenialListVariants(t *testing.T) {
 		t.Errorf("ownAccount: alice's variants are %v, want one thumbnail", ownAccount)
 	}
 }
+
+// empty is the denial arms' assertion for a list, named so that tenancy.yml can
+// point at a line and name a token: Go spells "this list is empty" as
+// `len(x) == 0`, and a builtin call is not a thing a reader can go and look at.
+// identity's declaration does the same with its `countAuditRows` helper — the
+// token names the assertion rather than the language's spelling of nothing.
+func empty[T any](items []T) bool { return len(items) == 0 }

@@ -4,85 +4,377 @@
 #
 #     /Users/kaka/Code/any/moon/cafaye/core/harness/bin/tenancy-check .
 #
-# darkroom is the clean example `core/docs/tenancy.md` names: `assets` and
-# `asset_variants` carry `account_id uuid not null`, and the boundary is drawn
-# in TWO places that are declared separately below — the application's
-# statements (`entryPoints`) and Postgres' policies (`rls`).
+# READ THE `rls` BLOCK FIRST. It is the half that does the work: Postgres holds
+# this boundary, not Go. `migrations/0004_account_isolation.sql` is kit's
+# tenancy substrate copied verbatim, and its two `cafaye.protect_table` calls
+# (lines 999 and 1000) put `assets` and `asset_variants` under ENABLE and FORCE
+# row level security with four account-scoped policies each. Every statement in
+# `internal/service/store.go` runs inside a transaction that
+# `darkroomdb.InAccountTx` opened with `select cafaye.begin_account($1::uuid)`
+# (internal/darkroomdb/darkroomdb.go:193), and the policies do the filtering.
 #
-# # THE GO TREE DRAWS THE BOUNDARY DIFFERENTLY THAN THE RUST TREE DID, AND THIS
-# # FILE SAYS SO RATHER THAN PRETENDING OTHERWISE.
+# # WHY THERE IS NO `and account_id = $N` IN ANY ENFORCED LINE
 #
-# `core/docs/tenancy.md` §"Why this file exists" quotes the Rust store's shape —
-# `where id = $1 and account_id = $2`, every query carrying its own predicate.
-# The Go tree deliberately does NOT: `internal/service/store.go`'s header says
-# writing the predicate by hand "would be belt-and-braces at the cost of being
-# WRONG in a way RLS is not: it is a second source of truth for the tenant".
-# Instead every store function takes a `pgx.Tx` that `darkroomdb.InAccountTx`
-# opened with `cafaye.account_id` set transaction-local, and the policies in
-# `migrations/0004_account_isolation.sql` do the filtering. So the line that
-# carries `account_id` for a statement is not a predicate in that statement —
-# it is the column list the statement reads the tenancy column through, or the
-# values line that writes it. Each entry point below names which.
+# The brief for this packet described the store as the Rust tree was — every
+# query ending `and account_id = $2` — and asked for `mechanism: query-filter`
+# on the line carrying the predicate. The Go rewrite removed every one of those
+# predicates on purpose: `internal/service/store.go:5` says so, and the reason
+# is that a hand-written predicate is a SECOND source of truth for the tenant.
+# The Go rule is the transaction: a store function cannot be called except
+# inside `InAccountTx`, and the policy filters the rows. So:
+#
+#   * `mechanism` is `repository-method`, not `query-filter`. There is no query
+#     filter. The scoping is enforced above the statement, by the transaction
+#     the repository method is handed — which is the schema's own description of
+#     what `repository-method` and `operation: call` are for.
+#   * `enforced.line` is the one line in each statement's SQL that carries the
+#     key: the shared column-list constants at `internal/service/store.go:64`
+#     (assets) and `internal/service/store.go:67` (asset_variants). The Go
+#     tree puts `account_id` there and nowhere else, and the checker requires
+#     the key on the line. A refactor that drops the column from the list is a
+#     red; a refactor that drops the POLICY is caught by the `rls` block and by
+#     the three-way tests below.
+#
+# # THE TWO TABLES THAT ARE DELIBERATELY NOT SCOPED
+#
+# `idempotency_keys` and `outbox_events` carry no `account_id` column and no
+# policy, and that is a decision rather than an omission: idempotency is scoped
+# by `principal_key` (`user_id:account_id`), which is not a row this service
+# reads by account, and `outbox_events` is drained by darkroom's own code, never
+# by a query that reaches a customer's rows. They are named here so the
+# omission is on the record. The measured ground truth (the RLS catalog, probed
+# 2026-10-07) agrees: exactly two account-scoped tables, both FORCED, eight
+# policies, no bypass roles.
+#
+# # THERE IS NO CREDENTIAL CALL
+#
+# `migrations/0004_account_isolation.sql:387` shows
+# `select cafaye.protect_credential_table('api_keys', 'token_digest')` in a
+# COMMENT. It is never executed. darkroom has no `api_keys` table and no
+# `resolve` policy, and declaring either would be `tenancy.rls-policy-absent`.
+#
+# # THE THREE-WAY TESTS, AND WHAT THIS DECLARATION CANNOT PROVE
+#
+# `internal/service/tenancy_test.go` holds eight tests, one per account-scoped
+# statement, each proving the three arms against real rows: `no-identity` (a
+# transaction with no identity set reads zero rows), `other-account` (a VALID
+# credential for another account reads zero rows, indistinguishable from
+# nonexistence), and `own-account` (this account's own credential reads ITS OWN
+# rows, with a column read off the row — the control that separates an isolated
+# service from one that returns nothing to everybody). The write arms are
+# paired with a read of the row they were aimed at (`assertUnchanged`), because
+# a denied write that matched nothing and a write that found nothing to do
+# return the same zero.
+#
+# The checker's scanner reads SQL text. darkroom's scoping is a transaction
+# identity and a policy, neither of which is a statement carrying the key, so
+# the scan closes nothing: this declaration carries `tenancy.enumeration-partial`
+# (the four key-carrying lines in `scope.sources` that are column lists, not
+# statements) and `tenancy.scope-key-unused` (no attributed statement exists to
+# close against). Both warnings are the honest answer for this tree, and the
+# tests above are the proof the scanner cannot read.
 version: 1
 service: darkroom
 
-# This service holds other people's accounts' media and reads and writes their
-# rows. The table below is the audit log of a security boundary, so `false`
-# here would be a lie rather than a declaration.
+# darkroom holds other people's media: every asset and variant row carries an
+# account, and the database refuses a cross-account read. `false` here would be
+# a lie rather than a declaration.
 accountScoped: true
 
 scope:
-  # The column every account-scoped statement in this service scopes by.
-  # Spelled `account_id` because that is what the migrations call it.
+  # The column every account-scoped statement is scoped by, and the one the
+  # policies filter on. Spelled `account_id` because that is what the
+  # migrations call it.
   key: account_id
-  # FILES, NOT DIRECTORIES, for the reason `cafaye/identity/tenancy.yml` gives:
-  # a directory would drag in `_test.go` fixtures and the service layer's log
-  # keys, which carry the word and are not entry points into anything.
-  #
-  # `internal/service/store.go` is the whole of the SQL: every account-scoped
-  # statement in this service is a function in that file, and the file's own
-  # header says why there is no other.
-  #
-  # `migrations` is DELIBERATELY NOT HERE, and the reason is the two-list split
-  # `core/docs/tenancy.md` §"Why `rls.sources` is a second list" exists for:
-  # this list is where the account-scoped STATEMENTS are, `rls.sources` below
-  # is where the DDL is. Scanning the substrate's plpgsql bodies as statements
-  # is what produces the three `tenancy.undeclared-entry` findings naming
-  # `pg_attribute` — a template's guard read as a statement reaching a
-  # customer's rows, on a database that is correctly isolated. That is a
-  # documented scanner gap (`core/docs/tenancy.md` §"What this does not
-  # prove"), it is measured and named in REPORT-darkroom-tenancy-01.md, and
-  # the DDL it lives in is read by `rls.sources` instead.
+  # The file whose SQL reaches the account-scoped tables. A FILE and not a
+  # `internal` directory, for the reason identity's declaration is: a directory
+  # would drag in `_test.go` fixtures, generated API types and slog keys that
+  # carry the word without being statements. The enforcement itself —
+  # `darkroomdb.InAccountTx` — lives in `internal/darkroomdb/darkroomdb.go`,
+  # which holds no account-scoped SQL and is therefore not a source; it is
+  # named in the header above instead.
   sources:
     - internal/service/store.go
 
+entryPoints:
+  # The duplicate-upload pre-check: a select on assets by checksum. The one
+  # statement with no id in its predicate at all — the policy is the only thing
+  # standing between a caller and a list of the account's checksums.
+  - id: asset-find-by-checksum
+    operation: select
+    subject: assets
+    enforced:
+      mechanism: repository-method
+      file: internal/service/store.go
+      line: 64
+    negative:
+      asserts: absent
+      cases:
+        # ARM ONE, no identity: a transaction that never called
+        # `cafaye.begin_account` reads zero rows. Go's spelling of nothing for
+        # a row is `nil`.
+        - id: no-identity
+          asserts: absent
+          expects: nil
+          file: internal/service/tenancy_test.go
+          line: 123
+        # ARM TWO, another account's VALID identity: zero rows, and the
+        # absence is indistinguishable from a checksum nobody uploaded.
+        - id: other-account
+          asserts: absent
+          expects: nil
+          file: internal/service/tenancy_test.go
+          line: 136
+        # ARM THREE, its own rows: the checksum read off the row that came
+        # back. The control — a service that returns nothing to everybody
+        # satisfies the first two arms and fails only here.
+        - id: own-account
+          asserts: present
+          expects: Checksum
+          file: internal/service/tenancy_test.go
+          line: 149
+
+  # The fetch-by-id every id-scoped path goes through, and the statement that
+  # becomes an IDOR the moment its policy is dropped.
+  - id: asset-find-by-id
+    operation: select
+    subject: assets
+    enforced:
+      mechanism: repository-method
+      file: internal/service/store.go
+      line: 64
+    negative:
+      asserts: absent
+      cases:
+        # ARM ONE: `pgx.ErrNoRows` is the 404, and it covers "no such asset"
+        # and "not yours" identically — the whole information-disclosure rule
+        # in one error.
+        - id: no-identity
+          asserts: absent
+          expects: ErrNoRows
+          file: internal/service/tenancy_test.go
+          line: 171
+        - id: other-account
+          asserts: absent
+          expects: ErrNoRows
+          file: internal/service/tenancy_test.go
+          line: 185
+        - id: own-account
+          asserts: present
+          expects: Checksum
+          file: internal/service/tenancy_test.go
+          line: 202
+
+  # The compare-and-set that completes an upload: `pending` → `ready`. A denied
+  # update is never proved by the update alone — "matched zero rows" and
+  # "found nothing to do" return the same thing — so both denial arms are
+  # paired with a read of the row they were aimed at, and THAT read is what is
+  # declared.
+  - id: asset-mark-ready
+    operation: update
+    subject: assets
+    enforced:
+      mechanism: repository-method
+      file: internal/service/store.go
+      line: 64
+    negative:
+      asserts: absent
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: assertUnchanged
+          file: internal/service/tenancy_test.go
+          line: 233
+        - id: other-account
+          asserts: absent
+          expects: assertUnchanged
+          file: internal/service/tenancy_test.go
+          line: 249
+        # ARM THREE: the row comes back `ready` — the write's own value, which
+        # is the only thing that separates a completed upload from one that
+        # matched nothing.
+        - id: own-account
+          asserts: present
+          expects: Status
+          file: internal/service/tenancy_test.go
+          line: 261
+
+  # The failure path's compare-and-set: `pending` → `failed`, with the reason
+  # recorded in the row's own metadata.
+  - id: asset-mark-failed
+    operation: update
+    subject: assets
+    enforced:
+      mechanism: repository-method
+      file: internal/service/store.go
+      line: 64
+    negative:
+      asserts: absent
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: assertUnchanged
+          file: internal/service/tenancy_test.go
+          line: 288
+        - id: other-account
+          asserts: absent
+          expects: assertUnchanged
+          file: internal/service/tenancy_test.go
+          line: 304
+        - id: own-account
+          asserts: present
+          expects: Status
+          file: internal/service/tenancy_test.go
+          line: 316
+
+  # The account's own page: a cursor select on assets. The other-account arm
+  # asserts his own row came back and none of alice's did — the token is the
+  # account column read off the returned row, which is what proves it.
+  - id: asset-list
+    operation: select
+    subject: assets
+    enforced:
+      mechanism: repository-method
+      file: internal/service/store.go
+      line: 64
+    negative:
+      asserts: absent
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: empty
+          file: internal/service/tenancy_test.go
+          line: 343
+        - id: other-account
+          asserts: absent
+          expects: AccountID
+          file: internal/service/tenancy_test.go
+          line: 356
+        - id: own-account
+          asserts: present
+          expects: Checksum
+          file: internal/service/tenancy_test.go
+          line: 369
+
+  # The delete path's key read: the original plus every variant's object, so a
+  # delete leaves no orphans. A select across `assets` and `asset_variants`.
+  - id: asset-storage-keys
+    operation: select
+    subject: assets
+    enforced:
+      mechanism: repository-method
+      file: internal/service/store.go
+      line: 64
+    negative:
+      asserts: absent
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: empty
+          file: internal/service/tenancy_test.go
+          line: 392
+        - id: other-account
+          asserts: absent
+          expects: empty
+          file: internal/service/tenancy_test.go
+          line: 405
+        - id: own-account
+          asserts: present
+          expects: StorageKey
+          file: internal/service/tenancy_test.go
+          line: 418
+
+  # The delete, which is the one that would end a customer's data. A denied
+  # delete matches nothing and exits 0 — `AGENTS.md` names that trap — so the
+  # denial arms are paired with a read of the asset that must have survived.
+  - id: asset-delete
+    operation: delete
+    subject: assets
+    enforced:
+      mechanism: repository-method
+      file: internal/service/store.go
+      line: 64
+    negative:
+      asserts: absent
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: assertUnchanged
+          file: internal/service/tenancy_test.go
+          line: 446
+        - id: other-account
+          asserts: absent
+          expects: assertUnchanged
+          file: internal/service/tenancy_test.go
+          line: 462
+        # ARM THREE: a delete returns no row, so the positive control is the
+        # delete's own boolean — `false` is exactly the "matched nothing and
+        # exited 0" trap, and `true` is the only answer that proves the row was
+        # there to be deleted.
+        - id: own-account
+          asserts: present
+          expects: ownAccount
+          file: internal/service/tenancy_test.go
+          line: 474
+
+  # One asset's variants, newest first: a select on `asset_variants`, the
+  # second of the two account-scoped tables.
+  - id: variant-list
+    operation: select
+    subject: asset_variants
+    enforced:
+      mechanism: repository-method
+      file: internal/service/store.go
+      line: 67
+    negative:
+      asserts: absent
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: empty
+          file: internal/service/tenancy_test.go
+          line: 500
+        - id: other-account
+          asserts: absent
+          expects: empty
+          file: internal/service/tenancy_test.go
+          line: 513
+        - id: own-account
+          asserts: present
+          expects: Kind
+          file: internal/service/tenancy_test.go
+          line: 526
+
+# What the DATABASE does about the boundary — which is everything. The two
+# `select cafaye.protect_table(...)` calls in `migrations/0004_account_isolation.sql`
+# are the enable bit, the FORCE bit and the four policies each, resolved by the
+# checker through kit's template. `idempotency_keys` and `outbox_events` are
+# deliberately absent: no policy, no account column, by design (see the header).
 rls:
-  # True, and it is the reason this file exists rather than saying `false` and
-  # listing nothing: migration 0004 makes Postgres refuse a cross-account read.
   databaseEnforced: true
-  # The template's own function, and not a spelling of it: `protect_table`
-  # writes every predicate as `account_id = (select cafaye.current_account_id())`,
-  # so naming anything else here would make `tenancy.rls-permissive` correct.
-  # The WRAPPED spelling is what makes the policies evaluate once per statement
-  # rather than once per row; the schema's pattern requires the bare name
-  # ending in `()` and cannot express the wrap.
+  # The template's own function, and not `app.current_account()`:
+  # `protect_table` writes every predicate as
+  # `account_id = (select cafaye.current_account_id())`, so naming anything else
+  # here would make `tenancy.rls-permissive` correct. The `(select …)` wrap is
+  # the per-row rule passing for the right reason: one evaluation per
+  # statement, not one per row.
   identity: cafaye.current_account_id()
-  # The DDL tree, and separate from `scope.sources` above because the two checks
+  # The DDL tree, and a separate list from `scope.sources` because the two checks
   # read different things: this one reads `create policy` and
-  # `alter table … row level security` (resolved through `protect_table`),
-  # the other reads statements.
+  # `alter table … row level security`, the other reads statements.
   sources:
     - migrations
-  # Exactly two tables, and the count is the arithmetic of the migration:
-  # `0004_account_isolation.sql` makes exactly two `select cafaye.protect_table(...)`
-  # calls, at lines 999 and 1000. Each call is the enable bit, the FORCE bit
-  # and four policies named `<table>_cafaye_{select,insert,update,delete}`.
+  # Both account-scoped tables, each with all four policies the template
+  # writes. Permissive policies are OR-ed together, so a declaration naming
+  # three of the four would leave one undeclared — and an undeclared one can
+  # widen the three that were.
   #
-  # `idempotency_keys` and `outbox_events` are DELIBERATELY NOT HERE. They
-  # carry no `account_id` column and no policy — `idempotency_keys` is scoped
-  # by `principal_key` (`user_id:account_id` as one opaque string) and
-  # `outbox_events` is the service's own outbox, drained by its own code.
-  # Declaring them would name a boundary Postgres does not draw.
+  # `roles` names the two principals the generated policies bind: `darkroom`,
+  # the owner, and `darkroom_app`, the login role the migration passes
+  # explicitly. The written-versus-declared comparison is skipped for a
+  # generated policy — the template binds `to %I, %I` decided by the session
+  # that ran the migration — but these names are what a reader checks, and
+  # neither carries BYPASSRLS.
   tables:
     - table: assets
       forced: true
@@ -146,254 +438,3 @@ rls:
           constrained:
             file: migrations/0004_account_isolation.sql
             line: 1000
-
-# The declared enumeration: one entry point per account-scoped statement in
-# `internal/service/store.go`. The two inserts in that file are absent by the
-# format's own rule — an insert creates a row in the account the caller is
-# already acting as, so it is not a place a cross-tenant leak can happen.
-#
-# Each entry point is proved three ways by `internal/service/tenancy_test.go`:
-# a transaction with NO identity reads zero rows, a VALID identity for another
-# account reads zero rows indistinguishable from nonexistence, and the account's
-# OWN identity reads its own rows with a column read off the row. The third arm
-# is the control — a suite that returns nothing to everybody passes the first
-# two for free.
-entryPoints:
-  # The duplicate-upload pre-check: a select on assets by checksum.
-  - id: asset-find-by-checksum
-    operation: select
-    subject: assets
-    enforced:
-      # The select list every asset read returns, and the column the policy
-      # filters on. The statement itself (`where checksum = $1`) carries no
-      # `account_id` predicate by design — see the header above.
-      mechanism: query-filter
-      file: internal/service/store.go
-      line: 64
-    negative:
-      asserts: absent
-      cases:
-        # ARM ONE, no identity — the state a transaction that never called
-        # `cafaye.begin_account` is in. `current_account_id()` reads NULL,
-        # which matches no row under FORCE RLS.
-        - id: no-identity
-          asserts: absent
-          expects: noIdentity
-          file: internal/service/tenancy_test.go
-          line: 123
-        # ARM TWO, another account's VALID identity. The arm with the
-        # information in it: the credential is real and belongs to somebody
-        # else, and the result is indistinguishable from a checksum nobody
-        # uploaded.
-        - id: other-account
-          asserts: absent
-          expects: otherAccount
-          file: internal/service/tenancy_test.go
-          line: 136
-        # ARM THREE, its own account: its own row, with the checksum read off
-        # it.
-        - id: own-account
-          asserts: present
-          expects: Checksum
-          file: internal/service/tenancy_test.go
-          line: 149
-
-  # The fetch-by-id every id-scoped path goes through. `pgx.ErrNoRows` is the
-  # 404 and it covers "no such asset" and "not yours" identically.
-  - id: asset-find
-    operation: select
-    subject: assets
-    enforced:
-      mechanism: query-filter
-      file: internal/service/store.go
-      line: 64
-    negative:
-      asserts: absent
-      cases:
-        - id: no-identity
-          asserts: absent
-          expects: ErrNoRows
-          file: internal/service/tenancy_test.go
-          line: 171
-        - id: other-account
-          asserts: absent
-          expects: ErrNoRows
-          file: internal/service/tenancy_test.go
-          line: 185
-        - id: own-account
-          asserts: present
-          expects: Checksum
-          file: internal/service/tenancy_test.go
-          line: 202
-
-  # The compare-and-set that completes an upload: `pending` → `ready`, an
-  # update on assets. A denied write is never proved by the write alone — a
-  # zero row count is also what a write that found nothing to do returns — so
-  # both denial arms are paired with a read of the row they were aimed at.
-  - id: asset-mark-ready
-    operation: update
-    subject: assets
-    enforced:
-      mechanism: query-filter
-      file: internal/service/store.go
-      line: 64
-    negative:
-      asserts: absent
-      cases:
-        - id: no-identity
-          asserts: absent
-          expects: assertUnchanged
-          file: internal/service/tenancy_test.go
-          line: 233
-        - id: other-account
-          asserts: absent
-          expects: assertUnchanged
-          file: internal/service/tenancy_test.go
-          line: 249
-        - id: own-account
-          asserts: present
-          expects: Status
-          file: internal/service/tenancy_test.go
-          line: 261
-
-  # The failure path's compare-and-set: `pending` → `failed`, an update on
-  # assets. Same shape as markReady, same pairing.
-  - id: asset-mark-failed
-    operation: update
-    subject: assets
-    enforced:
-      mechanism: query-filter
-      file: internal/service/store.go
-      line: 64
-    negative:
-      asserts: absent
-      cases:
-        - id: no-identity
-          asserts: absent
-          expects: assertUnchanged
-          file: internal/service/tenancy_test.go
-          line: 288
-        - id: other-account
-          asserts: absent
-          expects: assertUnchanged
-          file: internal/service/tenancy_test.go
-          line: 304
-        - id: own-account
-          asserts: present
-          expects: Status
-          file: internal/service/tenancy_test.go
-          line: 316
-
-  # The account's own page: a cursor-paginated select on assets.
-  - id: asset-list
-    operation: select
-    subject: assets
-    enforced:
-      mechanism: query-filter
-      file: internal/service/store.go
-      line: 64
-    negative:
-      asserts: absent
-      cases:
-        - id: no-identity
-          asserts: absent
-          expects: noIdentity
-          file: internal/service/tenancy_test.go
-          line: 343
-        # Bob's page holds his own row and none of alice's — the arm that
-        # catches a list that forgot its scope and returned the whole table.
-        - id: other-account
-          asserts: absent
-          expects: otherAccount
-          file: internal/service/tenancy_test.go
-          line: 356
-        - id: own-account
-          asserts: present
-          expects: Checksum
-          file: internal/service/tenancy_test.go
-          line: 369
-
-  # The delete path's key read: a select over assets and asset_variants for
-  # one asset's storage keys.
-  - id: asset-storage-keys
-    operation: select
-    subject: assets
-    enforced:
-      mechanism: query-filter
-      file: internal/service/store.go
-      line: 64
-    negative:
-      asserts: absent
-      cases:
-        - id: no-identity
-          asserts: absent
-          expects: noIdentity
-          file: internal/service/tenancy_test.go
-          line: 392
-        - id: other-account
-          asserts: absent
-          expects: otherAccount
-          file: internal/service/tenancy_test.go
-          line: 405
-        - id: own-account
-          asserts: present
-          expects: StorageKey
-          file: internal/service/tenancy_test.go
-          line: 418
-
-  # The delete, which is the one that would end a customer's data. Denied by
-  # the policy's `using` clause: zero rows, no error, and the paired read is
-  # what tells a refusal from a no-op.
-  - id: asset-delete
-    operation: delete
-    subject: assets
-    enforced:
-      mechanism: query-filter
-      file: internal/service/store.go
-      line: 64
-    negative:
-      asserts: absent
-      cases:
-        - id: no-identity
-          asserts: absent
-          expects: assertUnchanged
-          file: internal/service/tenancy_test.go
-          line: 446
-        - id: other-account
-          asserts: absent
-          expects: assertUnchanged
-          file: internal/service/tenancy_test.go
-          line: 462
-        - id: own-account
-          asserts: present
-          expects: ownAccount
-          file: internal/service/tenancy_test.go
-          line: 474
-
-  # One asset's variants: a select on asset_variants.
-  - id: variant-list
-    operation: select
-    subject: asset_variants
-    enforced:
-      # The variant select list, and the column the policy filters on.
-      mechanism: query-filter
-      file: internal/service/store.go
-      line: 67
-    negative:
-      asserts: absent
-      cases:
-        - id: no-identity
-          asserts: absent
-          expects: noIdentity
-          file: internal/service/tenancy_test.go
-          line: 500
-        - id: other-account
-          asserts: absent
-          expects: otherAccount
-          file: internal/service/tenancy_test.go
-          line: 513
-        - id: own-account
-          asserts: present
-          expects: Kind
-          file: internal/service/tenancy_test.go
-          line: 526
