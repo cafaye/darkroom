@@ -135,7 +135,13 @@ VARIANT_TESTS=24
 # environment does.
 OUTBOX_TESTS=19
 PGTEST_DB_TESTS=17
-SERVICE_DB_TESTS=39
+# 49, and it was 39 with EIGHT TESTS of drift under it. The tenancy packet added
+# `internal/service/tenancy_test.go`'s eight and did not raise this constant, so
+# this script reported `expected 39, log says 47` on a run every test passed —
+# which is the failure mode `bin/prime`'s FLOOR could not catch, because a floor
+# is `-lt` and a count that is too HIGH passes one. Measured against this tree at
+# 49 (the tenancy eight plus BRK-5's two payload guards).
+SERVICE_DB_TESTS=49
 # 34, and it MOVED THREE TIMES. 19, then the listing packet's two, then the
 # idempotency packet's twelve, then the honest packet's one. Both halves of that are load-bearing and both are why the number
 # is a claim rather than a constant:

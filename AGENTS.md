@@ -487,11 +487,20 @@ out or left running. Both of those are worse than absence: a commented-out
 IS NOT `go test`.** `go test` prints `ok` for a package with no test files and
 discards the count from a package that passes, so an emptied file or a build tag
 that stopped matching is a green gate reporting zero. `bin/prime` enumerates
-every suite with `go test -list` and fails below a floor — cmd/darkroom 7,
-objectstore 21, checksum 6, storagekey 4, pgtest 15, domain 7, problem 7,
-service 39, auth 12, httpapi 21. Adding a test means raising the number in the
-same commit, which is the point of the constant: *"a security check that reports
-zero is worse than one that is absent: it looks like coverage."*
+every suite with `go test -list` and fails below a floor — cmd/darkroom 16,
+objectstore 21, checksum 6, storagekey 4, pgtest 17, domain 7, problem 7,
+service 49, auth 12, httpapi 34, **outbox 19**. Adding a test means raising the
+number in the same commit, which is the point of the constant: *"a security check
+that reports zero is worse than one that is absent: it looks like coverage."*
+
+**AND A FLOOR IS `-lt`, SO A COUNT THAT IS TOO HIGH PASSES IT — which is how the
+service identity drifted for two packets without a single test failing.** 39 was
+the number the tenancy packet inherited and did not raise, so the tree carried 47
+while `bin/tier-counts` said `expected 39, log says 47` and `bin/prime` said 47
+is above 39. Both were green on the same run. The two figures are the same number
+on purpose, and BRK-5 measured and raised them to 49 (the tenancy packet's eight
+plus its own two payload guards) after the asymmetry was found by running
+`bin/tier-counts` rather than by reading it.
 
 **AND A GENERATED FILE THAT DRIFTS IS ALSO GREEN, WHICH IS WHY THE REGENERATE
 STEP IS NOT OPTIONAL.** `internal/api/api.gen.go` is built from

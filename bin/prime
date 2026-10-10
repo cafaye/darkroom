@@ -192,7 +192,7 @@ assert_go_suite() {
 }
 # Each number below is what this tree actually contained when it was written, and
 # `bin/tier-counts` carries the same figure with the per-file breakdown.
-assert_go_suite ./cmd/darkroom 7
+assert_go_suite ./cmd/darkroom 16
 assert_go_suite ./internal/objectstore 21
 assert_go_suite ./internal/checksum 6
 assert_go_suite ./internal/storagekey 4
@@ -205,7 +205,16 @@ assert_go_suite ./internal/problem 7
 # suite is `ok` with a count of zero. `go test -list` runs without a database, which
 # is the whole reason this step exists at all: the floor holds on a bare machine and
 # the `-v` tier below is what proves the tests actually ran.
-assert_go_suite ./internal/service 39
+# 49, AND IT WAS 39 UNTIL THIS PACKET — which is the identity `bin/tier-counts`
+# carries, and it had been drifting since the TENANCY packet rather than since
+# now. Measured: 39 was the count before `internal/service/tenancy_test.go`'s
+# eight tests landed, and that packet did not raise it, so the tree carried 47
+# against a constant that said 39 and `bin/tier-counts` reported
+# `expected 39, log says 47` on a run every test passed. THIS STEP is a floor
+# (`-lt`), so a count that is too HIGH passes it — which is the asymmetry that let
+# the drift live, and the reason the two numbers in this repository are the same
+# number. 49 is the tenancy eight plus this packet's two payload guards.
+assert_go_suite ./internal/service 49
 # The two packets 05's surface added. `auth` holds the verifier and the tenant
 # accessor every handler's first statement depends on; `httpapi` holds the drift
 # checks that make the DOCUMENT the routing table, and it is the only place the
