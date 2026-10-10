@@ -197,6 +197,49 @@ func (s *Store) InAccountTx(ctx context.Context, account string, fn func(tx pgx.
 	})
 }
 
+// BeginTx opens a transaction that sets NO account identity, and hands it back.
+//
+// # WHY THIS EXISTS, AND WHY IT IS NOT `InTx`
+//
+// `AGENTS.md` says "`InAccountTx` is the only way to start a transaction", and
+// `InTx` already documents itself as the identity-free transaction for
+// `outbox_events` and `idempotency_keys`. Both are callbacks, and a callback
+// commits when it returns.
+//
+// The outbox publisher's claim cannot be a callback. Its transaction has to stay
+// open ACROSS a batch of publishes — that is what makes a publish and the
+// `published_at` write that records it one unit of work, so a publisher that
+// crashes between them releases the rows rather than republishing forever. A
+// callback-shaped claim would either commit before the publishes (losing the
+// guarantee) or block until they finished (which is what the open transaction
+// already does, from the outside).
+//
+// So the publisher needs a transaction handed to it, and this is the one way to
+// get one. It is deliberately the same transaction `InTx` opens — no identity
+// set, no `cafaye.begin_account` call — so nothing about the tenancy surface
+// changes by using it.
+//
+// # AND WHY IT SETS NO IDENTITY
+//
+// `outbox_events` has no `account_id` column and no policy, and `tenancy.yml`
+// records it as deliberately unscoped: the table "is drained by darkroom's own
+// code, never by a query that reaches a customer's rows." Setting an identity
+// here would be a claim that the rows this transaction reads belong to an
+// account, when no policy and no column in the database agrees — and the one
+// thing it could do if the table ever grew a policy is make the publisher read
+// only one tenant's events, silently, while every asset still completes.
+//
+// The caller that currently uses this is `internal/outbox`.Claim. See its own
+// header for what holds the axis in place: the claim query names ONE table, and
+// it is that one.
+func (s *Store) BeginTx(ctx context.Context) (pgx.Tx, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("darkroomdb.BeginTx: beginning: %w", err)
+	}
+	return tx, nil
+}
+
 // redact removes anything password-shaped from a URL before it goes in an error.
 //
 // darkroom's own URLs take the shared cluster's password, so this is not

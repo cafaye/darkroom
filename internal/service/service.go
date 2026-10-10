@@ -426,7 +426,6 @@ func (s *Service) CompleteUpload(ctx context.Context, caller Caller, assetID, cl
 		ready = row
 		return enqueue(ctx, tx, NewEvent(EventAssetReady, row.ID, now(), map[string]any{
 			"asset_id":      row.ID,
-			"account_id":    row.AccountID,
 			"owner_user_id": row.OwnerUserID,
 			"kind":          row.Kind.String(),
 			"content_type":  row.ContentType,
@@ -591,8 +590,15 @@ func (s *Service) DeleteAsset(ctx context.Context, caller Caller, assetID string
 			return errAlreadyGone
 		}
 		return enqueue(ctx, tx, NewEvent(EventAssetDeleted, assetID, now(), map[string]any{
-			"asset_id":   assetID,
-			"account_id": caller.AccountID,
+			// NO ACCOUNT ID, and that is the packet BRK-5's rule rather than a
+			// tidying. The bus is a broadcast surface: every consumer on the platform
+			// receives every darkroom event, so an event carries the FACT — this asset
+			// is gone — and never the identifier of whose it was. A consumer that
+			// needs the account asks darkroom over a request carrying a principal,
+			// where a policy scopes the answer. `internal/outbox` refuses to publish
+			// an envelope carrying `account_id` at all, so this is the only spelling
+			// this packet can have.
+			"asset_id": assetID,
 		}))
 	})
 	if commitErr != nil {
@@ -690,7 +696,6 @@ func (s *Service) CreateVariant(ctx context.Context, caller Caller, assetID stri
 		return enqueue(ctx, tx, NewEvent(EventVariantCreated, row.ID, at, map[string]any{
 			"variant_id":   row.ID,
 			"asset_id":     asset.ID,
-			"account_id":   caller.AccountID,
 			"kind":         row.Kind.String(),
 			"content_type": row.ContentType,
 			"byte_size":    row.ByteSize,

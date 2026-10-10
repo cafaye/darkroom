@@ -67,6 +67,7 @@ import (
 	"github.com/cafaye/darkroom/internal/darkroomdb"
 	"github.com/cafaye/darkroom/internal/httpapi"
 	"github.com/cafaye/darkroom/internal/objectstore"
+	"github.com/cafaye/darkroom/internal/outbox"
 	"github.com/cafaye/darkroom/internal/service"
 )
 
@@ -162,6 +163,40 @@ func run() error {
 		return fmt.Errorf("darkroom: the router could not be built: %w", err)
 	}
 
+	// THE OUTBOX PUBLISHER, AND THE CONDITION IT STARTS UNDER.
+	//
+	// `NATS_URL` set and nothing else. With it unset there is no loop, no
+	// publisher and no connection — rows accumulate in `outbox_events` and drain
+	// the moment a broker is configured, which is the whole of the argument for
+	// publishing from a table rather than from the request path. That is the
+	// shipped state and it is the honest one: a `NoopPublisher` wired here would
+	// mark every event published and drain the outbox into nowhere, which is
+	// worse than accumulation because the rows are the promise and this process
+	// would be keeping it by discarding.
+	//
+	// It is built BEFORE the listener rather than after it, and the order is
+	// load-bearing: a loop started against a publisher that failed to build is a
+	// goroutine that panics on its first claim.
+	publisher, err := buildOutboxPublisher(config, logger)
+	if err != nil {
+		return fmt.Errorf("darkroom: %w", err)
+	}
+
+	// The loop runs on `ctx` — the same context the HTTP server drains on — so a
+	// SIGTERM stops both. There is no second shutdown path to forget.
+	if publisher != nil {
+		loop := outbox.NewService(outbox.NewStore(db), publisher, logger, 0)
+		go func() {
+			// Run returns nil on a clean shutdown and logs its own retries, so the
+			// only thing to report is an unexpected exit — which for this loop
+			// means the process is shutting down anyway.
+			if err := loop.Run(ctx); err != nil {
+				logger.Error("darkroom: the outbox publisher loop exited", "error", err)
+			}
+		}()
+		logger.Info("darkroom: the outbox publisher is running", "broker", config.NATSURL)
+	}
+
 	srv := &http.Server{
 		Addr:              config.addr(),
 		Handler:           handler,
@@ -175,6 +210,27 @@ func run() error {
 		logger.Info("darkroom: listening", "addr", config.addr())
 		errs <- srv.ListenAndServe()
 	}()
+
+	// THE OUTBOX PUBLISHER, AND THE CONDITION IT STARTS UNDER.
+	//
+	// `NATS_URL` set and nothing else. With it unset there is no loop, no
+	// publisher, and no connection — rows accumulate in `outbox_events` and drain
+	// the moment a broker is configured, which is the whole of the argument for
+	// publishing from a table rather than from the request path. That is the
+	// shipped state and it is the honest one: a `NoopPublisher` wired here would
+	// mark every event published and drain the outbox into nowhere, which is
+	// worse than accumulation because the rows are the promise and this process
+	// would be keeping it by discarding.
+	//
+	// The loop runs on `ctx` — the same context the HTTP server drains on — so a
+	// SIGTERM stops both. There is no second shutdown path to forget.
+	//
+	// A broker that is DOWN when this runs is not a boot failure: the publisher
+	// connects with RetryOnFailedConnect, so the loop starts, every publish
+	// fails, the rows stay claimable, and they drain when the broker returns. What
+	// fails the boot is a NATS_URL that does not parse — a typo belongs at boot,
+	// where an operator reads it, not at the first event, where nobody does.
+	// (Built above, before the listener — see there.)
 
 	select {
 	case err := <-errs:
@@ -199,6 +255,33 @@ func run() error {
 		logger.Info("darkroom: stopped")
 		return nil
 	}
+}
+
+// buildOutboxPublisher builds the outbox publisher for a configured broker.
+//
+// It returns nil when no broker is configured, and an error when one is
+// configured and cannot be built. The split is the point: an unset `NATS_URL` is
+// a decision with a log line, and a malformed one is a MISCONFIGURATION that
+// belongs at boot where an operator reads it rather than at the first event
+// where nobody does.
+//
+// A broker that is not LISTENING is neither. `RetryOnFailedConnect` is inside
+// `NewNATSPublisher`, so the connection is established lazily, the loop starts,
+// every publish fails, the rows stay claimable, and they drain when the broker
+// returns. Refusing to boot without a bus would couple the media surface to the
+// bus's availability, turning an event delay into an upload outage.
+func buildOutboxPublisher(config Config, logger *slog.Logger) (*outbox.NATSPublisher, error) {
+	if !config.NATSEnabled() {
+		logger.Info("darkroom: NATS_URL is not set; the outbox publisher is not " +
+			"started, and events will accumulate in outbox_events until a broker is configured")
+		return nil, nil
+	}
+
+	publisher, err := outbox.NewNATSPublisher(config.NATSURL)
+	if err != nil {
+		return nil, fmt.Errorf("building the NATS publisher for %s: %w", config.NATSURL, err)
+	}
+	return publisher, nil
 }
 
 // buildObjectStore mounts the configured store.

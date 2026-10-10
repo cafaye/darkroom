@@ -72,6 +72,14 @@ const (
 	// by uploading into the void has learned it the expensive way.
 	storeMemory objectStoreKind = "memory"
 	storeS3     objectStoreKind = "s3"
+
+	// natsURLVar is the broker address, and it is NOT prefixed `DARKROOM_`. It is
+	// the one variable this binary reads by its bare fleet-wide name, because
+	// NATS_URL is the stack's and not the service's: kit's compose file declares
+	// the broker, identity reads the same name, and a service that read
+	// `DARKROOM_NATS_URL` instead would need its own copy of the address in every
+	// deployment manifest. Two services on one bus is one variable.
+	natsURLVar = "NATS_URL"
 )
 
 // Config is the validated configuration. Every field is either required or has a
@@ -94,6 +102,13 @@ type Config struct {
 	Issuer   string
 	Audience string
 	JWKSURL  string
+
+	// NATSURL is the broker the outbox publisher drains `outbox_events` onto, and
+	// it is the one OPTIONAL address in this table. Empty means no publisher and
+	// no loop: rows accumulate in the table and drain when a broker appears,
+	// which is the whole point of publishing from a table rather than from the
+	// request path. See [Config.NATSEnabled].
+	NATSURL string
 
 	LogLevel  string
 	LogFormat string
@@ -164,6 +179,10 @@ func loadConfig(lookup Lookup) (Config, error) {
 	// and an operator who publishes keys elsewhere says so.
 	jwksURL, _ := firstNonEmpty(lookup, "DARKROOM_JWKS_URL")
 
+	// Optional, and the ONLY address in this file that is. Its absence is a
+	// decision rather than an omission — see [Config.NATSEnabled].
+	natsURL, _ := firstNonEmpty(lookup, natsURLVar)
+
 	logLevel, ok := firstNonEmpty(lookup, "DARKROOM_LOG_LEVEL")
 	if !ok {
 		logLevel = defaultLogLevel
@@ -201,11 +220,25 @@ func loadConfig(lookup Lookup) (Config, error) {
 		Issuer:      issuer,
 		Audience:    audience,
 		JWKSURL:     jwksURL,
+		NATSURL:     natsURL,
 		LogLevel:    logLevel,
 		LogFormat:   logFormat,
 		Environment: environment,
 	}, nil
 }
+
+// NATSEnabled reports whether the outbox publisher loop should run.
+//
+// It is the WHOLE of what the boot wiring consults, and it is a method rather
+// than `cfg.NATSURL != ""` at the call site so the condition has one spelling:
+// a service that starts a drain loop with no broker is a service whose events go
+// into a publisher that cannot publish, which is the failure mode
+// `internal/service/outbox.go` recorded the absence of this packet to avoid.
+//
+// Whitespace-only counts as absent, because a compose file carrying
+// `NATS_URL:` with nothing after the colon produces a variable that IS set and IS
+// empty — `firstNonEmpty` is what makes the two the same thing here.
+func (c Config) NATSEnabled() bool { return c.NATSURL != "" }
 
 // loadObjectStore picks the store and carries the S3 knobs through unexamined.
 //
