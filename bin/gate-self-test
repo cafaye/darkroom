@@ -58,8 +58,64 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # core owns the format, the schema and the checker. darkroom consumes it.
-# `CAFAYE_CORE` overrides where a sibling checkout lives.
-CORE="${CAFAYE_CORE:-$ROOT/../core}"
+#
+# WHERE CORE IS, resolved in HZ-1's order, because answering this with
+# `$ROOT/../core` and nothing else is the sibling-read hazard in the one script
+# that guards the declaration. It is right for the main checkout and nil for a
+# worktree, where this script exits 1 with
+#
+#   gate-self-test: core's gate checker is not at …/wt/darkroom-hz2/../core/harness/bin/gate-check
+#
+# — MEASURED, in wt/darkroom-hz2, exit 1, before the resolver below. Loud, and
+# a gate that cannot run from a worktree is a gate nobody runs in one, in a
+# fleet where every worker gates in one. The order is the same one HZ-1 gave
+# billing, `HZ-2` gave muse (`src/muse/coreloc.py`) and gave pantry
+# (`bin/caf-checkout`): the explicit seam, the sibling beside the root, the
+# sibling beside the PRIMARY worktree through git.
+core_candidates() {
+  # 1. The explicit seam — a person naming a directory.
+  if [ -n "${CAFAYE_CORE:-}" ]; then
+    printf '%s\n' "$CAFAYE_CORE"
+  fi
+  # 2. Beside the repository root. The main checkout's answer, first among the
+  #    implicit ones because it is what every document describes.
+  printf '%s\n' "$ROOT/../core"
+  # 3. Beside the PRIMARY worktree. `git worktree list --porcelain` prints
+  #    `worktree <path>` on its first line for the main checkout, which is the
+  #    only question that can be asked without guessing a directory layout —
+  #    and it is the question this script has, because a worktree of THIS
+  #    repository lives under `<workspace>/wt/` and has no core sibling while
+  #    the main checkout beside it does.
+  #
+  #    `..` and NOT the primary worktree itself: a worktree is a checkout of
+  #    THIS repository and carries `harness/`-shaped nothing, so resolving the
+  #    worktree root would look like a success and hand back a directory with
+  #    no gate-check in it — a found path's clothes over the same failure.
+  git -C "$ROOT" worktree list --porcelain 2>/dev/null |
+    sed -n '1s/^worktree[[:space:]]*//p' | sed 's|$|/../core|'
+  # 4. There is deliberately no fourth candidate. This script is not the gate
+  #    declaration and it is not where a clone belongs; darkroom's clone
+  #    fallback, if one is ever needed, is `bin/stack-up`'s at the ref
+  #    `kit.ref` pins. Here, nothing local names "where you looked".
+}
+
+# What makes a directory core rather than another cafaye checkout: the checker
+# this script needs. A `cafaye.yml` or a `go.mod` would identify nothing —
+# every repository in the fleet has both.
+CORE="$(core_candidates 2>/dev/null | while IFS= read -r candidate; do
+  if [ -x "$candidate/harness/bin/gate-check" ]; then
+    printf '%s\n' "$candidate"
+    break
+  fi
+done)"
+
+if [ -z "$CORE" ]; then
+  printf 'gate-self-test: no cafaye/core checkout resolved for %s\n' "$ROOT" >&2
+  printf 'gate-self-test: darkroom declares the gate; it does not implement the check.\n' >&2
+  printf 'gate-self-test: looked at CAFAYE_CORE, %s/../core, and core beside the primary\n' "$ROOT" >&2
+  printf 'gate-self-test: worktree. Set CAFAYE_CORE to a cafaye/core checkout.\n' >&2
+  exit 1
+fi
 CHECK="$CORE/harness/bin/gate-check"
 
 # The proving cases compile and run the real gate, and `go` puts its build and
@@ -442,14 +498,14 @@ expect_red 'a gate that calls itself self-contained while naming three things it
 
 breakages=$((breakages + 1))
 eleven="$(fresh_copy requirement-path-missing)"
-# The head of the database requirement's argv, which is a bare `docker` today.
-# Only the HEAD is rewritten: core's checker keys the "is this in this
+# The head of the database requirement's argv, which is `bin/stack-up` today —
+# a repository-relative path since the HZ-2 change, so this breakage is the one
+# in this file that can fire on a declaration whose resolver was renamed or
+# deleted. Only the HEAD is rewritten: core's checker keys the "is this in this
 # repository" verdict on `satisfy.command[0]` alone, so replacing the whole
 # argv would still fire the finding for a reason that has nothing to do with
 # what this breakage is about.
-edit "$eleven/gate.yml" '          - docker
-          - compose' '          - bin/compose-up
-          - compose'
+edit "$eleven/gate.yml" '        command: [bin/stack-up]' '        command: [bin/compose-up]'
 expect_red 'a requirement satisfied by a file this repository does not have' \
   'gate.requirement-path-missing' "$eleven"
 
