@@ -515,6 +515,42 @@ in the repository can register the WebP decoder except the blank import. That
 split is why the WebP fixtures are checked in rather than built
 (`internal/variants/testdata/README.md` records the `cwebp` commands).
 
+### The outbox dependencies: `nats.go`, and `nats-server/v2` for its tests
+
+Two more, and `AGENTS.md` requires each to carry its cause.
+
+**`github.com/nats-io/nats.go` — the client, and it is the whole of the
+transport.** `internal/outbox/nats.go` is one file and it is the only non-test
+importer. The matter is *which part* of it: JetStream's `PublishMsg`, and not
+core NATS' `Publish`. Core NATS returns when the message is on the wire, not when
+the broker has stored it, so marking a row published on that return would mark
+rows the broker never saw — which is the failure the outbox table exists to
+prevent. JetStream's is a request that blocks until the broker acks, so a nil
+return from `Publish` IS the ack the loop marks the row from.
+
+**`github.com/nats-io/nats-server/v2` — a TEST-ONLY dependency, and it buys the
+one proof the fakes cannot.** A capturing publisher can prove the loop hands the
+transport an envelope and marks what the transport accepted. It cannot prove the
+transport puts anything onto a bus, because from the loop's point of view the fake
+IS the bus. An in-process JetStream broker on a random loopback port proves it by
+reading the message back out of the stream, so the message being there becomes the
+BROKER'S statement rather than this package's. That is the difference between
+believing a delivery happened and observing one.
+
+It is not an exception to the no-network rule. The server is the test's own
+process, on 127.0.0.1, on a port the OS chooses; no test binds a service port and
+nothing here reaches anywhere outside the machine. The dependency is confined to
+`_test.go` files, which is what keeps it out of the deployment binary — `go list
+-deps` on `cmd/darkroom` does not name it.
+
+The rest of its tree is transitive weight this repository does not choose
+(`nkeys`, `nuid`, `jwt/v2` for the NATS auth surface, `antithesis-sdk-go` and
+`go-tpm` for the server's own fault-injection build). None of it is imported, and
+`go mod why -m` names the two above as the only direct edges —
+`nats-server/v2` through `internal/outbox.test` and `nats.go` through
+`internal/outbox`, with nothing in `cmd/darkroom`'s dependency set naming the
+server at all.
+
 ## Events and the outbox
 
 | type | subject | when |
