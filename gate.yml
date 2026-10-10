@@ -223,33 +223,29 @@ external:
         # a satisfied operator while describing a repository that does not
         # exist.
         #
-        # It is still a BARE `docker`, so core's checker warns rather than
-        # verifies, and that is the right shape here: this argv needs the pinned
-        # stack's path, and the pinned stack's path is what `kit.ref` decides.
-        # A repository-relative file would let the checker verify it, at the
-        # price of hard-coding a kit path into this file — a second place for a
-        # pin to live, which is the defect `kit.ref` exists to remove.
+        # THE SECOND VERSION WAS AN ARGV WITH A PATH IN IT, and that was the
+        # sibling-read hazard BRK-4R2 found in billing, reproduced here:
+        # `-f ../kit/templates/compose/docker-compose.yml` is the main
+        # checkout's answer and a worktree's nil, so the requirement could not
+        # be proved from a worktree at all. Measured on 2026-10-10: the gate
+        # binary never read the sibling — `bin/prime --db` runs the same 143
+        # tests with 0 skips in both environments — it was this declaration's
+        # argv that named a path only one environment has.
         #
-        # `KIT_COMPOSE_DIR` is NOT optional and the failure is silent. Without it
-        # compose resolves kit's initdb bind mount against THIS repository and
-        # Docker creates the missing directory as an empty one: the cluster comes
-        # up HEALTHY, having provisioned no role and no database. Measured, on
-        # the merged config:
+        # So the argv is now ONE SCRIPT, `bin/stack-up`, which resolves kit the
+        # order this repository needs: `KIT_COMPOSE_DIR` (the operator's
+        # documented spelling), then `../kit` beside the repository root, then
+        # kit beside the PRIMARY worktree found through `git worktree list`,
+        # and only then a fetch at the ref `kit.ref` pins — the CI-runner case,
+        # explicit and last rather than silent. The fetch is what keeps the
+        # requirement satisfiable on a machine with no sibling checkout; the
+        # three local candidates are what keep a worktree from using it.
         #
-        #   without it: source: <darkroom>/postgres/initdb
-        #   with it:    source: <kit>/templates/compose/postgres/initdb
-        command:
-          - docker
-          - compose
-          - --project-directory
-          - .
-          - -f
-          - ../kit/templates/compose/docker-compose.yml
-          - -f
-          - ./docker-compose.yml
-          - up
-          - -d
-          - --wait
+        # The command is no longer a bare `docker` the checker can only warn
+        # about, and that is a gain rather than a loss: the checker can RUN
+        # `bin/stack-up` and see it exit. What it still cannot verify is the
+        # cluster's contents, which is what the `unmet` text below is for.
+        command: [bin/stack-up]
         unmet: >-
           bin/prime --db exits 1 at "go test -v ./internal/darkroomdb/..." with
           a skip that names TEST_DATABASE_URL, or with `role "darkroom" does not

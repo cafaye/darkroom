@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# bin/stack-up — stand up the shared cluster this repository's database tier
+# needs, from any checkout of this repository. Exits 0 when the cluster is up
+# and healthy, nonzero naming the step that failed.
+#
+#   ./bin/stack-up
+#
+# ## The hazard this exists for
+#
+# darkroom joined kit's shared Postgres cluster (see `kit.ref` and
+# `docker-compose.yml`), so it owns no container of its own — `bin/prime --db`
+# needs a cluster at $TEST_DATABASE_URL and nothing in this repository brings
+# one up. The gate declaration named how to get it:
+#
+#   docker compose --project-directory . \
+#     -f ../kit/templates/compose/docker-compose.yml -f ./docker-compose.yml up -d --wait
+#
+# `../kit` is the main checkout's answer: kit sits beside darkroom in the
+# workspace. From a worktree it is nil, so the satisfy argv failed there and the
+# requirement could not be proved — BRK-4R2's shape, one file over, which
+# `gate-check --prove` reports loudly as an unmet requirement rather than
+# silently. Measured 2026-10-10: `bin/prime --db` runs the same 143 tests with 0
+# skips in both environments; the gate BINARY never read the sibling path, only
+# the declaration did. This script moves the resolution out of a path written
+# in a declaration and into one order, used wherever kit is needed.
+#
+# ## The resolution order — HZ-1's, in this repository's idiom
+#
+#   1. `$KIT_COMPOSE_DIR` — the operator's explicit spelling, already
+#      documented in `docker-compose.yml` and `AGENTS.md`. A set value is used
+#      as given: naming a directory is a person saying "this one".
+#   2. `../kit` beside the repository root — the main checkout's answer, kept
+#      first among the implicit ones because it is what the documents describe.
+#   3. kit beside the PRIMARY worktree, found through `git worktree list
+#      --porcelain`. A worktree resolves the same kit the main checkout does,
+#      because kit lives beside the main checkout and not beside the worktree.
+#   4. A FETCH at the ref `kit.ref` pins, into kit's own cache
+#      (`${XDG_CACHE_HOME:-$HOME/.cache}/cafaye/kit/<ref>`). This is the one
+#      step that touches the network, and it exists for the case the first
+#      three cannot answer: a CI runner with no sibling checkout. It is
+#      explicit rather than silent — it runs only when 1-3 all miss, it names
+#      itself in its output line, and it fetches ONE pinned sha rather than a
+#      branch, so what comes up is what `kit.ref` says this repository runs.
+#
+# Why not kit's full `templates/bin/dev.sh` (the `bin/dev` courier, identity and
+# billing carry)? It is the right destination and the wrong packet: `bin/dev`
+# brings its own opinions about `.env` and `db grant`, and `docker-compose.yml`
+# records dropping it in as a separate change. This script does the one thing
+# the gate declaration asks — a healthy cluster at the pinned ref — with the
+# resolution the worktree case needs, and a `bin/dev` adoption can subsume it
+# later without the worktree defect reappearing in the meantime.
+#
+# ## What makes a directory kit
+#
+# `templates/compose/docker-compose.yml` — the file this script passes to
+# compose twice. `go.mod` or a `README.md` would not identify anything; every
+# repository in the fleet has both.
+
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+
+# The pin. One line, a 40-character sha or a v<semver> tag, never a branch —
+# kit's `validate_ref` rule, restated here because a moving ref is a cluster
+# that changes under the gate. Comments are allowed, which is why the first
+# non-comment line is the one taken.
+kit_ref() {
+  [ -f "$REPO/kit.ref" ] || return 0
+  sed -e 's/[[:space:]]*$//' "$REPO/kit.ref" 2>/dev/null |
+    grep -v '^#' | grep -v '^$' | head -1 || true
+}
+
+REF="$(kit_ref)"
+
+# The primary worktree of the git repository holding this one, or nothing. The
+# first porcelain line is always `worktree <path>` for the main checkout.
+primary_worktree() {
+  git -C "$REPO" worktree list --porcelain 2>/dev/null | head -1 |
+    sed -n 's/^worktree[[:space:]][[:space:]]*//p'
+}
+
+kit_home() { printf '%s/cafaye/kit' "${XDG_CACHE_HOME:-$HOME/.cache}"; }
+
+is_kit() {
+  [ -f "$1/templates/compose/docker-compose.yml" ]
+}
+
+looked=()
+kit=""
+
+# 1. The explicit spelling.
+if [ -n "${KIT_COMPOSE_DIR:-}" ]; then
+  # KIT_COMPOSE_DIR names kit's templates/compose directory, not kit's root —
+  # that is the variable's documented meaning in `docker-compose.yml`. The
+  # resolver works in kit roots, so the `..` is taken here rather than at every
+  # use.
+  candidate="$(cd "$KIT_COMPOSE_DIR/.." && pwd)"
+  looked+=("$candidate (KIT_COMPOSE_DIR)")
+  if is_kit "$candidate"; then
+    kit="$candidate"
+  fi
+fi
+
+# 2. Beside this repository root.
+if [ -z "$kit" ]; then
+  candidate="$REPO/../kit"
+  looked+=("$candidate (../kit beside the repository root)")
+  if is_kit "$candidate"; then
+    kit="$candidate"
+  fi
+fi
+
+# 3. Beside the primary worktree. `..` and NOT the worktree itself: a worktree
+# is a checkout of THIS repository and carries a `docker-compose.yml`, so
+# resolving the worktree root would look like a success and hand back a
+# directory with no kit stack in it — a found path's clothes over a skip.
+if [ -z "$kit" ]; then
+  primary="$(primary_worktree)"
+  if [ -n "$primary" ]; then
+    candidate="$primary/../kit"
+    looked+=("$candidate (kit beside the primary worktree)")
+    if is_kit "$candidate"; then
+      kit="$candidate"
+    fi
+  else
+    looked+=("(git worktree list named no primary worktree for $REPO)")
+  fi
+fi
+
+# 4. The fetch — explicit, last, and only when nothing local answered.
+if [ -z "$kit" ]; then
+  if [ -z "$REF" ]; then
+    echo "bin/stack-up: no kit checkout resolved, and kit.ref names no ref to fetch." >&2
+    echo "  Looked:" >&2
+    for place in "${looked[@]}"; do printf '    %s\n' "$place" >&2; done
+    echo "  Set KIT_COMPOSE_DIR=<kit>/templates/compose, or clone kit beside the" >&2
+    echo "  main checkout of this repository." >&2
+    exit 4
+  fi
+  cached="$(kit_home)/$REF"
+  if is_kit "$cached"; then
+    # The cache from an earlier run, and the directory name IS the ref check: a
+    # tree at another ref lives in another directory. Recording the ref inside
+    # is belt and braces for a cache directory somebody populated by hand.
+    kit="$cached"
+    echo "bin/stack-up: using the cached kit@$REF at $kit"
+  else
+    echo "bin/stack-up: no local kit; fetching kit@$REF from git@github.com:cafaye/kit.git" >&2
+    echo "bin/stack-up: this is the CI-runner path — a machine with a sibling" >&2
+    echo "  checkout never reaches it. The ref is the one kit.ref pins, so what" >&2
+    echo "  comes up is what this repository says it runs." >&2
+    tmp="$cached.tmp.$$"
+    rm -rf "$tmp"
+    mkdir -p "$tmp"
+    # fetch, not clone --branch: a pinned sha is not a branch, and a fetch into
+    # a directory keyed by the ref is disposable — delete it and the next run
+    # rebuilds it. (kit's own bin/dev does the same, into the same cache.)
+    if ! git -C "$tmp" init -q ||
+       ! git -C "$tmp" remote add origin git@github.com:cafaye/kit.git ||
+       ! git -C "$tmp" fetch --quiet --depth 1 origin "$REF" ||
+       ! git -C "$tmp" -c advice.detachedHead=false checkout --quiet --detach FETCH_HEAD; then
+      rm -rf "$tmp"
+      echo "bin/stack-up: could not fetch kit@$REF. Check the pin:" >&2
+      echo "  git ls-remote git@github.com:cafaye/kit.git '$REF'" >&2
+      exit 5
+    fi
+    printf '%s\n' "$REF" >"$tmp/.kit-stack-ref"
+    if [ -e "$cached" ]; then
+      rm -rf "$cached"
+    fi
+    mv "$tmp" "$cached"
+    kit="$cached"
+  fi
+fi
+
+echo "bin/stack-up: kit resolved to $kit"
+
+# KIT_COMPOSE_DIR is exported, not merely passed, and the compose comment at the
+# top of `docker-compose.yml` is why: kit's own compose file resolves its initdb
+# bind mount and build contexts through ${KIT_COMPOSE_DIR:-.} against the
+# PROJECT DIRECTORY, so without it compose resolves those against THIS
+# repository, Docker creates the missing directory as an empty one, and the
+# cluster comes up HEALTHY having provisioned no role and no database. Measured
+# on courier after the same mistake; the failure is silent by construction.
+export KIT_COMPOSE_DIR="$kit/templates/compose"
+
+echo "bin/stack-up: docker compose up (kit@${REF:-unresolved}, KIT_COMPOSE_DIR=$KIT_COMPOSE_DIR)"
+exec docker compose --project-directory "$REPO" \
+  -f "$kit/templates/compose/docker-compose.yml" \
+  -f "$REPO/docker-compose.yml" \
+  up -d --wait
