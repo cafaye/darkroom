@@ -339,3 +339,21 @@ services:
       # variable from a compose file is a change nobody reads; keeping it and
       # saying what it does is the smaller surprise.
       DARKROOM_ENV: development
+      # The event bus, and it is NOT SET HERE on purpose.
+      #
+      # With NATS_URL unset the process builds no publisher and starts no loop:
+      # rows accumulate in `outbox_events` and drain the moment a broker appears.
+      # That is the shipped state of this compose file, and it is the honest one —
+      # kit's stack runs the broker with `-js` and declares no stream, so a
+      # publish here would be REFUSED for a subject no stream matches and every
+      # event would sit unpublished with `attempts` climbing. Pointing the service
+      # at kit's broker before the stream exists buys nothing and hides the
+      # misconfiguration inside a loop that retries.
+      #
+      # To switch it on, set the variable to the service name kit's compose gives
+      # the broker and add a stream covering `darkroom.>`:
+      #
+      #   NATS_URL: nats://nats:4222
+      #
+      # See README "Events and the outbox" for the one fleet-level fact this
+      # imposes, and .env.example for why the variable is the stack's bare name.

@@ -222,6 +222,12 @@ assert_go_suite ./internal/auth 12
 # `bin/tier-counts` carries the same figure and the identity that the enumerated count
 # and the passed count are the same number.
 assert_go_suite ./internal/httpapi 34
+# The outbox publisher. Its floor is the count of the loop's cases plus the
+# transport's, which is the pair that together prove "an unpublished darkroom row
+# reaches the stream under a `darkroom.` subject" and "no published event carries a
+# presigned URL, a bucket key or a tenant id" on a machine with no database and no
+# broker but this process's own.
+assert_go_suite ./internal/outbox 19
 
 # The variant pipeline, and `-v` for a second reason that is not the skips.
 #
@@ -237,6 +243,21 @@ assert_go_suite ./internal/httpapi 34
 # that is absent — it looks like coverage.
 step "go test -v ./internal/variants/ (no database)"
 go test -v -count=1 ./internal/variants/
+
+# The outbox publisher, and `-v` for the SAME reason as the pipeline above and one
+# more: `internal/outbox` is the packet whose tests are the only ones that prove
+# the drain without a database, so they have to be counted somewhere a green `ok`
+# would otherwise hide them.
+#
+# IT IS NOT A DATABASE TIER AND IS DELIBERATELY NOT IN THE `--db` GROUP BELOW.
+# These tests need no PostgreSQL — the loop is driven by a fake `Claimer` and the
+# transport by an in-process JetStream broker of its own — and putting them in the
+# `--db` group would make a gate on a machine with no cluster report them as
+# skipped, which is the failure `bin/tier-counts` exists to catch. So they run
+# here, in the default tier, where they always have run no matter what the
+# environment is.
+step "go test -v ./internal/outbox/ (no database)"
+go test -v -count=1 ./internal/outbox/
 
 # --- regenerate and diff ------------------------------------------------------
 #

@@ -129,6 +129,11 @@ set -euo pipefail
 
 # The floors. Read out of this tree, not carried forward from the Rust script.
 VARIANT_TESTS=24
+# The outbox publisher. NOT a database tier: its tests need no PostgreSQL (the
+# loop is driven by a fake `Claimer`, the transport by an in-process JetStream
+# broker of its own), so they live in the default tier and hold wherever the
+# environment does.
+OUTBOX_TESTS=19
 PGTEST_DB_TESTS=17
 SERVICE_DB_TESTS=39
 # 34, and it MOVED THREE TIMES. 19, then the listing packet's two, then the
@@ -262,6 +267,16 @@ done
 expect "default  variant-pipeline checks" \
   "$(count_go 'go test -v ./internal/variants/ (no database)' 'github.com/cafaye/darkroom/internal/variants')" \
   "$VARIANT_TESTS"
+
+# The outbox publisher, pinned in the tier that runs it and counted for the reason
+# the pipeline is: a package that compiles, links, vets clean and answers nothing
+# is the quietest failure in this repository. This one is worse than usual,
+# because the whole packet is a correctness claim ABOUT DELIVERY, and a drain loop
+# that reported zero tests would look exactly like a drain loop with nothing to
+# prove.
+expect "default  outbox-publisher checks" \
+  "$(count_go 'go test -v ./internal/outbox/ (no database)' 'github.com/cafaye/darkroom/internal/outbox')" \
+  "$OUTBOX_TESTS"
 
 # --- the database tiers ------------------------------------------------------
 # Each of these three is a package whose tests are DATABASE tests, so on a machine

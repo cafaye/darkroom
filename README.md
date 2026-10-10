@@ -544,10 +544,52 @@ Asserting
 only the domain row would still pass if the event were written outside the
 transaction.
 
-**The publisher loop is not in this packet.** It needs a NATS client and a
-deployment, neither of which exists yet, and a publisher loop that cannot
-publish is worse than an absent one. The table and the insert path — the half
-that carries the correctness guarantee — are here and tested.
+### The publisher, and what it costs on the bus
+
+`internal/outbox` drains the table onto a NATS JetStream stream when `NATS_URL`
+is set, and starts **nothing** when it is not — rows accumulate in
+`outbox_events` and drain the moment a broker is configured, which is the whole
+argument for publishing from a table rather than from the request path.
+
+| knob | value | why |
+|---|---|---|
+| batch | 100 | a larger transaction holds its row locks longer; a smaller one costs more round trips |
+| poll | **1s, fixed** | an exponential backoff that grows while idle leaves a completed upload's `darkroom.asset.ready` unpublished for minutes |
+| `published_at` | written from the broker's **ack** | JetStream's `PublishMsg` is a request that blocks until the broker acks, so a nil return IS the ack. Core NATS returns when the message is on the wire and would mark rows published that were never delivered |
+| claim | `where published_at is null order by created_at limit $1 for update skip locked` | `skip locked` is what lets two replicas run at once; a bare `for update` serialises them on the head of the table |
+| subject | the **event type** | core's "no mapping table, no prefix rewriting". The stream the stack must declare is therefore **`darkroom.>`** |
+
+**The stack must declare a stream whose subject filter covers `darkroom.>`.** A
+JetStream publish to a subject no stream matches is refused, and the refusal is
+correct: the row stays claimable with `attempts` climbing, which an operator
+watching `select count(*) from outbox_events where published_at is null` can
+see. kit's compose runs the broker with `-js` and defines no streams, so this is
+the one fleet-level fact this packet imposes.
+
+**The claim transaction sets no account.** `outbox_events` has no `account_id`
+column and no policy, and `tenancy.yml` records it as deliberately unscoped, so
+there is no tenant to scope the claim by — and wrapping it in `InAccountTx`
+would put an identity on a transaction nothing in the database agrees with. The
+claim goes through `darkroomdb.BeginTx`, the identity-free transaction
+`darkroomdb.InTx` already documents `outbox_events` as being for, and the tenant
+axis is held by the claim query naming ONE table. `internal/outbox/store_test.go`
+reads that query as text and holds it, because a join to carry a checksum onto
+the bus is exactly the edit that reads as an improvement.
+
+**No event carries a capability.** The bus is a broadcast surface — every
+consumer receives every darkroom event — so an event carries the fact and never
+the identifier of whose it was, and above all never a presigned URL or a bucket
+key. `account_id` is therefore not in any payload, and `internal/outbox` refuses
+to publish an envelope carrying one, a storage key or an absolute URL at all.
+The refusal is a FAILED publish — the row stays unpublished with `attempts`
+climbing — because the alternative is the capability on the bus and the warning
+in a log nobody reads.
+
+**The loop's proof is not a database test.** The database suites SKIP with a
+named reason when no PostgreSQL answers, and the `Claimer` interface exists
+precisely so the drain can be driven by a fake: nineteen cases in
+`internal/outbox` run with no socket and no schema, and the transport is proved
+against an in-process JetStream broker of its own on a random loopback port.
 
 ## Idempotency
 
@@ -964,9 +1006,14 @@ would be a flake waiting for a loaded CI box.
 - **The remaining bullet above is what a green badge here does not currently
   mean:** that a real bucket accepts what darkroom signs. The deployment target
   is no longer one of them.
-- **The outbox publisher loop.** Needs a NATS client and a deployment. The
-  table and the insert path — the half with the correctness guarantee — are
-  here; a publisher loop that cannot publish is worse than an absent one.
+- **Nothing about the outbox is outstanding any more, and the entry that used to
+  be here said the publisher loop needed a NATS client and a deployment. kit's
+  BRK-1 installed one and BRK-5 built the loop.** What is still missing is
+  operational rather than structural: no stream is declared by kit's compose, so
+  `darkroom.>` has to be added by whoever owns the broker before an event
+  leaves the table. The failure until then is loud — `attempts` climbing against
+  `published_at is null` — which is the direction a misconfiguration should fail
+  in.
 - **The stale-`pending` sweeper.** Not built at all, and the README used to say
   otherwise: it named `store::find_stale_pending` and called it "tested", which
   was a Rust-tree function that the rewrite did not carry over. There is no
