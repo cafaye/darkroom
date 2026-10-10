@@ -82,8 +82,14 @@ info:
     url: https://github.com/cafaye/darkroom
     email: darkroom@cafaye.com
   license:
-    name: MIT
-    url: https://opensource.org/license/mit
+    # BSL-1.1, and it was MIT until 2026-10-10. `name` and `identifier` carry
+    # the SPDX identifier and `url` the SPDX page; the grant itself, with its
+    # Licensor, Licensed Work, Change Date and Change Licence, is `LICENSE` at
+    # this repository's root. README's "License" section states the transition
+    # and what a holder of an earlier copy keeps.
+    name: BUSL-1.1
+    identifier: BUSL-1.1
+    url: https://spdx.org/licenses/BUSL-1.1.html
 
 servers:
   - url: https://darkroom.cafaye.com

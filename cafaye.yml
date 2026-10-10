@@ -22,6 +22,25 @@
 # commit, and `internal/httpapi/routes_test.go` walks the live router with
 # `chi.Walk` and compares it to the document in both directions
 # (`TestEveryServedRouteIsInTheDocument`, `TestEveryDeclaredRouteIsServed`).
+#
+# ## The grant
+#
+# The Business Source Licence 1.1 in `LICENSE` at this repository's root is
+# the grant, and it is deliberately NOT mirrored as a field here. core owns
+# the manifest schema and that schema sets `additionalProperties: false` with
+# no licence property, so a `licence:` or a `license:` key in this file is
+# rejected by the tool CI runs against it — measured rather than assumed: both
+# spellings were added to a copy of this manifest and both failed with
+# `declares unknown key` (`.github/workflows/ci.yml` runs
+# `caf contract lint ../cafaye.yml`). A key that makes the manifest schema
+# fail is not a manifest that agrees with the grant; it is a red build.
+#
+# The machine-readable licence surface this tree DOES own is `info.license` in
+# `openapi/v1.yaml` (`exposes.api` points at it), and it says the same thing.
+# Adding a `license` field to the schema is core's packet, not darkroom's: the
+# schema and caf's vendored pin of it
+# (`caf/internal/contract/schemas/manifest-0.2.json`, pinned to core 3340e0f)
+# have to move together, and neither file lives here.
 name: darkroom
 description: Media service — signed uploads, tenant-scoped asset registry, and derived variants.
 language: go

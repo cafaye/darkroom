@@ -11,6 +11,49 @@ and only `info.version` moves otherwise
 
 ## [Unreleased]
 
+### Changed
+
+- **`LICENSE`: the grant is the Business Source Licence 1.1, and it was MIT.**
+  OPS-D2 puts the framework — `core`, `caf`, `kit`, `pantry` — under a
+  permissive licence because its job is adoption, and the services under a
+  Business Source Licence because their job is to be run: free to run, free to
+  self-host, never to offer a competing service. darkroom is a service, so it
+  moves. This is a move DOWN a permission ladder, taken on purpose and stated in
+  the README's "License" section rather than left for a reader to discover by
+  diffing the manifest against the file.
+
+  **Anyone who already holds a copy keeps the grant it was published under.**
+  Nothing here re-licenses an MIT copy of this repository that someone already
+  took; the newer grant governs copies obtained from this point on. The earlier
+  grant's reasoning stands and is not retracted — a platform a consumer depends
+  on rather than reads has to leave the consumer's own situation alone, which is
+  why MIT was chosen. What changed is which grant the fleet puts on a *service*,
+  not whether that reasoning was sound.
+
+  Parameters, so a reader can diff two repositories' `LICENSE` files and see
+  only the Licensed Work differ: Licensor `Cafaye`, Licensed Work `darkroom`,
+  Additional Use Grant `None`, Change Date `2030-10-10`, Change Licence
+  `Apache-2.0`. The Change Date is four years from the day this landed
+  (2026-10-10), and the flip is inside the licence text rather than a promise
+  made outside it.
+
+  **What could not be done, and why.** `cafaye.yml` carries no licence field,
+  because it cannot: core's manifest schema sets `additionalProperties: false`
+  with no licence property, so a `licence:` or a `license:` key there is
+  rejected by `caf contract lint`, which CI runs against this exact file
+  (`.github/workflows/ci.yml:303-307`). Both spellings were added to a copy of
+  the manifest and both failed with `declares unknown key` — measured, not
+  assumed. The manifest states the grant and the reason in a comment instead
+  (`cafaye.yml:25-43`), and the one machine-readable licence declaration this
+  tree owns is `info.license` in `openapi/v1.yaml:84-92`, which `exposes.api`
+  points at. Adding the field to the schema is core's packet: the schema and
+  caf's vendored pin of it (`caf/internal/contract/schemas/manifest-0.2.json`,
+  pinned to core `3340e0f`) have to move together, and neither lives in this
+  repository.
+
+  `info.version` in `openapi/v1.yaml` does not move. The operations did not
+  change, and a licence grant is not a contract change.
+
 ### Fixed
 
 - **Four files still described a tree that was deleted, and one of them was a
@@ -187,6 +230,10 @@ and only `info.version` moves otherwise
 
   The copyright line matches the three repositories that already shipped a
   licence exactly: `Copyright (c) 2026 cafaye`.
+
+  **Superseded** by the `Changed` entry at the top of `[Unreleased]`: the grant
+  is now the Business Source Licence 1.1. This entry stands as the record of
+  what it was and why, not as a description of the current grant.
 
 **Fixed: three guards that could not fire, and a test that failed on half of all
 runs.** The isolation work below was recovered from an OOM restart and did not

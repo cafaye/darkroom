@@ -1015,10 +1015,44 @@ would be a flake waiting for a loaded CI box.
 
 ## License
 
-MIT. See [LICENSE](LICENSE). `cafaye.yml` declares the same thing, since
-`Cargo.toml` went with the Rust tree.
+**The grant is the Business Source Licence 1.1.** See [LICENSE](LICENSE), which
+carries the parameters that make it this repository's: Licensor `Cafaye`,
+Licensed Work `darkroom`, Additional Use Grant `None`, Change Date
+`2030-10-10`, Change Licence `Apache-2.0` (`LICENSE:3-9`). Free to run, free to
+self-host, never to offer a competing service — and on the Change Date it
+becomes Apache-2.0 whether or not anyone asks, because that flip is written
+inside the licence text rather than promised somewhere else.
 
-darkroom is a platform a consumer depends on rather than reads, so the licence
-has to leave the consumer's own situation alone. MIT does; a copyleft licence
+**It was MIT.** This repository shipped MIT from the day it acquired a licence
+file (`CHANGELOG.md:222`), and the reasoning recorded then still holds: darkroom
+is a platform a consumer depends on rather than reads, so the grant has to
+leave the consumer's own situation alone — MIT does that, and a copyleft licence
 would make every downstream inherit an obligation, which is the opposite of
-what a service registry is for.
+what a service registry is for. What changed is which grant the fleet puts on a
+**service**, not that reasoning. OPS-D2 draws the line at the adoption job
+versus the running job — framework permissive, services under BSL — and
+darkroom is on the service side of it. This is a deliberate move DOWN a
+permission ladder, taken out loud here rather than by drift, because a grant
+that quietly contradicts the fleet's stated policy is the thing that makes
+every other licence claim in the platform untrustworthy.
+
+**Anyone who already holds a copy keeps the grant it was published under.** An
+MIT copy of this repository is still an MIT copy; nothing above re-licenses
+what someone already took, and the BSL grant governs copies obtained from here
+on. That is the whole of the obligation owed to existing holders, and it is a
+matter of the grant they accepted rather than a courtesy.
+
+**Where the machine-readable declaration lives, and where it does not.**
+`info.license` in `openapi/v1.yaml:84-92` — the document `cafaye.yml`'s
+`exposes.api` points at — carries `BUSL-1.1` with the SPDX identifier and page.
+`cafaye.yml` itself carries no licence field and cannot: core's manifest schema
+sets `additionalProperties: false` with no licence property, so a `licence:` or
+a `license:` key there is rejected by `caf contract lint`, which CI runs against
+this exact file (`.github/workflows/ci.yml:303-307`). Both spellings were added
+to a copy of the manifest and both failed with `declares unknown key`, so the
+manifest states the grant and the reason in a comment (`cafaye.yml:25-43`)
+rather than breaking the schema to make a field agree. Adding the field is
+core's packet: the schema and caf's vendored pin of it
+(`caf/internal/contract/schemas/manifest-0.2.json`, pinned to core `3340e0f`)
+have to move together, and neither file lives in this repository.
+
