@@ -562,7 +562,7 @@ server at all.
 Three segments, publisher-prefixed, past tense, per
 `core/docs/event-naming.md`. The first segment is `darkroom` because core
 requires the publisher's own name — the brief asked for `media.asset.*` and
-`caf contract lint` rejects it. `media` is the domain; `darkroom` is the
+`cafe contract lint` rejects it. `media` is the domain; `darkroom` is the
 service. A rename is a new type, so these are the names from the start.
 
 There is exactly one way to write an event: `enqueue` in
@@ -1093,7 +1093,7 @@ would be a flake waiting for a loaded CI box.
 - **Lossy WebP variants.** See above: a dependency decision, deliberately
   deferred rather than taken silently.
 - **Contract tests against a running instance.** The document-shape and
-  event-declaration checks are here; `caf contract test` against a live
+  event-declaration checks are here; `cafe contract test` against a live
   darkroom is not wired into CI because there is no deployed instance yet.
 
 ## License
@@ -1130,7 +1130,7 @@ matter of the grant they accepted rather than a courtesy.
 `exposes.api` points at — carries `BUSL-1.1` with the SPDX identifier and page.
 `cafaye.yml` itself carries no licence field and cannot: core's manifest schema
 sets `additionalProperties: false` with no licence property, so a `licence:` or
-a `license:` key there is rejected by `caf contract lint`, which CI runs against
+a `license:` key there is rejected by `cafe contract lint`, which CI runs against
 this exact file (`.github/workflows/ci.yml:303-307`). Both spellings were added
 to a copy of the manifest and both failed with `declares unknown key`, so the
 manifest states the grant and the reason in a comment (`cafaye.yml:25-43`)
