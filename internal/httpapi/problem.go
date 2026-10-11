@@ -138,7 +138,7 @@ func writeStatus(w http.ResponseWriter, r *http.Request, status int, p *problem.
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		slog.Error("a problem document did not encode", "path", r.URL.Path, "error", err)
-		encoded = []byte(`{"type":"https://errors.cafaye.com/internal","title":"Internal server error",` +
+		encoded = []byte(`{"type":"https://docs.cafaye.com/errors/internal","title":"Internal server error",` +
 			`"status":500,"detail":"the request could not be completed","instance":"/",` +
 			`"code":"internal","trace_id":""}`)
 	}
@@ -198,7 +198,7 @@ func writeProblemError(w http.ResponseWriter, r *http.Request, p *problem.Error)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		slog.Error("a problem document did not encode", "path", r.URL.Path, "error", err)
-		encoded = []byte(`{"type":"https://errors.cafaye.com/internal","title":"Internal server error",` +
+		encoded = []byte(`{"type":"https://docs.cafaye.com/errors/internal","title":"Internal server error",` +
 			`"status":500,"detail":"the request could not be completed","instance":"/",` +
 			`"code":"internal","trace_id":""}`)
 	}

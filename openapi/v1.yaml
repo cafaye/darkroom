@@ -677,7 +677,7 @@ components:
         type:
           type: string
           format: uri
-          example: https://errors.cafaye.com/validation_failed
+          example: https://docs.cafaye.com/errors/validation_failed
         title:
           type: string
           description: A fixed summary for the code. May be reworded without a version bump.
