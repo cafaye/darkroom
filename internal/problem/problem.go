@@ -48,7 +48,7 @@ import (
 
 // ErrorBase is the base URI for every `type`. core owns this list; the codes below
 // are all in it, and each is the last segment of its own `type`.
-const ErrorBase = "https://errors.cafaye.com"
+const ErrorBase = "https://docs.cafaye.com/errors"
 
 // Code is the machine-readable slug a client switches on. core: "`code` is the same
 // slug as the last segment of `type`."
