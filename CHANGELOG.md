@@ -14,7 +14,7 @@ and only `info.version` moves otherwise
 ### Changed
 
 - **`LICENSE`: the grant is the Business Source Licence 1.1, and it was MIT.**
-  OPS-D2 puts the framework — `core`, `caf`, `kit`, `pantry` — under a
+  OPS-D2 puts the framework — `core`, `cafe`, `kit`, `pantry` — under a
   permissive licence because its job is adoption, and the services under a
   Business Source Licence because their job is to be run: free to run, free to
   self-host, never to offer a competing service. darkroom is a service, so it
@@ -40,14 +40,14 @@ and only `info.version` moves otherwise
   **What could not be done, and why.** `cafaye.yml` carries no licence field,
   because it cannot: core's manifest schema sets `additionalProperties: false`
   with no licence property, so a `licence:` or a `license:` key there is
-  rejected by `caf contract lint`, which CI runs against this exact file
+  rejected by `cafe contract lint`, which CI runs against this exact file
   (`.github/workflows/ci.yml:303-307`). Both spellings were added to a copy of
   the manifest and both failed with `declares unknown key` — measured, not
   assumed. The manifest states the grant and the reason in a comment instead
   (`cafaye.yml:25-43`), and the one machine-readable licence declaration this
   tree owns is `info.license` in `openapi/v1.yaml:84-92`, which `exposes.api`
   points at. Adding the field to the schema is core's packet: the schema and
-  caf's vendored pin of it (`caf/internal/contract/schemas/manifest-0.2.json`,
+  cafe's vendored pin of it (`cafe/internal/contract/schemas/manifest-0.2.json`,
   pinned to core `3340e0f`) have to move together, and neither lives in this
   repository.
 
@@ -499,7 +499,7 @@ shared half (`language: rust`, coverage floor 50 against 53.73% measured line
 coverage), and keeps two jobs that kit cannot own. `gate` runs `bin/prime --db`
 against a `postgres:17-alpine` service — the database tier is the reason this
 packet exists, and it cannot run without an environment kit's rust job has no
-way to provide. `contract` checks out `cafaye/caf` and runs their tool, which is
+way to provide. `contract` checks out `cafaye/cafe` and runs their tool, which is
 a step that reaches into another cafaye repository and is out of kit's scope by
 name.
 
@@ -638,7 +638,7 @@ client, so "tests never hit the network" is a property of the dependency graph.
 
 - **Event types are `darkroom.*`, not the brief's `media.*`.** core requires
   the first segment to be the publishing service's own name, and
-  `caf contract lint` enforces it. A rename is a new type, never a repurpose,
+  `cafe contract lint` enforces it. A rename is a new type, never a repurpose,
   so these are the names from the start.
 - **Variants are JPEG, not WebP.** The `image` crate's WebP encoder is
   lossless-only — its own docs say so and point at libwebp for lossy. Lossy

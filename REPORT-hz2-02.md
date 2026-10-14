@@ -166,10 +166,10 @@ the next run was 1078 passed, 4 skipped, 100.00%.
 
 Pantry's fix is committed, merged, and its worktree pruned; the main checkout
 sits at `6d977df`. Its report records the measured delta and the fix. Two
-readers answered "where is caf" — `bin/prime`'s manifest-lint tier (which
+readers answered "where is cafe" — `bin/prime`'s manifest-lint tier (which
 skipped wholesale, and blind to `PANTRY_CAFAYE_ROOT`, the variable its own Go
 tier respected) and `cmd/pantry/datastore_declaration_test.go` — and
-`bin/caf-checkout` is now the one reader both call. The delta was
+`bin/cafe-checkout` is now the one reader both call. The delta was
 **177 passed / 1 skipped in the worktree against 178 / 0 in the main checkout**,
 and the after-number in its worktree was 179 / 0.
 
@@ -178,7 +178,7 @@ and the after-number in its worktree was 179 / 0.
 ## conductor — ruled out, untouched
 
 `bin/ci` runs setup, rubocop, bundler-audit, brakeman, rails test and a seed.
-Grepped `bin/ script/ lib/ config/ Gemfile Rakefile` for `../core`, `../caf`,
+Grepped `bin/ script/ lib/ config/ Gemfile Rakefile` for `../core`, `../cafe`,
 `../kit`: no hits. Its citations live in `.md` prose and `cafaye.yml` comments,
 which the brief says to leave. Nothing was changed, and nothing was measured a
 second time — there is no worktree to measure it in and no live read to make

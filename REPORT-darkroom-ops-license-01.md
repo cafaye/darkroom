@@ -12,7 +12,7 @@ two commits, nothing merged and nothing pushed. Manager merges.
 ## What the packet was
 
 OPS-D2 draws the licence line at the job rather than at the language: the
-framework — `core`, `caf`, `kit`, `pantry` — is permissive because its job is
+framework — `core`, `cafe`, `kit`, `pantry` — is permissive because its job is
 adoption, and the services sit under a Business Source Licence because their
 job is to be run: free to run, free to self-host, never to offer a competing
 service. darkroom is a service. It shipped MIT from `CHANGELOG.md:222` onward,
@@ -72,7 +72,7 @@ editing the record of what MIT was would be the same drift one level down.
 **`cafaye.yml` carries no licence field, because it cannot.** core owns the
 manifest schema and that schema sets `additionalProperties: false` with no
 licence property, so a `licence:` or a `license:` key in this manifest is
-rejected by `caf contract lint` — the tool `.github/workflows/ci.yml:303-307`
+rejected by `cafe contract lint` — the tool `.github/workflows/ci.yml:303-307`
 runs against this exact file. I proved it rather than reasoning about it: both
 spellings were appended to a copy of the manifest, linted, and both failed with
 `declares unknown key`. The copy was removed.
@@ -89,17 +89,17 @@ the grant — it is a red build.
 
 **This is a core packet, not a darkroom one.** Adding a `license` field to the
 manifest requires two edits that do not live here: core's
-`schemas/cafaye.manifest.schema.json`, and caf's vendored pin of it
-(`caf/internal/contract/schemas/manifest-0.2.json`, pinned to core `3340e0f` by
-`manifestSchemaPin` in `caf/internal/contract/schema.go:22-28`). Until both move,
+`schemas/cafaye.manifest.schema.json`, and cafe's vendored pin of it
+(`cafe/internal/contract/schemas/manifest-0.2.json`, pinned to core `3340e0f` by
+`manifestSchemaPin` in `cafe/internal/contract/schema.go:22-28`). Until both move,
 a licence field in any service manifest fails CI. Recorded here so the next
 packet does not rediscover it.
 
 ## Verification, with the exit codes I observed
 
 ```
-$ cd cafaye/caf
-$ go run ./cmd/caf contract lint <repo>/cafaye.yml
+$ cd cafaye/cafe
+$ go run ./cmd/cafe contract lint <repo>/cafaye.yml
 OK <repo>/cafaye.yml
 OK <repo>/openapi/v1.yaml        # linting the manifest lints its exposed document
 exit 0

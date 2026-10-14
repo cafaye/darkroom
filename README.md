@@ -1135,7 +1135,7 @@ this exact file (`.github/workflows/ci.yml:303-307`). Both spellings were added
 to a copy of the manifest and both failed with `declares unknown key`, so the
 manifest states the grant and the reason in a comment (`cafaye.yml:25-43`)
 rather than breaking the schema to make a field agree. Adding the field is
-core's packet: the schema and caf's vendored pin of it
-(`caf/internal/contract/schemas/manifest-0.2.json`, pinned to core `3340e0f`)
+core's packet: the schema and cafe's vendored pin of it
+(`cafe/internal/contract/schemas/manifest-0.2.json`, pinned to core `3340e0f`)
 have to move together, and neither file lives in this repository.
 
