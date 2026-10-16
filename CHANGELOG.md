@@ -11,6 +11,22 @@ and only `info.version` moves otherwise
 
 ## [Unreleased]
 
+### Added
+
+- **The instabox backend switch** (`ci/backend` containing `instabox`, an
+  executable `ci/pipeline.sh` copied from kit's
+  `backends/instabox/pipeline.template.sh` and edited for this repository,
+  and `internal/cibackend` pinning the switch to a backend kit ships). The
+  gate is `bin/prime --db`, with the flag, followed by `bin/tier-counts` on
+  the log — the same two steps the workflow's `gate` job runs. `mise install`
+  replaces the workflow's `setup-go` step for the pinned Go; the three-way
+  pin proof (go.mod vs toolchain vs mise.toml) runs in the pipeline. The gate
+  reads `TEST_DATABASE_URL` and `DARKROOM_DATABASE_URL` from the backend's
+  environment, never defaulted. No chart and no `bin/publish` in tree, so the
+  gate is the whole run; the manifest-lint `contract` job stays in the
+  workflow. `.github/workflows/` is untouched; `github-actions` remains the
+  fallback.
+
 ### Changed
 
 - **`LICENSE`: the grant is the Business Source Licence 1.1, and it was MIT.**
