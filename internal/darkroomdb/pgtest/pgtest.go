@@ -107,7 +107,7 @@ const (
 	// connectTimeout bounds one connection attempt. The database is a TCP socket
 	// on the host, not a service that has to boot.
 	connectTimeout = 10 * time.Second
-	// migrateTimeout bounds applying four migrations. On an empty schema this is
+	// migrateTimeout bounds applying five migrations. On an empty schema this is
 	// milliseconds; the number is here so that a hung `CREATE INDEX` is reported
 	// rather than waited on.
 	migrateTimeout = 60 * time.Second
@@ -150,7 +150,7 @@ const SchemaSuffixLen = 12
 //
 // # WHY A MIGRATED SCHEMA PER TEST RATHER THAN A MIGRATED ONCE PER RUN
 //
-// Applying the four migrations is the expensive part of a test, and doing it once
+// Applying the five migrations is the expensive part of a test, and doing it once
 // per run would be faster. It would also be a harness where the first test to
 // write a row decides what every later test sees, and the last test to run leaves
 // that row behind for the next. `AGENTS.md` records exactly this argument being

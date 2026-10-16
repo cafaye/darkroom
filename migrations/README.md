@@ -31,7 +31,8 @@ therefore complete and reviewable as SQL inside a comment, and applying a file
 never runs it.
 
 **Every migration is reversible**, or carries a comment saying why it cannot be.
-`0001`–`0003` drop only tables this service owns; `0004` drops the substrate.
+`0001`–`0003` drop only tables this service owns; `0004` drops the substrate;
+`0005` drops the four functions it adds, which is back to the copy `0004` carried.
 
 **And reversible is not free, so the cost of each is written down.** "You can undo
 it" answers the wrong question; the question an operator reaching for `psql` is
@@ -62,6 +63,7 @@ psql "$DATABASE_URL" -f migrations/0001_assets.sql
 psql "$DATABASE_URL" -f migrations/0002_outbox_events.sql
 psql "$DATABASE_URL" -f migrations/0003_idempotency_keys.sql
 psql "$DATABASE_URL" -f migrations/0004_account_isolation.sql
+psql "$DATABASE_URL" -f migrations/0005_substrate_completion.sql
 ```
 
 ## The account boundary, and which tables have one
@@ -70,6 +72,17 @@ psql "$DATABASE_URL" -f migrations/0004_account_isolation.sql
 `templates/database/tenancy/substrate.sql` copied byte for byte plus darkroom's
 calls, and it protects the **two** tables that carry an `account_id` column:
 `assets` and `asset_variants`. Its header states at length why not three.
+
+`0005_substrate_completion.sql` carries the rest of the copy. `0004` was copied
+while kit's template held eight functions; kit added four more the next day —
+`current_user_id`, `begin_user`, `protect_membership_table`, `membership_tables` —
+and darkroom's copy was never compared against the template again. kit's
+`tests/substrate_copy_check.py` is the comparison that says so, in four `FAIL
+MISSING function` lines, and `0005` is the repair: the four functions with their
+kit commentary, and nothing else. It is a new file rather than an edit to `0004`
+because of the rule above, and it protects no table — darkroom has no membership
+table for `protect_membership_table` to name, so the migration is definitions
+without a call.
 
 `outbox_events` and `idempotency_keys` have **no** `account_id` and therefore no
 policy — and `darkroom_app` still receives DML on both, explicitly, in `0004`. That

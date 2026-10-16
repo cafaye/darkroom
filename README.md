@@ -753,14 +753,18 @@ psql "$DATABASE_URL" -f migrations/0001_assets.sql
 psql "$DATABASE_URL" -f migrations/0002_outbox_events.sql
 psql "$DATABASE_URL" -f migrations/0003_idempotency_keys.sql
 psql "$DATABASE_URL" -f migrations/0004_account_isolation.sql   # no RLS without this one
+psql "$DATABASE_URL" -f migrations/0005_substrate_completion.sql  # the rest of kit's copy
 
 DARKROOM_OBJECT_STORE=memory go run ./cmd/darkroom
 ```
 
-**All four migrations, in order.** This used to list three and omit
+**All five migrations, in order.** This used to list three and omit
 `0004_account_isolation.sql`, which is the one that makes the tenant boundary the
 database's — a database built from the first three answers every query, correctly,
-for every account.
+for every account. `0005_substrate_completion.sql` was the second omission, and
+kit's `tests/substrate_copy_check.py` is what found it: kit added four functions
+to its template the day after `0004` was copied, and this copy stayed at eight
+until `0005`.
 
 `DARKROOM_OBJECT_STORE=memory` is the default, and the binary warns at startup
 that uploads are lost on restart. There is no `dev-auth` build flag: the Go tree
