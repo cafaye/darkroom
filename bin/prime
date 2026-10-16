@@ -237,6 +237,9 @@ assert_go_suite ./internal/httpapi 34
 # presigned URL, a bucket key or a tenant id" on a machine with no database and no
 # broker but this process's own.
 assert_go_suite ./internal/outbox 19
+# The CI backend switch. One test pinning `ci/backend` to a backend kit ships;
+# files on disk, no database, so it holds on a bare machine like the rest.
+assert_go_suite ./internal/cibackend 1
 
 # The variant pipeline, and `-v` for a second reason that is not the skips.
 #
