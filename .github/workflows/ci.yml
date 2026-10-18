@@ -205,6 +205,10 @@ jobs:
           CREATE ROLE darkroom_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION
             PASSWORD 'darkroom';
           GRANT darkroom_app TO darkroom;
+          -- The test suite opens many connections in parallel; the production
+          -- connection limit (20) is too low for the gate. Unlimited in CI only.
+          ALTER ROLE darkroom CONNECTION LIMIT -1;
+          ALTER ROLE darkroom_app CONNECTION LIMIT -1;
           SQL
           # Apply migrations so the substrate (cafaye schema + functions) exists
           # before any test runs. pgtest re-applies them per test schema, but the
