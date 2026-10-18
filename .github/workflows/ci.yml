@@ -135,6 +135,8 @@ jobs:
           POSTGRES_DB: darkroom_test
         ports:
           - 5432:5432
+        volumes:
+          - ${{ github.workspace }}/ci/init.sql:/docker-entrypoint-initdb.d/01-init.sql
         options: >-
           --health-cmd "pg_isready -U darkroom -d darkroom_test"
           --health-interval 2s
@@ -229,8 +231,12 @@ jobs:
           set -euo pipefail
           pg="${{ job.services.postgres.id }}"
           docker exec -i "$pg" psql -v ON_ERROR_STOP=1 -U darkroom -d darkroom_test <<'SQL'
-          CREATE ROLE darkroom_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION
-            PASSWORD 'darkroom';
+          DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'darkroom_app') THEN
+              CREATE ROLE darkroom_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION
+                PASSWORD 'darkroom';
+            END IF;
+          END $$;
           GRANT darkroom_app TO darkroom;
           SQL
           echo "roles now in darkroom_test:"
