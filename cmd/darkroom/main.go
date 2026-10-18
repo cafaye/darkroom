@@ -69,6 +69,7 @@ import (
 	"github.com/cafaye/darkroom/internal/objectstore"
 	"github.com/cafaye/darkroom/internal/outbox"
 	"github.com/cafaye/darkroom/internal/service"
+	"github.com/cafaye/darkroom/migrations"
 )
 
 // The server's own timeouts, and why there is no write timeout.
@@ -101,6 +102,13 @@ const (
 const version = "0.1.0-go06"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		if err := runMigrate(); err != nil {
+			slog.Error("darkroom: migrate failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		// slog's default handler is installed before config is read, so even a
 		// failure to read the config goes through the same structured pipeline. A
@@ -109,6 +117,35 @@ func main() {
 		slog.Error("darkroom: exiting", "error", err)
 		os.Exit(1)
 	}
+}
+
+func runMigrate() error {
+	url := os.Getenv("DARKROOM_OWNER_DATABASE_URL")
+	if url == "" {
+		url = os.Getenv("DARKROOM_DATABASE_URL")
+	}
+	if url == "" {
+		return fmt.Errorf("DARKROOM_OWNER_DATABASE_URL (or DARKROOM_DATABASE_URL) is required for migrate")
+	}
+	ctx := context.Background()
+	pool, err := darkroomdb.Open(ctx, url)
+	if err != nil {
+		return fmt.Errorf("open db: %w", err)
+	}
+	defer pool.Close()
+	tx, err := pool.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	if err := migrations.Apply(ctx, tx); err != nil {
+		_ = tx.Rollback(ctx)
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	slog.Info("darkroom: migrations applied")
+	return nil
 }
 
 func run() error {
