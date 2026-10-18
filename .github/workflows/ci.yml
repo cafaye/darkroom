@@ -217,6 +217,15 @@ jobs:
           done
           echo "roles, database and migrations provisioned"
 
+      - name: warm the generator cache
+        # `bin/prime` regenerates `internal/api/api.gen.go` from the document and
+        # compares it; the generator is invoked with `go run ...@v2.8.0`, so it
+        # must be in the module cache before the gate runs. `go mod download`
+        # does not fetch it (it is a tool, not a dependency), so fetch it here.
+        run: |
+          set -euo pipefail
+          go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0
+
       - name: the gate
         # `bin/prime`, the same command a developer runs, with the flag that
         # forces the database tier. `tee` so the counts are in the log AND in
