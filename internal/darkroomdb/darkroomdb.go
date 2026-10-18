@@ -50,9 +50,9 @@ package darkroomdb
 
 import (
 	"context"
-	"time"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -240,7 +240,6 @@ func (s *Store) BeginTx(ctx context.Context) (pgx.Tx, error) {
 	}
 	return tx, nil
 }
-
 
 // FailStalePending marks `pending` assets older than cutoff as `failed`.
 //

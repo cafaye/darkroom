@@ -16,12 +16,12 @@ import (
 //
 // To run it:
 //
-//   DARKROOM_TEST_S3_BUCKET=... \
-//   DARKROOM_TEST_S3_ENDPOINT=...  (optional; defaults to AWS) \
-//   DARKROOM_TEST_S3_REGION=...    (optional; defaults to us-east-1) \
-//   DARKROOM_TEST_S3_ACCESS=... \
-//   DARKROOM_TEST_S3_SECRET=... \
-//   go test ./internal/objectstore/ -run TestIntegrationRoundTrip -v
+//	DARKROOM_TEST_S3_BUCKET=... \
+//	DARKROOM_TEST_S3_ENDPOINT=...  (optional; defaults to AWS) \
+//	DARKROOM_TEST_S3_REGION=...    (optional; defaults to us-east-1) \
+//	DARKROOM_TEST_S3_ACCESS=... \
+//	DARKROOM_TEST_S3_SECRET=... \
+//	go test ./internal/objectstore/ -run TestIntegrationRoundTrip -v
 func TestIntegrationRoundTrip(t *testing.T) {
 	bucket := os.Getenv("DARKROOM_TEST_S3_BUCKET")
 	access := os.Getenv("DARKROOM_TEST_S3_ACCESS")
