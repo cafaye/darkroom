@@ -293,8 +293,8 @@ jobs:
         # repository, and kit's AGENTS.md puts that out of scope by name.
         uses: actions/checkout@v7
         with:
-          repository: cafaye/caf
-          path: caf
+          repository: cafaye/cafe
+          path: cafe
       - uses: actions/setup-go@v7
         with:
           # Pinned, because `go-version: stable` is a build that depends on
@@ -304,4 +304,4 @@ jobs:
         # The manifest is not this repository's to define. core owns the schema
         # and `caf` owns the validator, so the check is "run their tool" rather
         # than a copy of their rules that drifts.
-        run: cd caf && go run ./cmd/caf contract lint ../cafaye.yml
+        run: cd cafe && go run ./cmd/cafe contract lint ../cafaye.yml
