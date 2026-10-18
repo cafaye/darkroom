@@ -1044,7 +1044,7 @@ Three things it does not measure, stated rather than implied:
 
 **THE FLOOR IS NOW A MEASURED GO NUMBER.** `go test ./... -coverprofile` against
 the default (no-database) suite reports 54.6% line coverage, and `ci.yml`'s
-`coverage-fail-under` is 54 — a floor that can actually fail, measured on
+`coverage-fail-under` is 50 — a floor that can actually fail, measured on
 Go 1.26.1 rather than carried over from the Rust tree. The database tier and
 `cmd/darkroom` are still excluded (see above), so the real number is higher; the
 measurement is the floor's honest lower bound, not a claim about the whole
