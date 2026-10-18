@@ -1,0 +1,17 @@
+# Local (`cafaye-local`) values for the darkroom chart.
+image:
+  repository: cafaye/darkroom
+  tag: k8s-local
+  pullPolicy: Never
+
+ingress:
+  enabled: false
+
+secretName: darkroom-secrets
+namespace: darkroom
+
+env:
+  DARKROOM_OBJECT_STORE: "memory"
+  DARKROOM_ISSUER: "https://auth.cafaye.com"
+  DARKROOM_AUDIENCE: "darkroom"
+  DARKROOM_LOG_FORMAT: "json"

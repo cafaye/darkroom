@@ -780,6 +780,53 @@ now is.
 Migrations are a **deploy step, not a boot step**. Nothing in `main` applies
 one, because two replicas racing to deploy would deadlock on `CREATE TABLE`.
 
+## Deploying it
+
+darkroom ships a Helm chart (`chart/`), a publish workflow
+(`.github/workflows/publish.yml`) and a `bin/dev` wrapper, so it deploys the
+same way the rest of the fleet does: an image plus a chart, pulled by Argo CD
+from `oci://ghcr.io/cafaye/charts/darkroom`.
+
+### What you need on the box
+
+1. **A Postgres database** — one database and one login role for darkroom,
+   following kit's single-cluster rule (owner role for migrations, a
+   `darkroom_app` login role for the process). Create them once:
+   ```sh
+   psql "$ADMIN_URL" -c "CREATE ROLE darkroom WITH LOGIN PASSWORD '...' NOSUPERUSER NOCREATEDB;"
+   psql "$ADMIN_URL" -c "CREATE DATABASE darkroom OWNER darkroom;"
+   ```
+2. **The five migrations**, applied as a deploy step (never at boot):
+   ```sh
+   for f in migrations/000{1..5}_*.sql; do psql "$DATABASE_URL" -f "$f"; done
+   ```
+3. **A secret named `darkroom-secrets`** holding at least
+   `DARKROOM_DATABASE_URL` (the login role's URL). Add `DARKROOM_ISSUER`,
+   `DARKROOM_AUDIENCE`, and either `AWS_*`/R2 credentials or set
+   `DARKROOM_OBJECT_STORE=memory` (uploads are lost on restart).
+4. **A bucket** if `DARKROOM_OBJECT_STORE=s3` (Cloudflare R2, S3 or MinIO).
+   See "Running against R2" above for the configuration rules.
+
+### Installing
+
+```sh
+helm upgrade --install darkroom ./chart -n darkroom \
+  -f deploy/local/values/darkroom.yaml   # or your own values
+```
+
+The chart is internal by default (`ingress.enabled: false`); darkroom is
+reached through the gateway, not directly. For a local cluster smoke test,
+see `deploy/local/values/darkroom.yaml`.
+
+### Repeatability check
+
+This procedure was exercised end to end against a fresh `k3d` cluster:
+image built and imported, namespace and secret created, migrations applied,
+`helm upgrade --install` run twice (idempotent), and `/healthz` and `/readyz`
+returned `{"status":"ok"}` and `{"status":"ready"}`. The values file in
+`deploy/local/` is the reproducible input; change only that file per
+environment.
+
 ## Tests
 
 ```sh
