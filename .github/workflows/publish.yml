@@ -1,0 +1,61 @@
+# kit — the publish path a service runs: one caller, two artifacts.
+#
+# Copy this file to .github/workflows/publish.yml in the service repository,
+# verbatim. It is the whole of the service's side of the publish loop: the
+# image `config/deploy.yml` deploys and the chart the Argo CD `Application`
+# pulls, both published by kit's reusable workflows on every push to master.
+#
+# THE TWO ARTIFACTS, AND WHY ONE CALLER. The image is built and pushed by
+# `cafaye/kit/.github/workflows/image.reusable.yml`; the chart is packaged
+# and pushed by `cafaye/kit/.github/workflows/chart.reusable.yml`. Both are
+# called here, each opted in by the single `push` input below, so the
+# decision "what does a push publish" is made once, in kit, rather than in
+# every service repository. A service that ships a chart and no image
+# deletes the `image:` job; a service that ships an image and no chart
+# deletes the `chart:` job. The composition itself is not a thing to copy —
+# it is the file this one `uses:`.
+#
+# PERMISSIONS, AND THE GRANT THAT IS THE CALLER'S TO MAKE. `packages: write`
+# is REQUIRED and it is the caller's to grant: a reusable workflow can
+# request a permission but cannot grant itself one, and a caller that omits
+# it gets a 401 at the push that reads like a wrong password rather than
+# like a missing grant. `contents: read` is what the checkout needs.
+#
+# THE CONCURRENCY GROUP, AND WHY IT DOES NOT BEGIN WITH `kit-`. A caller's
+# group must not collide with the reusable workflow's own `kit-`-namespaced
+# group — a collision is a job refused before it starts, which produces no
+# check-run and no log line. The spelling below is the fleet's; the rule is
+# stated at length in `ci.reusable.yml`'s header. `cancel-in-progress` is on
+# because a second push makes the first run's artifacts irrelevant.
+#
+# WHAT LANDS ON A PUSH. The image at `ghcr.io/<org>/<repo>:sha-<full 40
+# chars>` (plus `<branch>`, plus `latest` on the default branch), and the
+# chart at `oci://ghcr.io/cafaye/charts/<chart name>:<chart version>`. The
+# chart's name and version are READ FROM Chart.yaml by the workflow — they
+# are not inputs and not written here — and the version is the OCI tag: the
+# Argo CD `Application` in kit's substrate pulls `targetRevision: 0.1.0`
+# because the chart's `Chart.yaml` says `version: 0.1.0`. The two are the
+# same fact written twice, and a service that bumps one and not the other
+# is a service that never deploys.
+---
+name: publish
+
+on:
+  push:
+    branches: [master]
+  # Operator republish path: GitHub will not re-run a jobless failed-resolution run, so without this the only republish is an empty commit.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    uses: cafaye/kit/.github/workflows/publish.reusable.yml@master
+    with:
+      push: true
