@@ -141,7 +141,7 @@ PGTEST_DB_TESTS=17
 # which is the failure mode `bin/prime`'s FLOOR could not catch, because a floor
 # is `-lt` and a count that is too HIGH passes one. Measured against this tree at
 # 49 (the tenancy eight plus BRK-5's two payload guards).
-SERVICE_DB_TESTS=49
+SERVICE_DB_TESTS=52
 # 34, and it MOVED THREE TIMES. 19, then the listing packet's two, then the
 # idempotency packet's twelve, then the honest packet's one. Both halves of that are load-bearing and both are why the number
 # is a claim rather than a constant:
