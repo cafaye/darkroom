@@ -50,6 +50,7 @@ package darkroomdb
 
 import (
 	"context"
+	"time"
 	"errors"
 	"fmt"
 
@@ -238,6 +239,40 @@ func (s *Store) BeginTx(ctx context.Context) (pgx.Tx, error) {
 		return nil, fmt.Errorf("darkroomdb.BeginTx: beginning: %w", err)
 	}
 	return tx, nil
+}
+
+
+// FailStalePending marks `pending` assets older than cutoff as `failed`.
+//
+// It runs per account (the assets table is account-scoped under FORCE RLS), so
+// a cross-account sweep calls this once per account. A global sweep would need
+// a BYPASSRLS role or a SECURITY DEFINER function, which the substrate does not
+// provision today; per-account is the honest shape until it does.
+func (s *Store) FailStalePending(ctx context.Context, account string, cutoff time.Time) (int64, error) {
+	var n int64
+	err := s.InAccountTx(ctx, account, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `update assets set status = 'failed', updated_at = now() where status = 'pending' and created_at < $1`, cutoff)
+		if err != nil {
+			return fmt.Errorf("darkroomdb.FailStalePending: %w", err)
+		}
+		n = tag.RowsAffected()
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// DeleteExpiredIdempotencyKeys removes ledger rows older than cutoff. The table
+// carries no account_id and no RLS, so this runs as the login role without an
+// account context — the one sweep that can.
+func (s *Store) DeleteExpiredIdempotencyKeys(ctx context.Context, cutoff time.Time) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `delete from idempotency_keys where created_at < $1`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("darkroomdb.DeleteExpiredIdempotencyKeys: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // redact removes anything password-shaped from a URL before it goes in an error.

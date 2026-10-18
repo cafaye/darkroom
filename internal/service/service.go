@@ -455,6 +455,17 @@ func (s *Service) CompleteUpload(ctx context.Context, caller Caller, assetID, cl
 // The failure to RECORD the failure is logged and swallowed: the client is getting a
 // 4xx either way, and replacing it with a 500 because a bookkeeping write failed
 // would tell the caller less about the thing they did wrong.
+// FailStalePending marks pending assets older than cutoff as failed for one account.
+// A cross-account sweep calls this per account (see darkroomdb.FailStalePending).
+func (s *Service) FailStalePending(ctx context.Context, account string, cutoff time.Time) (int64, error) {
+	return s.db.FailStalePending(ctx, account, cutoff)
+}
+
+// DeleteExpiredIdempotencyKeys removes ledger rows older than cutoff.
+func (s *Service) DeleteExpiredIdempotencyKeys(ctx context.Context, cutoff time.Time) (int64, error) {
+	return s.db.DeleteExpiredIdempotencyKeys(ctx, cutoff)
+}
+
 func (s *Service) fail(ctx context.Context, accountID, assetID, reason string) {
 	if err := s.db.InAccountTx(ctx, accountID, func(tx pgxTx) error {
 		_, err := markFailed(ctx, tx, assetID, reason)

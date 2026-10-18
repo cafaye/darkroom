@@ -1042,11 +1042,13 @@ Three things it does not measure, stated rather than implied:
   default suite for that same reason;
 - `cmd/darkroom`, at ~0%, because a binary's `main` is never called by a test.
 
-**AND THE 50 IS THE RUST TREE'S NUMBER, CARRIED ACROSS.** The figure was measured
-on `rustc 1.95` and has not been re-measured for Go, because `bin/prime` has no
-coverage step and the Rust one lived in CI only. The floor is kept so it is not
-silently dropped, and the honest statement is that it is a floor which may or may
-not be reachable — the first Go measurement is the next thing to do with it.
+**THE FLOOR IS NOW A MEASURED GO NUMBER.** `go test ./... -coverprofile` against
+the default (no-database) suite reports 54.6% line coverage, and `ci.yml`'s
+`coverage-fail-under` is 54 — a floor that can actually fail, measured on
+Go 1.26.1 rather than carried over from the Rust tree. The database tier and
+`cmd/darkroom` are still excluded (see above), so the real number is higher; the
+measurement is the floor's honest lower bound, not a claim about the whole
+service.
 
 No test in this repository opens a socket to anything but the database named by
 the environment and the JWKS server two packages stand up for their own verifier.
@@ -1071,15 +1073,12 @@ would be a flake waiting for a loaded CI box.
   options are a sixth interface method that streams, or a lower
   `objectstore.MaxUploadBytes`; both are contract changes and neither belongs
   in the change that made R2 work.
-- **A live R2 integration test.** Nothing in this repository can reach a real
-  bucket, and adding something that could would put a credential in CI. What is
-  tested is configuration, the credential scope, the signed-header list and the
-  headers R2 rejects; what is not is R2 accepting them. The "Running against R2"
-  section above is the manual procedure, and the variant-generation step in it is
-  the one that catches an SDK-level default. A **local** S3-compatible double
-  (MinIO) would close the round-trip half of this without a credential, but it
-  needs a test that actually speaks to it — nothing in the suite does today, so
-  adding the service container alone would be a green checkmark on nothing.
+- **A live R2/S3 integration test.** `internal/objectstore/integration_test.go`
+  now contains `TestIntegrationRoundTrip`, which does a presign/put/head/get/hash/
+  delete round trip against a real bucket. It is guarded by
+  `DARKROOM_TEST_S3_BUCKET/ACCESS/SECRET` and skips on every default `go test`
+  run, so no credential reaches CI. What is still manual is pointing it at a
+  bucket and reading the result; nothing in the suite runs it automatically.
 - **~~CI does not build the deployment target.~~ FIXED BY THE REWRITE.** The Rust
   `docker/Dockerfile` ran `rustup target add x86_64-unknown-linux-musl` and then
   copied out of `target/x86_64-unknown-linux-musl/release/darkroom` while its
@@ -1101,34 +1100,32 @@ would be a flake waiting for a loaded CI box.
   leaves the table. The failure until then is loud — `attempts` climbing against
   `published_at is null` — which is the direction a misconfiguration should fail
   in.
-- **The stale-`pending` sweeper.** Not built at all, and the README used to say
-  otherwise: it named `store::find_stale_pending` and called it "tested", which
-  was a Rust-tree function that the rewrite did not carry over. There is no
-  sweeper query, no sweeper test and no caller in this tree. What *is* here is
-  `service.PendingSweepAfter`, twice the presign TTL, so an upload whose URL is
-  still valid is never swept out from under a client that is mid-PUT — the
-  number lives in `internal/service` because it is a property of the state
-  machine and a second copy of it elsewhere would drift. Sweeping is the
-  remaining work, not unscheduling something.
-- **The idempotency-key retention sweep.** 24 hours per core; the index makes
-  it a range scan when it is written. Until then the table grows. A leaked
-  reservation is the visible symptom: a `status_code = 0` row answers every later
-  request under that key with `409 conflict` until the sweep, which is why a
-  failed handler releases its reservation rather than leaving the row.
+- **The stale-`pending` sweeper.** `darkroomdb.FailStalePending` and
+  `service.FailStalePending` now exist and are tested (per account, since the
+  `assets` table is account-scoped under FORCE RLS): a `pending` asset older
+  than `service.PendingSweepAfter` (twice the presign TTL) is marked `failed`.
+  What is NOT here yet is the cross-account driver: a sweep over every account
+  needs a BYPASSRLS role or a SECURITY DEFINER function, which the substrate does
+  not provision. Until it does, the sweeper is called per account by whoever
+  owns the scheduler. `service.PendingSweepAfter` still lives in
+  `internal/service` so the cutoff is not duplicated.
+- **~~The idempotency-key retention sweep.~~ FIXED.** 24 hours per core;
+  `darkroomdb.DeleteExpiredIdempotencyKeys` and
+  `service.DeleteExpiredIdempotencyKeys` now exist and are tested, deleting rows
+  whose `created_at` is older than the cutoff. The table carries no `account_id`
+  and no RLS, so the sweep runs as the login role without an account context.
+  The index (`idempotency_keys_created_idx`) makes it a range scan.
 - **A concurrent-replay test.** Two identical keyed requests arriving at the same
   instant is the case the ledger's own unit test covers by reserving twice in one
   goroutine. End to end through the router it would need real concurrency, and the
   honest options are a barrier or a sleep — a result that depends on scheduling.
   A flaky test is worse than an absent one, so it is absent and named here.
-- **The two `oapi-codegen` binding refusals that bypass this service's envelope.**
-  A `Idempotency-Key` header sent twice, or one whose value fails the generated
-  binder's format check, is answered by `siw.ErrorHandlerFunc`, which
-  `httpapi.New` leaves unset — so the runtime's default writes `text/plain` with a
-  bare sentence. Every other refusal in this service is
-  `application/problem+json` with the documented code, so those two responses are
-  the exception. The fix is `ErrorHandlerFunc` in `api.ChiServerOptions`, which is a
-  routing decision affecting every operation rather than an idempotency one, and it
-  is not taken here.
+- **~~The two `oapi-codegen` binding refusals that bypass this service's
+  envelope.~~ FIXED.** `httpapi.New` now passes `bindingErrorHandler` as
+  `api.ChiServerOptions.ErrorHandlerFunc`, so a malformed or duplicated
+  `Idempotency-Key` (and any other binding failure) is answered as
+  `application/problem+json` with code `validation_failed`, like every other
+  refusal. `internal/httpapi` tests cover the uniform envelope.
 - **An orphaned-object sweeper.** If storage deletion fails during
   `DELETE /v1/assets/{id}`, the row is still removed and the object leaks. That
   is the deliberate trade (a row that says "gone" over a surviving gigabyte is

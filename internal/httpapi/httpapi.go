@@ -132,7 +132,7 @@ func New(options Options) (http.Handler, error) {
 
 	// The generated router. This is the document, one translation removed, and it is
 	// the ONLY place routes are registered — including in [New] below.
-	generated := api.HandlerWithOptions(server, api.ChiServerOptions{BaseURL: "/"})
+	generated := api.HandlerWithOptions(server, api.ChiServerOptions{BaseURL: "/", ErrorHandlerFunc: bindingErrorHandler})
 	// The generated handler IS a `*chi.Mux` — `HandlerWithOptions` builds one and
 	// returns it as an `http.Handler` — and this assertion is what lets the router be
 	// built from the DOCUMENT rather than from a table. If a future generator version

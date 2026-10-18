@@ -37,6 +37,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/cafaye/darkroom/internal/api"
 	"github.com/cafaye/darkroom/internal/auth"
 	"github.com/cafaye/darkroom/internal/problem"
 )
@@ -222,4 +223,44 @@ func writeProblemError(w http.ResponseWriter, r *http.Request, p *problem.Error)
 // spellings of "what path is this".
 func instanceOf(r *http.Request) string {
 	return r.URL.EscapedPath()
+}
+
+// bindingErrorHandler is the `ErrorHandlerFunc` for the generated router.
+//
+// The two refusals the generated binder produces for a malformed
+// `Idempotency-Key` header (or any other binding failure) bypass this
+// service's envelope unless this function is set: the runtime's default writes
+// `text/plain` with a bare sentence. Every other refusal here is
+// `application/problem+json` with the documented code, so setting this keeps
+// the surface uniform. README "Not done" names this as the fix.
+func bindingErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
+	field := ""
+	code := "invalid"
+	switch e := err.(type) {
+	case *api.RequiredParamError:
+		field = e.ParamName
+		code = "required"
+	case *api.RequiredHeaderError:
+		field = e.ParamName
+		code = "required"
+	case *api.InvalidParamFormatError:
+		field = e.ParamName
+		code = "invalid_format"
+	case *api.TooManyValuesForParamError:
+		field = e.ParamName
+		code = "too_many_values"
+	case *api.UnmarshalingParamError:
+		field = e.ParamName
+		code = "invalid"
+	default:
+		// Anything else is not a binding failure this function knows how to
+		// name; render it as a generic validation failure rather than letting
+		// the runtime's text/plain default escape.
+	}
+	p := problem.Invalid("the request could not be bound")
+	if field != "" {
+		p = problem.InvalidFields("the request could not be bound",
+			problem.NewField(field, code))
+	}
+	writeProblemError(w, r, p)
 }
