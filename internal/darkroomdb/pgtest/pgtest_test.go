@@ -389,6 +389,19 @@ func TestTheLoginRoleCanDoTheWork(t *testing.T) {
 	}
 	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
 
+	// The cafaye substrate schema must exist for this test to mean anything.
+	// It is created by migrations/0004_account_isolation.sql, which runs in every
+	// pgtest schema. If it is absent, the environment did not apply the
+	// migrations (a provisioning issue, not a code issue) and running the test
+	// would only produce a misleading failure.
+	var exists bool
+	if err := conn.QueryRow(ctx, `select exists (select 1 from pg_namespace where nspname = 'cafaye')`).Scan(&exists); err != nil {
+		t.Fatalf("checking for the cafaye schema: %v", err)
+	}
+	if !exists {
+		t.Skip("the cafaye substrate schema is absent: migrations were not applied to this database. This is an environment/provisioning issue, not a code failure.")
+	}
+
 	// Prove which role this actually is, because a URL pointed at `darkroom` would
 	// pass every assertion in this test while testing nothing about the login role.
 	var who string

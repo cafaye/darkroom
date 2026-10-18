@@ -206,7 +206,16 @@ jobs:
             PASSWORD 'darkroom';
           GRANT darkroom_app TO darkroom;
           SQL
-          echo "roles and database provisioned"
+          # Apply migrations so the substrate (cafaye schema + functions) exists
+          # before any test runs. pgtest re-applies them per test schema, but the
+          # global cafaye schema must be present for `cafaye.begin_account` to
+          # resolve; applying here guarantees it.
+          for f in migrations/0001_assets.sql migrations/0002_outbox_events.sql \
+                   migrations/0003_idempotency_keys.sql migrations/0004_account_isolation.sql \
+                   migrations/0005_substrate_completion.sql; do
+            docker exec -i "$pg" psql -v ON_ERROR_STOP=1 -U darkroom -d darkroom_test < "$f"
+          done
+          echo "roles, database and migrations provisioned"
 
       - name: the gate
         # `bin/prime`, the same command a developer runs, with the flag that
