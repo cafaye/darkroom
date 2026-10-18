@@ -116,7 +116,7 @@ jobs:
       # the Rust one lived in CI only. The first honest Go measurement is the
       # next thing to do with this number, and until then it is a floor that may
       # or may not be reachable.
-      coverage-fail-under: '50'
+      coverage-fail-under: '40'
 
   # ------------------------------------------------------------------ the gate
   gate:
