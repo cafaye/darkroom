@@ -130,15 +130,13 @@ jobs:
         # version CI tests and the local stack does not.
         image: postgres:17-alpine
         env:
-          POSTGRES_USER: darkroom
-          POSTGRES_PASSWORD: darkroom
-          POSTGRES_DB: darkroom_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
         ports:
           - 5432:5432
-        volumes:
-          - ${{ github.workspace }}/ci/init.sql:/docker-entrypoint-initdb.d/01-init.sql
         options: >-
-          --health-cmd "pg_isready -U darkroom -d darkroom_test"
+          --health-cmd "pg_isready -U postgres -d postgres"
           --health-interval 2s
           --health-timeout 3s
           --health-retries 20
@@ -190,58 +188,25 @@ jobs:
           fi
           echo "pinned: go $got, host $(go env GOOS)/$(go env GOARCH)"
 
-      - name: the login role the RLS policies name
-        # `migrations/0004_account_isolation.sql` does
-        # `select cafaye.protect_table('assets', 'darkroom_app')` and
-        # `grant select, insert, update, delete on outbox_events to darkroom_app`, so
-        # the role has to EXIST before the gate runs any migration. Locally it does,
-        # because kit's `templates/compose/postgres/initdb/10-cluster.sh` provisions
-        # two roles per service from one `KIT_POSTGRES_DATABASES` entry — `<svc>`
-        # owning the database and `<svc>_app` owning nothing.
-        #
-        # HERE IT DID NOT, and the gap was invisible rather than loud. The service
-        # container is a bare `postgres:17-alpine`, which creates only `POSTGRES_USER`,
-        # so `TestTheLoginRoleCanDoTheWork` SKIPPED on every CI run, `bin/tier-counts`
-        # counted 14 of 15, and the job that exists to hold this service to its
-        # contract was itself failing a floor nothing could satisfy. The skip is
-        # honest, which is exactly what made it survivable: nothing ever reported a
-        # missing role, and one test — the only one proving the LOGIN role can do the
-        # work — never ran anywhere.
-        #
-        # The role attributes are COPIED from `10-cluster.sh` rather than invented:
-        # NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION, plus the membership of
-        # the owner. `GRANT darkroom_app TO darkroom` matters as much as the CREATE —
-        # migrations run as `darkroom`, and a login role the owner is not a member of
-        # could not be granted anything.
-        #
-        # `docker exec` AND NOT A BARE `psql`, because the server is a SERVICE
-        # CONTAINER and the client is a question about the runner image. GitHub's
-        # ubuntu images happen to ship `postgresql-client` today, so a bare `psql`
-        # would very likely work and would very quietly stop working when the runner
-        # image changed. `job.services.postgres.id` is the container the healthcheck
-        # above already proved is accepting connections, and `docker` is a given on a
-        # runner. Both ends of the connection are then facts this file can see.
-        #
-        # This is also the step that makes `NOBYPASSRLS` worth checking. It is NOT
-        # spelled above because kit does not spell it and matching kit is the
-        # requirement; Postgres grants it to nothing by default, and
-        # `TestTheLoginRoleCanDoTheWork` is what would catch an image that granted it
-        # by default.
+      - name: provision the owner and login roles
+        # The service container creates POSTGRES_USER as a SUPERUSER, and
+        # superusers bypass FORCE ROW LEVEL SECURITY — which is the property the
+        # tenancy tier exists to prove. So we do NOT use the container's user as
+        # the owner: we create `darkroom` as a NOSUPERUSER (with CREATEDB) and
+        # `darkroom_app` as a NOSUPERUSER login role, and make the database
+        # owned by `darkroom`. This runs as the container's superuser (postgres).
         run: |
           set -euo pipefail
           pg="${{ job.services.postgres.id }}"
-          docker exec -i "$pg" psql -v ON_ERROR_STOP=1 -U darkroom -d darkroom_test <<'SQL'
-          DO $$ BEGIN
-            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'darkroom_app') THEN
-              CREATE ROLE darkroom_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION
-                PASSWORD 'darkroom';
-            END IF;
-          END $$;
+          docker exec -i "$pg" psql -v ON_ERROR_STOP=1 -U postgres -d postgres <<'SQL'
+          CREATE ROLE darkroom NOSUPERUSER CREATEDB NOCREATEROLE NOREPLICATION
+            LOGIN PASSWORD 'darkroom';
+          CREATE DATABASE darkroom_test OWNER darkroom;
+          CREATE ROLE darkroom_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION
+            PASSWORD 'darkroom';
           GRANT darkroom_app TO darkroom;
           SQL
-          echo "roles now in darkroom_test:"
-          docker exec "$pg" psql -U darkroom -d darkroom_test -Atc \
-            "select rolname from pg_roles where rolname like 'darkroom%' order by 1"
+          echo "roles and database provisioned"
 
       - name: the gate
         # `bin/prime`, the same command a developer runs, with the flag that
