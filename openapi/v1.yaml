@@ -92,7 +92,7 @@ info:
     url: https://spdx.org/licenses/BUSL-1.1.html
 
 servers:
-  - url: https://darkroom.cafaye.com
+  - url: https://api.cafaye.com
     description: production
   - url: http://localhost:8080
     description: local development
