@@ -602,3 +602,6 @@ than `InAccountTx`, is doing the thing the Rust `Tenant` typecheck prevented.
    `core/schemas/events/`, which is a core change, not this repository's.
 4. Enqueue it in the same transaction as the domain write.
 5. A test that a rolled-back transaction emits nothing.
+
+## Secrets
+- No `.env` files with values. Use `cafe secret set/get/list` (dev) and `cafe dev` (injects). See `docs/secrets.md`.

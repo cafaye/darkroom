@@ -78,6 +78,17 @@ exposes:
 # without it, degraded" has no honest value for a service that cannot verify a
 # single request without it.
 
+env:
+  - name: PORT
+    required: false
+    secret: false
+    description: "Listen port."
+  - name: DATABASE_URL
+    required: false
+    secret: true
+    dev_default: "auto"
+    description: "Postgres DSN."
+
 repository:
   url: git@github.com:cafaye/darkroom.git
   defaultBranch: master

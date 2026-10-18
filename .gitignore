@@ -18,3 +18,5 @@
 /bin/darkroom
 *.test
 *.out
+keyring/
+secrets/
