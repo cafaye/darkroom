@@ -7,12 +7,10 @@
 #
 #   courier, identity and billing run that with a one-word wrapper, `bin/dev`,
 #   which fetches the stack at the ref in `kit.ref` and sets `KIT_COMPOSE_DIR`
-#   for you. THIS REPOSITORY DOES NOT SHIP `bin/dev` YET, and that is stated
-#   here rather than left to be discovered: the two lines above are the whole of
-#   the procedure today, and a reader who types `bin/dev` gets "no such file".
-#   Dropping kit's `templates/bin/dev.sh` in as `bin/dev` is the same file the
-#   other three carry, byte for byte, and it is a separate change from this one
-#   because it brings its own opinions about `.env` and about `db grant`.
+#   for you. This repository now ships `bin/dev` (kit's `templates/bin/dev.sh`,
+#   byte for byte), so `bin/dev up` is the one-command local stack; the two
+#   lines above remain the explicit form for anyone who wants to see what it
+#   does.
 #
 # `KIT_COMPOSE_DIR` is not optional and omitting it is silent. kit's compose file
 # resolves its own build context and its initdb bind mount through
