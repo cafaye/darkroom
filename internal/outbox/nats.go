@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -114,7 +115,17 @@ type NATSPublisher struct {
 // What this DOES refuse is a url that does not parse: a typo is a deployment
 // that believes it has a bus and does not, and that belongs at boot where an
 // operator reads it, not at the first event where nobody does.
-func NewNATSPublisher(url string) (*NATSPublisher, error) {
+func NewNATSPublisher(rawURL string) (*NATSPublisher, error) {
+	// Refuse a url that does not parse BEFORE handing it to the client. The
+	// client's own parser is lenient enough that some malformed inputs were
+	// accepted (and then retried forever under RetryOnFailedConnect), which
+	// made this check environment-dependent. Parsing here is deterministic and
+	// does not depend on DNS or on the client's retry behaviour.
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed == nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("outbox: %q is not a broker URL: %w", rawURL, err)
+	}
+	url := rawURL
 	nc, err := nats.Connect(url,
 		nats.RetryOnFailedConnect(true),
 		nats.Timeout(DefaultNATSConnectTimeout),
