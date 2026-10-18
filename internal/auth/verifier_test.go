@@ -119,7 +119,7 @@ func newIdentity(t *testing.T, document string) *identity {
 	id.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		id.fetches.Add(1)
 		if id.fail.Load() {
-			// 500 rather than a connection error: the cache's behaviour must be the
+			// 500 rather than a connection error: the cache's behavior must be the
 			// same whether identity is broken or absent.
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -149,11 +149,11 @@ func (p keyPair) mint(t *testing.T, alg, kid string, body map[string]any) string
 	header := map[string]any{"alg": alg, "typ": "JWT", "kid": kid}
 	headerJSON, err := json.Marshal(header)
 	if err != nil {
-		t.Fatalf("marshalling a header: %v", err)
+		t.Fatalf("marshaling a header: %v", err)
 	}
 	payloadJSON, err := json.Marshal(body)
 	if err != nil {
-		t.Fatalf("marshalling claims: %v", err)
+		t.Fatalf("marshaling claims: %v", err)
 	}
 	signingInput := b64(headerJSON) + "." + b64(payloadJSON)
 	digest := sha256Bytes(signingInput)
@@ -402,7 +402,7 @@ func TestAScopeGateWithNoAuthInFrontOfItIsAWiringMistake(t *testing.T) {
 	}
 	gate(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("the inner handler ran with no principal")
-	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/v1/assets", nil))
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/assets", nil))
 
 	if got == nil || got.Status != http.StatusUnauthorized {
 		t.Fatalf("got %+v, want a 401", got)
@@ -440,7 +440,7 @@ func TestATenantCannotBeBuiltFromAnythingButAPrincipal(t *testing.T) {
 // panic is the only answer that cannot be mistaken for a result.
 func TestAMissingTenantPanicsInsteadOfScopingToNothing(t *testing.T) {
 	assertPanics(t, "TenantOf with no gate in front", func() {
-		auth.TenantOf(httptest.NewRequest(http.MethodGet, "/v1/assets/abc", nil))
+		auth.TenantOf(httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/assets/abc", nil))
 	})
 }
 
@@ -458,7 +458,7 @@ func TestThePanicMessageNamesTheRoute(t *testing.T) {
 			t.Fatalf("the panic message does not say what to do: %q", message)
 		}
 	}()
-	auth.TenantOf(httptest.NewRequest(http.MethodGet, "/v1/assets/abc", nil))
+	auth.TenantOf(httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/assets/abc", nil))
 }
 
 // TestAVerifiedTenantIsReadFromTheGateAndNowhereElse is the positive half, and it
@@ -479,7 +479,7 @@ func TestAVerifiedTenantIsReadFromTheGateAndNowhereElse(t *testing.T) {
 	handler := verifier.Require(refuse)(inner)
 	handler.ServeHTTP(
 		httptest.NewRecorder(),
-		withBearer(httptest.NewRequest(http.MethodGet, "/v1/assets", nil), keys.mint(t, "RS256", testKid, claims())),
+		withBearer(httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/assets", nil), keys.mint(t, "RS256", testKid, claims())),
 	)
 
 	if seen.AccountID() != "11111111-1111-1111-1111-111111111111" || seen.UserID() != "user-1" {

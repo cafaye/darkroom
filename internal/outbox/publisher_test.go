@@ -7,8 +7,8 @@ package outbox
 // PostgreSQL answers (`mise.toml`, `bin/prime`), and a loop whose correctness
 // depended on them would be unproved on every bare machine in CI. The CLAIM is
 // `Claimer`, an interface, precisely so the drain can be driven by a fake — and
-// the fake is where the interesting behaviour lives, because the interesting
-// behaviour is what the loop does with what it was handed: mark what the
+// the fake is where the interesting behavior lives, because the interesting
+// behavior is what the loop does with what it was handed: mark what the
 // publisher accepted, leave what it refused, stop when its context dies.
 //
 // The transport is proved against a real in-process broker in nats_test.go.
@@ -28,7 +28,7 @@ import (
 // ----------------------------------------------------------------------------
 
 // fakeBatch is a claimed set of events with no transaction behind it. It records
-// every mark, which is what the loop's behaviour is observable through: a row
+// every mark, which is what the loop's behavior is observable through: a row
 // marked published that the publisher never accepted is the bug, and a row left
 // unmarked after a successful publish is the other one.
 type fakeBatch struct {
@@ -78,7 +78,7 @@ func (b *fakeBatch) counts() (published, failed int, released, committed bool) {
 }
 
 // fakeClaimer hands out one batch and then goes dry. batches counts the claim
-// calls, which is what the loop's poll behaviour is measured through.
+// calls, which is what the loop's poll behavior is measured through.
 type fakeClaimer struct {
 	batches []*fakeBatch
 	err     error
@@ -342,12 +342,12 @@ func TestTheCarriedEnvelopeIsCoreShapeAndNothingElse(t *testing.T) {
 	}
 	e := got[0]
 
-	// Marshalled rather than reflected, because the MARSHALLED form is what a
+	// Marshaled rather than reflected, because the MARSHALED form is what a
 	// consumer receives: a struct tag that dropped an attribute would pass a
 	// reflection walk and fail here.
 	raw, err := json.Marshal(e)
 	if err != nil {
-		t.Fatalf("marshalling the envelope: %v", err)
+		t.Fatalf("marshaling the envelope: %v", err)
 	}
 	var onTheWire map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &onTheWire); err != nil {
@@ -506,11 +506,11 @@ func TestDarkroomsOwnPayloadsPassTheCapabilityGuard(t *testing.T) {
 // the loop's lifetime
 // ----------------------------------------------------------------------------
 
-// Run returns nil when its context is cancelled, and it returns promptly. The
+// Run returns nil when its context is canceled, and it returns promptly. The
 // loop is tied to the process's context — the same one the HTTP server drains
 // on — so a shutdown that had to wait a poll interval for it would be a shutdown
 // that outlives its grace.
-func TestRunStopsWhenItsContextIsCancelled(t *testing.T) {
+func TestRunStopsWhenItsContextIsCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := NewService(&fakeClaimer{}, NoopPublisher{}, nil, 0)
 
@@ -521,10 +521,10 @@ func TestRunStopsWhenItsContextIsCancelled(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Errorf("Run returned %v on a cancelled context, want nil", err)
+			t.Errorf("Run returned %v on a canceled context, want nil", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not return within 5s of its context being cancelled")
+		t.Fatal("Run did not return within 5s of its context being canceled")
 	}
 }
 
@@ -542,7 +542,7 @@ func TestRunKeepsPollingWhileTheQueueIsDry(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()
 
-	// Three poll intervals, then cancelled. The point is that the loop made MORE
+	// Three poll intervals, then canceled. The point is that the loop made MORE
 	// THAN ONE claim: a loop that polled once and stopped would leave an event
 	// written in the gap unpublished for the life of the process.
 	deadline := time.Now().Add(4 * time.Second)

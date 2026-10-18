@@ -158,7 +158,7 @@ func TestAnUnpublishedEventReachesTheStreamUnderADarkroomSubject(t *testing.T) {
 	// prefix rewriting." So the subject on the wire is the same three-segment
 	// type the row carried, which is what makes `darkroom.>` the filter the stack
 	// must declare.
-	if got := stored[0].Subject; got != string(e.Type) {
+	if got := stored[0].Subject; got != e.Type {
 		t.Errorf("the message is on subject %q, want %q — the subject is the event type", got, e.Type)
 	}
 	if stored[0].Subject != "darkroom.asset.ready" {
@@ -223,9 +223,9 @@ func TestAnUnansweredPublishIsBoundedByThePublishTimeout(t *testing.T) {
 	}
 }
 
-// A cancelled context aborts the publish, because the budget is DERIVED from the
+// A canceled context aborts the publish, because the budget is DERIVED from the
 // caller's. A shutdown must not wait out a publish to a broker that is gone.
-func TestACancelledContextAbortsThePublish(t *testing.T) {
+func TestACanceledContextAbortsThePublish(t *testing.T) {
 	url := startNATSTestServer(t)
 	addTestStream(t, url, "darkroom.>")
 
@@ -236,10 +236,10 @@ func TestACancelledContextAbortsThePublish(t *testing.T) {
 	defer publisher.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancelled before the call: shutdown racing the drain
+	cancel() // canceled before the call: shutdown racing the drain
 
 	if err := publisher.Publish(ctx, darkroomEvent("018f6f3a-0000-7000-8000-000000000001").Envelope()); err == nil {
-		t.Error("Publish returned nil on a cancelled context: a shutdown would wait out the publish")
+		t.Error("Publish returned nil on a canceled context: a shutdown would wait out the publish")
 	}
 }
 
@@ -306,17 +306,4 @@ func TestAnUnreachableBrokerIsNotAConstructionFailure(t *testing.T) {
 func hasKey(m map[string]json.RawMessage, key string) bool {
 	_, ok := m[key]
 	return ok
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || indexOf(s, sub) >= 0)
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }

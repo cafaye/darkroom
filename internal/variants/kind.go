@@ -138,7 +138,7 @@ func (k VariantKind) Valid() bool {
 // ParseKind reads a wire name.
 //
 // A `kind` that is not in this list is a 422: an unknown variant kind cannot be
-// told apart from a typo, and inventing behaviour for it is how an API grows
+// told apart from a typo, and inventing behavior for it is how an API grows
 // fifty near-identical kinds.
 func ParseKind(s string) (VariantKind, error) {
 	switch s {

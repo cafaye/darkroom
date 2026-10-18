@@ -296,15 +296,15 @@ var tenantPredicate = regexp.MustCompile(`account_id\s*(?:=|<>|!=|like|in)\s*\(?
 // isATenantPredicate reports whether a string literal is a query naming the tenant.
 func isATenantPredicate(literal string) bool { return tenantPredicate.MatchString(literal) }
 
-// TestATenantPredicateIsRecognised is the guard's own table, because a guard that has
+// TestATenantPredicateIsRecognized is the guard's own table, because a guard that has
 // never been shown red is a guard nobody can rely on (`AGENTS.md`).
 //
 // The first draft of the check compared each literal to ONE planted string, so it was
 // green on every predicate except that exact sentence — which is a guard that proves
-// nothing at all. This one recognises the SHAPE, and the row that matters is the
+// nothing at all. This one recognizes the SHAPE, and the row that matters is the
 // planted one: `where account_id = $1 and id = $2`, added to `listAssets` and caught
 // by [TestTheListQueryNeverNamesTheTenantItself].
-func TestATenantPredicateIsRecognised(t *testing.T) {
+func TestATenantPredicateIsRecognized(t *testing.T) {
 	for _, c := range []struct {
 		literal string
 		want    bool
@@ -362,12 +362,12 @@ func TestATenantPredicateIsRecognised(t *testing.T) {
 // and it names the LINE, which is the difference between a guard that reports a
 // finding and one that reports a mood. The same plant also turned
 // [TestListAssetsSeesOnlyTheCallersAccount] and
-// [TestBothDirectionsReturnTheSamePageInOppositeOrder] red, so the behavioural half
+// [TestBothDirectionsReturnTheSamePageInOppositeOrder] red, so the behavioral half
 // below is not the only thing standing in the way.
 //
-// It is a second copy of the rule and not a replacement for the behavioural half:
+// It is a second copy of the rule and not a replacement for the behavioral half:
 // `pgtest`'s policy guards read the live policies' `pg_get_expr`, and
-// `TestListAssetsSeesOnlyTheCallersAccount` holds the behaviour against real
+// `TestListAssetsSeesOnlyTheCallersAccount` holds the behavior against real
 // Postgres. This one only says the spelling has not crept back in.
 func TestTheListQueryNeverNamesTheTenantItself(t *testing.T) {
 	fset := token.NewFileSet()

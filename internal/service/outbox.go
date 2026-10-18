@@ -79,7 +79,7 @@
 //     to every one of them, and every one of them publishes. `skip locked` makes
 //     the second replica walk past rows the first has locked, which is what lets
 //     replicas run without contending. A bare `for update` is worse than no lock
-//     here: the replicas serialise on the same head-of-queue rows instead of
+//     here: the replicas serialize on the same head-of-queue rows instead of
 //     skipping them, so correctness improves and throughput collapses.
 //
 //   - The claim and the `published_at` write belong in ONE transaction, or a
@@ -188,7 +188,7 @@ func (e *Event) Envelope() map[string]any {
 func enqueue(ctx context.Context, tx pgx.Tx, event *Event) error {
 	data, err := json.Marshal(event.Data)
 	if err != nil {
-		return fmt.Errorf("enqueue(%s): marshalling data: %w", event.Type, err)
+		return fmt.Errorf("enqueue(%s): marshaling data: %w", event.Type, err)
 	}
 	if _, err := tx.Exec(ctx, `insert into outbox_events (id, event_type, source, subject, time, data)
 		values ($1::uuid, $2, $3, $4, $5, $6::jsonb)`,

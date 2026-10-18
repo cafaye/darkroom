@@ -8,7 +8,7 @@
 //
 //	r.Get(options.BaseURL+"/v1/me", wrapper.GetCurrentPrincipal)
 //
-// and core's contract harness cannot read that line. `RECOGNISERS`' chi entry
+// and core's contract harness cannot read that line. `RECOGNIZERS`' chi entry
 // requires a `/`-prefixed string literal as the FIRST term after `(`, and
 // concatenation is resolved only in the other direction — `"/v1/x/"+prefix+"/y"`
 // — because identity's own router writes paths that way. So every route in a
@@ -17,7 +17,7 @@
 // The consequence is not a missed route. It is a number: `route_defs` is 0 over
 // a surface it saw none of, and 0 over nothing prints exactly like 0 over
 // everything. `surface.minimum` is the one field in `account_scope.yml` that
-// notices a route appearing where the recognisers cannot reach, so with the
+// notices a route appearing where the recognizers cannot reach, so with the
 // token left in place darkroom's only decrease-detector cannot be set above
 // zero — which is where pantry's sits, with a DECISION NEEDED attached.
 //
@@ -33,7 +33,7 @@
 //
 // Only the token. `options.BaseURL` defaults to `/` when a caller leaves it
 // empty, so `options.BaseURL+"/v1/me"` and `"/v1/me"` are the same route — the
-// rewrite changes no behaviour, and darkroom serves at `/` and nowhere else
+// rewrite changes no behavior, and darkroom serves at `/` and nowhere else
 // (`internal/httpapi/routes_test.go` holds the router to the document's paths).
 //
 // # It refuses rather than reporting success it did not achieve

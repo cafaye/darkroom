@@ -50,7 +50,7 @@
 // package an `http.Handler`, by which point the generated binder has collapsed every
 // operation into an `http.HandlerFunc` closure, so there is no method value and no
 // `Params` type left to inspect; and reading `api.gen.go` as text pins a SPELLING
-// rather than a behaviour, which `AGENTS.md` warns against by name. So the list stays
+// rather than a behavior, which `AGENTS.md` warns against by name. So the list stays
 // and something else has to keep it honest.
 //
 // What keeps it honest is `TestTheIdempotentRoutesAreExactlyTheDocumentOnes` in
@@ -254,7 +254,7 @@ func (s *Server) idempotency(endpoint string, next http.Handler) http.Handler {
 // because an `http.ResponseWriter` that does not implement it makes a handler that
 // flushes fail a type assertion, and one that claims it and ignores it would make
 // that handler wait forever for a flush that never happens. This service has no
-// streaming operation, so the pass-through is the whole behaviour.
+// streaming operation, so the pass-through is the whole behavior.
 //
 // `http.Hijacker`, `io.ReaderFrom` and `http.Pusher` are deliberately NOT
 // implemented: nothing in this service needs them, and each would be a capability

@@ -344,8 +344,8 @@ func grantForURL(rawURL string) (grant, bool) {
 		case "signature":
 			signature = v
 		default:
-			// An UNRECOGNISED query parameter is refused rather than ignored. A
-			// fake that ignores what it does not recognise is a fake that accepts
+			// An UNRECOGNIZED query parameter is refused rather than ignored. A
+			// fake that ignores what it does not recognize is a fake that accepts
 			// a URL carrying a `x-darkroom-anything` it never agreed to, and the
 			// whole value of this parse is that it is strict.
 			return grant{}, false
@@ -376,7 +376,7 @@ func grantForURL(rawURL string) (grant, bool) {
 // does and the scope assertions in the test suite mean something.
 //
 // `crypto/sha256` and nothing hand-rolled: `AGENTS.md` says "No `unsafe`" and the
-// Go analogue of "no hand-rolled crypto" is the same rule — the standard
+// Go analog of "no hand-rolled crypto" is the same rule — the standard
 // library's digest is the one that has been reviewed.
 func sign(key string, expiresAt uint64) string {
 	h := sha256.New()

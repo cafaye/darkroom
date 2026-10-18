@@ -408,14 +408,14 @@ func TestTheScopesAreTheDocumentOnes(t *testing.T) {
 //     not;
 //   - `httpapi` wraps a route the document does not declare idempotent — the ledger
 //     has rows for an operation the contract says nothing about, and a client that
-//     sends no key is unaffected while one that does gets a behaviour no document
+//     sends no key is unaffected while one that does gets a behavior no document
 //     describes.
 //
 // # WHY THE COMPARISON IS OBSERVABLE AND NOT BY INSPECTION
 //
 // The forward direction cannot be read off the router: the layer is invisible from
 // outside, which is the point of a middleware. So it is asserted the only honest
-// way — by behaviour. `idempotency_test.go` proves the two declared routes reserve
+// way — by behavior. `idempotency_test.go` proves the two declared routes reserve
 // and replay; this test proves there are exactly two of them, so a third route the
 // document declares idempotent cannot be silently unwrapped.
 func TestTheIdempotentRoutesAreExactlyTheDocumentOnes(t *testing.T) {

@@ -39,7 +39,7 @@ func TestKeysAreOpaqueScopedAndUnique(t *testing.T) {
 }
 
 // Asserted so a future "let's shorten the key" commit has to change this test on
-// purpose. 32 hex characters is 128 bits, and it is the guessability defence
+// purpose. 32 hex characters is 128 bits, and it is the guessability defense
 // for the presigned PUT's target: with a guessable leaf, anyone who could guess
 // it could ask for a presigned URL at the ORIGINAL's key and overwrite it.
 func TestTheRandomLeafIsLongEnoughToNotBeGuessable(t *testing.T) {
@@ -52,14 +52,14 @@ func TestTheRandomLeafIsLongEnoughToNotBeGuessable(t *testing.T) {
 		t.Errorf("leaf is %d characters, want 32 (128 bits): %s", len(leaf), leaf)
 	}
 	for _, c := range leaf {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Fatalf("leaf is not lowercase hex: %s", leaf)
 		}
 	}
 }
 
 // A generated key is structurally incapable of containing traversal, which is
-// why no downstream code has to sanitise it. 200 keys, because a random
+// why no downstream code has to sanitize it. 200 keys, because a random
 // component failing to be random is rare and a single sample proves nothing.
 func TestAGeneratedKeyNeverContainsTraversalSegments(t *testing.T) {
 	for i := 0; i < 200; i++ {

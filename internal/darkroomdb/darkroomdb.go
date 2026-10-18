@@ -188,7 +188,7 @@ func (s *Store) InTx(ctx context.Context, fn func(tx pgx.Tx) error) (err error) 
 // reads nothing.
 func (s *Store) InAccountTx(ctx context.Context, account string, fn func(tx pgx.Tx) error) error {
 	if account == "" {
-		return errors.New("darkroomdb.InAccountTx: the account is empty. A nil account reads zero rows rather than failing, so this is the only place it can be caught.")
+		return errors.New("darkroomdb.InAccountTx: the account is empty; a nil account reads zero rows rather than failing, so this is the only place it can be caught")
 	}
 	return s.InTx(ctx, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `select cafaye.begin_account($1::uuid)`, account); err != nil {

@@ -19,7 +19,7 @@
 //
 // EVERY client parses both spellings identically, which is exactly why it would
 // have shipped, and `internal/equivalence` found it on the first run of a single 503
-// case. If this file ever starts marshalling a GENERATED struct instead, that trap
+// case. If this file ever starts marshaling a GENERATED struct instead, that trap
 // returns; `TestTheProblemBodyIsInTheDocumentOrder` is what stops it.
 //
 // # THE TRACE ID COMES FROM ONE PLACE
@@ -36,6 +36,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+
+	"errors"
 
 	"github.com/cafaye/darkroom/internal/api"
 	"github.com/cafaye/darkroom/internal/auth"
@@ -68,7 +70,7 @@ func traceIDOf(r *http.Request) string {
 // package that renders the envelope, which is what keeps the verifier testable
 // without an HTTP surface.
 func refuse(w http.ResponseWriter, r *http.Request, refusal *auth.Refusal) {
-	p := problem.Invalid(refusal.Detail)
+	var p *problem.Error
 	switch refusal.Status {
 	case http.StatusUnauthorized:
 		p = problem.Unauthorized(refusal.Detail)
@@ -192,7 +194,7 @@ func writeProblemError(w http.ResponseWriter, r *http.Request, p *problem.Error)
 	traceID := traceIDOf(r)
 	body := p.Problem(instanceOf(r), traceID)
 
-	// `Marshal` first, `WriteHeader` second. A marshalling failure then means nothing
+	// `Marshal` first, `WriteHeader` second. A marshaling failure then means nothing
 	// has been written yet, so there is no half-sent document for a client to parse.
 	// `json.Marshal` rather than `json.NewEncoder(w).Encode`, which appends a
 	// newline to every body.
@@ -236,21 +238,28 @@ func instanceOf(r *http.Request) string {
 func bindingErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	field := ""
 	code := "invalid"
-	switch e := err.(type) {
-	case *api.RequiredParamError:
-		field = e.ParamName
+	var (
+		rp  *api.RequiredParamError
+		rh  *api.RequiredHeaderError
+		ipf *api.InvalidParamFormatError
+		tmv *api.TooManyValuesForParamError
+		up  *api.UnmarshalingParamError
+	)
+	switch {
+	case errors.As(err, &rp):
+		field = rp.ParamName
 		code = "required"
-	case *api.RequiredHeaderError:
-		field = e.ParamName
+	case errors.As(err, &rh):
+		field = rh.ParamName
 		code = "required"
-	case *api.InvalidParamFormatError:
-		field = e.ParamName
+	case errors.As(err, &ipf):
+		field = ipf.ParamName
 		code = "invalid_format"
-	case *api.TooManyValuesForParamError:
-		field = e.ParamName
+	case errors.As(err, &tmv):
+		field = tmv.ParamName
 		code = "too_many_values"
-	case *api.UnmarshalingParamError:
-		field = e.ParamName
+	case errors.As(err, &up):
+		field = up.ParamName
 		code = "invalid"
 	default:
 		// Anything else is not a binding failure this function knows how to

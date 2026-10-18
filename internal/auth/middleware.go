@@ -193,7 +193,7 @@ func sha256Sum(signingInput string) []byte {
 func jsonUnmarshal(data []byte, into any) error { return json.Unmarshal(data, into) }
 
 // decodePayload is the claims set, and it refuses anything that is not a top-level
-// JSON OBJECT. jose raises `ERR_JWT_INVALID` for the second case; unmarshalling a
+// JSON OBJECT. jose raises `ERR_JWT_INVALID` for the second case; unmarshaling a
 // bare array into a map is an error here for the same reason.
 func decodePayload(token string) (map[string]any, error) {
 	parts := strings.Split(token, ".")

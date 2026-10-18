@@ -8,8 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/cafaye/darkroom/internal/checksum"
 	"github.com/cafaye/darkroom/internal/darkroomdb"
 	"github.com/cafaye/darkroom/internal/darkroomdb/pgtest"
@@ -1046,15 +1044,6 @@ func countOutboxOutside(t *testing.T, db *darkroomdb.Store) int {
 		return tx.QueryRow(context.Background(), `select count(*) from outbox_events`).Scan(&n)
 	}); err != nil {
 		t.Fatalf("counting outbox rows: %v", err)
-	}
-	return n
-}
-
-func scalarCount(t *testing.T, conn *pgx.Conn, query string) int {
-	t.Helper()
-	var n int
-	if err := conn.QueryRow(context.Background(), query).Scan(&n); err != nil {
-		t.Fatalf("%s: %v", query, err)
 	}
 	return n
 }

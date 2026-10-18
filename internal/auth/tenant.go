@@ -54,7 +54,7 @@ import (
 //     cleanup or a query that reports success and did nothing". A silent
 //     cross-tenant-shaped hole, from a handler that forgot one line.
 //   - **A 500 written by the accessor.** This one is tempting and it is the worst of
-//     the three, because it CONVERGES. The mistake becomes a documented behaviour
+//     the three, because it CONVERGES. The mistake becomes a documented behavior
 //     of the accessor, a test asserts the 500, and the gate that would have caught
 //     a missing tenant has been replaced by a handler that returns a tidy error for
 //     a wiring defect. The process keeps serving traffic built on an unscoped read.

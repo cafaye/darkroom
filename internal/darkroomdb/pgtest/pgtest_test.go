@@ -118,7 +118,7 @@ func countFor(t *testing.T, tt *pgtest.Test, account string) int {
 // binary, which is the arrangement `go test` produces by default and the one that
 // would break a harness whose isolation was timing rather than naming. Six cases
 // run as goroutines inside ONE test rather than as six `t.Run` subtests, because
-// `t.Run` without `t.Parallel()` serialises them and would prove nothing about
+// `t.Run` without `t.Parallel()` serializes them and would prove nothing about
 // concurrency — and that is the mistake worth naming, since a version of this test
 // written with plain `t.Run` would have been green for the right-looking reason.
 //
@@ -837,7 +837,7 @@ func TestEveryHelperCallInAPolicyIsWrapped(t *testing.T) {
 	}
 }
 
-// TestTheSelectWrappingIsMeasuredNotAsserted is the behavioural half of the
+// TestTheSelectWrappingIsMeasuredNotAsserted is the behavioral half of the
 // `(select …)` rule, and the half `TestEveryHelperCallInAPolicyIsWrapped` cannot
 // be.
 //
@@ -854,7 +854,7 @@ func TestEveryHelperCallInAPolicyIsWrapped(t *testing.T) {
 // policy would — over a five-row fixture, and counts how many times the identity
 // function is actually invoked. The instrument is a probe function that
 // increments a counter table every time it is called, so the number is the
-// plan's behaviour on THIS cluster rather than a reading of a document. The two
+// plan's behavior on THIS cluster rather than a reading of a document. The two
 // tests meet in the middle: the spelling test holds that `protect_table` writes
 // the wrapped form, and this one holds that the wrapped form is the one that is
 // hoisted.
@@ -953,7 +953,7 @@ func TestTheSelectWrappingIsMeasuredNotAsserted(t *testing.T) {
 		return rows, calls
 	}
 
-	// THE WRAPPED FORM — the one `protect_table` writes, held here by behaviour
+	// THE WRAPPED FORM — the one `protect_table` writes, held here by behavior
 	// rather than by spelling: one call per statement, not one per row.
 	if _, err := tt.Conn.Exec(ctx, `create policy probe_wrapped on probe_rows for select to public
 		using (account_id = (select probe_identity()))`); err != nil {

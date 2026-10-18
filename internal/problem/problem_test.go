@@ -78,14 +78,14 @@ func TestErrorsArrayAppearsOnlyOn422(t *testing.T) {
 		t.Errorf("errors[] = %v", p.Errors)
 	}
 
-	// Everything else must not serialise the key AT ALL. The check is on the
+	// Everything else must not serialize the key AT ALL. The check is on the
 	// decoded object's keys rather than on the raw string: `type` is a
 	// `https://docs.cafaye.com/errors/...` URI, so a substring test would match every
 	// response and prove nothing.
 	for _, err := range []*Error{NotFound("x"), Conflict("x"), Internal("x"), Unauthorized("x"), Unavailable("x")} {
 		raw, err2 := json.Marshal(err.Problem("/v1/x", "trace"))
 		if err2 != nil {
-			t.Fatalf("marshalling: %v", err2)
+			t.Fatalf("marshaling: %v", err2)
 		}
 		var decoded map[string]any
 		if err := json.Unmarshal(raw, &decoded); err != nil {
@@ -121,7 +121,7 @@ func TestDetailNeverCarriesACauseOrAHost(t *testing.T) {
 	} {
 		body, err2 := json.Marshal(err.Problem("/v1/assets/ast_1", "trace-abc"))
 		if err2 != nil {
-			t.Fatalf("%s: marshalling: %v", name, err2)
+			t.Fatalf("%s: marshaling: %v", name, err2)
 		}
 		for _, leak := range []string{"10.0.0.5", "postgres://", "connection refused", "too many connections"} {
 			if strings.Contains(strings.ToLower(string(body)), strings.ToLower(leak)) {
@@ -170,11 +170,11 @@ func TestFromDBMapsEachFailureToItsOneStatus(t *testing.T) {
 	if !IsCheckViolation(pgErr("23514", "x")) || IsCheckViolation(pgErr("23505", "x")) {
 		t.Error("IsCheckViolation must be exactly 23514")
 	}
-	// And a WRAPPED pgconn error is still recognisable, which is what
+	// And a WRAPPED pgconn error is still recognizable, which is what
 	// `errors.As` buys and what a bare type assertion would not.
 	wrapped := fmt.Errorf("inserting the asset: %w", pgErr("23505", "x"))
 	if !IsUniqueViolation(wrapped) {
-		t.Error("a wrapped unique violation must still be recognised: the service's duplicate branch depends on it")
+		t.Error("a wrapped unique violation must still be recognized: the service's duplicate branch depends on it")
 	}
 }
 

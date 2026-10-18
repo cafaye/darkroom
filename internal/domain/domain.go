@@ -17,6 +17,7 @@
 package domain
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -58,7 +59,7 @@ func (k AssetKind) Valid() bool {
 // case-insensitive before the allow-list is applied, because clients send
 // `Image/PNG; charset=binary` and the kind does not depend on any of that.
 //
-// WHY AN UNRECOGNISED TYPE IS REJECTED RATHER THAN GUESSED: the accept-list for
+// WHY AN UNRECOGNIZED TYPE IS REJECTED RATHER THAN GUESSED: the accept-list for
 // `image/*` holds only the four formats the pipeline can decode. Accepting
 // `image/x-psd` would create an asset no variant path can read and no error until
 // somebody asked for a thumbnail — a failure that surfaces as a 500 on a request
@@ -156,7 +157,7 @@ func (s AssetStatus) Terminal() bool {
 // does not: `AGENTS.md` says "`Asset` has no `storage_key` field. It is a
 // server-side detail and a client that can read it will try to build a URL from
 // it." An unexported field is the Go spelling of that rule — a caller in another
-// package cannot name it, and packet 05's JSON encoder cannot serialise it.
+// package cannot name it, and packet 05's JSON encoder cannot serialize it.
 //
 // `Checksum` is the value COMPUTED from the stored bytes, never the client's claim:
 // "`assets.checksum` is set at insert from the client's claim, then REPLACED by the
@@ -181,7 +182,7 @@ type Asset struct {
 }
 
 // StorageKey returns the object's key, for the code that has to talk to the object
-// store. It is NOT serialised, and no caller in this repository uses it to build a
+// store. It is NOT serialized, and no caller in this repository uses it to build a
 // URL — the only two callers are the complete path, which hashes what is at that
 // key, and the delete path, which removes it. `AGENTS.md` gives the reason a key
 // must not reach a client: "`Asset` has no `storage_key` field. It is a server-side
@@ -258,6 +259,6 @@ func (e errUnsupportedContentType) Error() string { return e.detail }
 // exported constructor to be useful, and this predicate is the exported form of the
 // same check.
 func IsUnsupportedContentType(err error) bool {
-	_, ok := err.(errUnsupportedContentType)
-	return ok
+	var target errUnsupportedContentType
+	return errors.As(err, &target)
 }

@@ -27,7 +27,7 @@ import (
 
 // gradientPNG builds a real PNG of the requested size with a deterministic
 // gradient, so a resize test is resizing something with detail in it rather than
-// a flat colour — a flat colour survives almost any filter unchanged and would
+// a flat color — a flat color survives almost any filter unchanged and would
 // pass a broken resampler.
 func gradientPNG(t *testing.T, width, height int) []byte {
 	t.Helper()
@@ -49,10 +49,10 @@ func gradientPNG(t *testing.T, width, height int) []byte {
 	return buf.Bytes()
 }
 
-// solidPNG is a PNG that is one flat RGBA colour, 8x8.
+// solidPNG is a PNG that is one flat RGBA color, 8x8.
 //
-// 8x8 rather than 1x1 because the matte assertions read the CENTRE pixel, and
-// 1x1 would make "the centre" a single pixel whose value depends on the JPEG's
+// 8x8 rather than 1x1 because the matte assertions read the CENTER pixel, and
+// 1x1 would make "the center" a single pixel whose value depends on the JPEG's
 // DC coefficient alone — which is a weaker test than it looks, since a filter
 // that shifted every pixel by one would still pass.
 func solidPNG(t *testing.T, r, g, b, a uint8) []byte {
@@ -103,7 +103,7 @@ func dimensions(t *testing.T, raw []byte) (int, int) {
 	return b.Dx(), b.Dy()
 }
 
-// middlePixel decodes `raw` and returns the centre pixel as RGB.
+// middlePixel decodes `raw` and returns the center pixel as RGB.
 func middlePixel(t *testing.T, raw []byte) [3]uint8 {
 	t.Helper()
 	img, _, err := image.Decode(bytes.NewReader(raw))
@@ -231,7 +231,7 @@ func TestEveryVariantIsJpegAndTheDeclaredTypeAgreesWithTheBytes(t *testing.T) {
 // bytes of each format notices.
 //
 // The three WebP rows are the half that matters and they are the half Go cannot
-// synthesise: the pure-Go decoder is decode-only, so these are checked-in files.
+// synthesize: the pure-Go decoder is decode-only, so these are checked-in files.
 func TestEveryAcceptedInputFormatDecodes(t *testing.T) {
 	// A real JPEG and a real GIF are built here rather than checked in, because
 	// the standard library can encode both and a fixture nobody regenerates is a
@@ -380,8 +380,8 @@ func TestAlphaIsCompositedOverWhiteRatherThanDropped(t *testing.T) {
 
 	// Half-transparent: `out = src*a + 255*(1-a)` on a red pixel at a=128 gives
 	// (255, 127, 127) — the red survives at full strength because it is the
-	// source colour, and green and blue land halfway to the white matte. A matte
-	// that ignored the source colour, or that used a different alpha, would pass
+	// source color, and green and blue land halfway to the white matte. A matte
+	// that ignored the source color, or that used a different alpha, would pass
 	// the two assertions above and fail this.
 	half := middlePixel(t, encodeOK(t, solidPNG(t, 255, 0, 0, 128), KindWeb).Bytes)
 	if diff(half[0], 255) >= 12 {
@@ -401,7 +401,7 @@ func TestAlphaIsCompositedOverWhiteRatherThanDropped(t *testing.T) {
 // composites an unresized one, passes with either bug in it.
 func TestAlphaIsCompositedOverWhiteThroughAResize(t *testing.T) {
 	// 400x400 of fully transparent, so the thumbnail is a 256x256 resize of an
-	// image with no colour in it at all and the answer can only come from the
+	// image with no color in it at all and the answer can only come from the
 	// matte.
 	img := image.NewNRGBA(image.Rect(0, 0, 400, 400))
 	for y := range 400 {
@@ -420,7 +420,7 @@ func TestAlphaIsCompositedOverWhiteThroughAResize(t *testing.T) {
 	}
 	// Sampled at four points rather than one: a resize that composited in
 	// premultiplied space darkens toward the edges, where the kernel reaches
-	// further, so the centre alone would hide it.
+	// further, so the center alone would hide it.
 	for _, at := range [][2]int{{4, 4}, {251, 4}, {4, 251}, {251, 251}, {128, 128}} {
 		pixel := pixelAt(t, encoded.Bytes, at[0], at[1])
 		if !allAbove(pixel, 200) {
@@ -602,7 +602,7 @@ func TestMatteOverWhiteHoldsTheFormula(t *testing.T) {
 		channel, alpha uint8
 		want           uint8
 	}{
-		{255, 0, 255}, // any colour, fully transparent: the white matte, exactly
+		{255, 0, 255}, // any color, fully transparent: the white matte, exactly
 		{0, 0, 255},   // and the same for black, which is the pixel `to_rgb8` kept
 		{255, 255, 255},
 		{0, 255, 0},
@@ -723,7 +723,7 @@ func TestTheContentTypesOfTheThreeKindsAreOneString(t *testing.T) {
 // they prove the pipeline's bytes are sensitive to the quality at all, which a
 // comparison against a single reference could not.
 func TestTheQualityIsTheNamedConstant(t *testing.T) {
-	// One source, encoded three ways at the reference quality and its neighbours.
+	// One source, encoded three ways at the reference quality and its neighbors.
 	// `web` so the comparison is against the same pixels the pipeline produced —
 	// a JPEG round trip of a resize is not byte-comparable to a resize of a PNG.
 	source := solidPNG(t, 200, 120, 60, 255)
@@ -871,12 +871,12 @@ func TestTheResampleKernelIsSharperThanBiLinear(t *testing.T) {
 // imports that TestEveryAcceptedInputFormatDecodes structurally cannot, and the
 // reason it is needed is a hole in that test that was found by planting.
 //
-// **The behavioural test cannot catch a dropped PNG, JPEG or GIF registration,
+// **The behavioral test cannot catch a dropped PNG, JPEG or GIF registration,
 // and the trap is that it looks like it can.** Those three decoders live in the
 // same standard-library package as their ENCODERS, and this test file needs the
 // encoders to build its fixtures — so `import "image/png"` here registers the PNG
 // decoder all by itself. Delete the blank import from `variants.go` and the
-// behavioural test stays green, because the package under test is no longer the
+// behavioral test stays green, because the package under test is no longer the
 // only thing registering anything. That is a guard passing on a broken source,
 // which is the failure mode `AGENTS.md` singles out, and the comment on the
 // import block in `variants.go` claims the opposite until this test exists.
@@ -884,12 +884,12 @@ func TestTheResampleKernelIsSharperThanBiLinear(t *testing.T) {
 // **WebP is the exception and it is not luck.** `golang.org/x/image` has a
 // decoder and no encoder, so nothing in this repository can register the WebP
 // decoder except the blank import. That split — the very reason for refusing cgo
-// libwebp — is what makes a BEHAVIOURAL guard possible for WebP at all, and it
+// libwebp — is what makes a BEHAVIORAL guard possible for WebP at all, and it
 // is why the WebP rows of the format table are checked-in fixtures rather than
 // images the test builds. See `testdata/README.md`.
 //
 // So this test reads `variants.go` as text and holds the registration where the
-// behavioural test cannot. It is a structural guard on source, in the shape
+// behavioral test cannot. It is a structural guard on source, in the shape
 // `tests/tenant_scoping.rs` already uses to hold `src/store.rs`'s predicates in
 // place — reading the file as text because the property being held is about the
 // file. It is deliberately narrow: one import line per accepted format, named

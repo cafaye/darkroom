@@ -42,7 +42,7 @@ func TestDroppableIsThePlantedDivergenceForTheDropGuard(t *testing.T) {
 		{"PLANTED: the prefix alone", "t_", false},
 		{"PLANTED: too short", "t_abc", false},
 		// One character over SchemaSuffixLen. The first draft of this row was
-		// `t_0123456789ab` labelled "too long", which is byte-identical to the REAL
+		// `t_0123456789ab` labeled "too long", which is byte-identical to the REAL
 		// row two lines below it — so the row asserted `false` for a name the
 		// harness builds and the table failed on its own correct implementation.
 		// A planted divergence has to be a real divergence, not a plausible-looking

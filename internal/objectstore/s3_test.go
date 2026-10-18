@@ -11,7 +11,7 @@ import (
 	"github.com/cafaye/darkroom/internal/objectstore"
 )
 
-// The object-store behaviour table: AWS S3, an S3-compatible service, and
+// The object-store behavior table: AWS S3, an S3-compatible service, and
 // Cloudflare R2, through the same assertions.
 //
 // # WHY ONE TABLE AND NOT ONE TEST PER BACKEND

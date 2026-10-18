@@ -292,7 +292,7 @@ func splitRoutes(generated chi.Routes, probe *chi.Mux, guarded func(method, patt
 // Getting the same answer from the generated SOURCE by reading `api.gen.go` as text
 // is what `AGENTS.md` warns against: the Rust tree held an `account_id` predicate
 // in place with `include_str!`, and a text guard pins a SPELLING rather than a
-// behaviour, so it breaks on a harmless reformat and passes on a real divergence
+// behavior, so it breaks on a harmless reformat and passes on a real divergence
 // spelled differently.
 //
 // So the list is here, it is tiny, and a test in `routes_test.go` — which already
@@ -317,7 +317,7 @@ func declaresIdempotencyKey(operation string) bool {
 // Exported rather than tested through the router because the layer is a middleware
 // and a middleware is invisible from outside — so the only way to ask "is this route
 // wrapped" is to ask the code that wraps it. That is a weaker check than the
-// behaviour in `idempotency_test.go`, and both exist: the behaviour proves the two
+// behavior in `idempotency_test.go`, and both exist: the behavior proves the two
 // declared routes work, and this proves there are exactly two.
 func DeclaresIdempotencyKey(operation string) bool {
 	return declaresIdempotencyKey(operation)

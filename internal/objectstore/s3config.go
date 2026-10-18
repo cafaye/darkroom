@@ -61,12 +61,12 @@ func (c S3Config) normalise() (S3Config, error) {
 		case strings.EqualFold(c.Region, r2Region), strings.EqualFold(c.Region, r2RegionAlias), c.Region == "":
 			out.Region = r2Region
 		default:
-			return S3Config{}, fmt.Errorf("objectstore: Region %q with a Cloudflare R2 endpoint: R2's region is the literal string %q, because R2 rejects a SigV4 signature made for a real region. Set Region=%q, or leave it empty for the default.", c.Region, r2Region, r2Region)
+			return S3Config{}, fmt.Errorf("objectstore: Region %q with a Cloudflare R2 endpoint: R2's region is the literal string %q, because R2 rejects a SigV4 signature made for a real region. Set Region=%q, or leave it empty for the default", c.Region, r2Region, r2Region)
 		}
 		// R2 is path-style regardless of the flag.
 		out.PathStyle = true
 	case strings.EqualFold(c.Region, r2Region):
-		return S3Config{}, fmt.Errorf("objectstore: Region=%q is only valid with a Cloudflare R2 endpoint: AWS has no %q region, so this would sign against an AWS default endpoint and fail every request. Set Endpoint to https://<ACCOUNT_ID>%s, or set a real region like us-east-1.", r2Region, r2Region, r2HostSuffix)
+		return S3Config{}, fmt.Errorf("objectstore: Region=%q is only valid with a Cloudflare R2 endpoint: AWS has no %q region, so this would sign against an AWS default endpoint and fail every request. Set Endpoint to https://<ACCOUNT_ID>%s, or set a real region like us-east-1", r2Region, r2Region, r2HostSuffix)
 	case strings.TrimSpace(c.Region) == "":
 		return S3Config{}, fmt.Errorf("objectstore: a Region is required when the Endpoint is not Cloudflare R2, whose region is %q and is defaulted", r2Region)
 	}
@@ -106,5 +106,5 @@ func isR2Endpoint(endpoint string) bool {
 	if colon := strings.LastIndexByte(rest, ':'); colon >= 0 {
 		rest = rest[:colon]
 	}
-	return strings.ToLower(rest) == strings.ToLower(r2HostSuffix[1:]) || strings.HasSuffix(strings.ToLower(rest), r2HostSuffix)
+	return strings.EqualFold(rest, r2HostSuffix[1:]) || strings.HasSuffix(strings.ToLower(rest), r2HostSuffix)
 }

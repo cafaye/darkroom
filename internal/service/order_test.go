@@ -84,7 +84,7 @@ func TestAQueryThatNamesNoOrderIsNewestFirst(t *testing.T) {
 // A FORGED SortOrder is in the table on purpose. Nothing on the wire can produce one —
 // [ParseSortOrder] admits two words — and a value that cannot be produced must not be
 // able to put arbitrary text into a query either. It walks descending, which is the
-// behaviour before this packet existed.
+// behavior before this packet existed.
 func TestTheTwoDirectionsAreOppositeAndNeverAnUnvettedString(t *testing.T) {
 	cases := []struct {
 		order     SortOrder

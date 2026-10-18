@@ -41,7 +41,7 @@ import (
 // `AGENTS.md`: "Liveness never touches a dependency. `/healthz` is unconditional. A
 // database outage must not get the process restarted out from under in-flight
 // uploads; that is `/readyz`'s job." There is no database here, no object store and
-// no verifier, and adding any of them is a behaviour change to the one endpoint
+// no verifier, and adding any of them is a behavior change to the one endpoint
 // whose job is to say "the process is up".
 func (s *Server) Healthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, api.Probe{Status: api.ProbeStatus("ok")})
@@ -488,7 +488,7 @@ func writeJSON(w http.ResponseWriter, r *http.Request, status int, body any) {
 	// client parses both.
 	encoded, err := json.Marshal(body)
 	if err != nil {
-		// A marshalling failure means this handler built a body the document does not
+		// A marshaling failure means this handler built a body the document does not
 		// allow. Nothing has been written yet, so the honest answer is a problem
 		// document rather than a panic on a response path.
 		slog.Error("a response did not encode", "method", r.Method, "path", r.URL.Path, "error", err)

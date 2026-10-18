@@ -2,7 +2,7 @@ package main
 
 // The outbox publisher's boot wiring: what the process starts, under what
 // condition, and what is left running when the condition is not met. The
-// publisher's own behaviour is proved in `internal/outbox` against an in-process
+// publisher's own behavior is proved in `internal/outbox` against an in-process
 // broker and a fake claimer; what is proved here is the CONDITION and the
 // LIFETIME.
 //
@@ -152,7 +152,7 @@ func TestAMalformedBrokerURLIsABootFailure(t *testing.T) {
 // The wiring's contract in one table: what `run` starts for each configuration.
 //
 // The loop's LIFETIME is proved in `internal/outbox`
-// (TestRunStopsWhenItsContextIsCancelled) and it is given `ctx` — the same
+// (TestRunStopsWhenItsContextIsCanceled) and it is given `ctx` — the same
 // context the HTTP server drains on — at the one call site in `run`, which is two
 // lines and is the whole of the shutdown path. What is proved here is the
 // decision above those two lines, because that is the half that can be wrong

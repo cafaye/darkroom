@@ -101,7 +101,7 @@ func findAssetByChecksum(ctx context.Context, tx pgx.Tx, checksum string) (*doma
 func insertAsset(ctx context.Context, tx pgx.Tx, a domain.Asset) (*domain.Asset, error) {
 	metadata, err := json.Marshal(orEmpty(a.Metadata))
 	if err != nil {
-		return nil, fmt.Errorf("insertAsset: marshalling metadata: %w", err)
+		return nil, fmt.Errorf("insertAsset: marshaling metadata: %w", err)
 	}
 	row := tx.QueryRow(ctx, `insert into assets (
 			id, account_id, owner_user_id, kind, original_filename,
@@ -275,7 +275,7 @@ func deleteAsset(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
 func upsertVariant(ctx context.Context, tx pgx.Tx, v domain.AssetVariant) (*domain.AssetVariant, error) {
 	metadata, err := json.Marshal(orEmpty(v.Metadata))
 	if err != nil {
-		return nil, fmt.Errorf("upsertVariant: marshalling metadata: %w", err)
+		return nil, fmt.Errorf("upsertVariant: marshaling metadata: %w", err)
 	}
 	row := tx.QueryRow(ctx, `insert into asset_variants (
 			id, asset_id, account_id, kind, content_type, byte_size,
@@ -367,7 +367,7 @@ func (r *assetRow) dest() []any {
 }
 
 // scanAsset turns one row into a domain asset, and is where a value the SCHEMA
-// allowed and the CODE does not recognise is caught.
+// allowed and the CODE does not recognize is caught.
 //
 // `pgx.ErrNoRows` is passed through UNWRAPPED so the caller's `errors.Is` reaches
 // it; every other error names the column it was decoding. The kind check is the

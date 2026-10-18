@@ -100,13 +100,6 @@ type S3Config struct {
 	Timeout time.Duration
 }
 
-// connectTimeout bounds the SDK's own client.
-//
-// The SDK's default is one second, sized for a Lambda invocation rather than for
-// a long-lived service on a slow link, where one second gives up on a perfectly
-// healthy bucket and turns it into a 503 a client is told to retry.
-const connectTimeout = 10 * time.Second
-
 // New builds an S3 store.
 //
 // Credentials come from the AWS SDK's own chain — environment, profile, IMDS,
@@ -262,7 +255,7 @@ func (s *S3) Head(ctx context.Context, key string) (ObjectMeta, error) {
 	if err != nil {
 		return ObjectMeta{}, mapS3Error("head", err)
 	}
-	byteSize := int64(aws.ToInt64(out.ContentLength))
+	byteSize := aws.ToInt64(out.ContentLength)
 	contentType := aws.ToString(out.ContentType)
 	if contentType == "" {
 		contentType = "application/octet-stream"

@@ -68,7 +68,7 @@ import (
 	"github.com/cafaye/darkroom/migrations"
 )
 
-// migrateMu serialises the migration step across the tests in one binary.
+// migrateMu serializes the migration step across the tests in one binary.
 //
 // MEASURED, NOT ASSUMED. The first version of this harness applied the migration
 // set concurrently and six tests failed with:
@@ -82,12 +82,12 @@ import (
 // schemas are genuinely independent — `protect_table` takes a `regclass` and
 // `regclass` resolution follows `search_path`, so each test really does protect
 // its own `assets` — but the GRANT names a cluster-wide object that no schema can
-// privatise.
+// privatize.
 //
-// So the MIGRATION is serialised and the TESTS are not. Everything a test
+// So the MIGRATION is serialized and the TESTS are not. Everything a test
 // actually does — connecting, seeding, querying, asserting, dropping — runs
 // concurrently on its own connection, and this lock is held for a few milliseconds
-// per test. Serialising the queries as well would defeat the property this harness
+// per test. Serializing the queries as well would defeat the property this harness
 // exists to provide, and `REPORT-darkroom-hermetic-db-01.md` measured the same
 // thing on the Rust side: "six parallel runs before that change went red every
 // time, three after it went green".
@@ -199,8 +199,8 @@ func New(t *testing.T) *Test {
 //
 // `New` calls `t.Skip`, and `t.Skip` — like `t.Fatal` — calls `runtime.Goexit`
 // rather than returning. Inside a goroutine that ends the goroutine at the skip,
-// which is the right behaviour and is what `New` was written for. It is the wrong
-// behaviour for a test that spawns its own goroutines and joins them with a
+// which is the right behavior and is what `New` was written for. It is the wrong
+// behavior for a test that spawns its own goroutines and joins them with a
 // `WaitGroup`, and the bug is worth recording because the failure looks like
 // something else entirely:
 //
@@ -266,8 +266,8 @@ func newIn(t *testing.T, base string) *Test {
 	}
 	// A POSTGRES ADVISORY LOCK, and `migrateMu` above is not enough on its own.
 	//
-	// `migrateMu` is a process-local mutex, so it serialises the tests in ONE
-	// `go test` binary. It does not serialise `go test ./...`, which builds and
+	// `migrateMu` is a process-local mutex, so it serializes the tests in ONE
+	// `go test` binary. It does not serialize `go test ./...`, which builds and
 	// runs several packages as separate processes: `internal/service` and
 	// `internal/httpapi` each open their own schemas and apply 0004 at the same
 	// time, and 0004 is full of `create or replace function cafaye.*`. Those are
@@ -491,7 +491,7 @@ func droppable(schema string) bool {
 	}
 	for i := 0; i < len(suffix); i++ {
 		c := suffix[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}

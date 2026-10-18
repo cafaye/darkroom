@@ -32,7 +32,7 @@ package httpapi
 // pass against any order whatsoever, and it would pass against the alphabetical
 // order that is the failure this exists to catch. `json.Decoder.Token` streams
 // tokens in the order the bytes carry them, which is the only reading of a
-// marshalled object that keeps the answer.
+// marshaled object that keeps the answer.
 //
 // # AND WHY EVERY CASE GOES THROUGH THE WRITER
 //
@@ -60,6 +60,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -373,7 +374,7 @@ func TestTheProblemBodyIsInTheDocumentOrder(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			request := httptest.NewRequest(http.MethodGet, "/v1/assets", nil)
+			request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/assets", nil)
 
 			if row.status == http.StatusRequestEntityTooLarge {
 				writeStatus(recorder, request, row.status, row.err)
@@ -401,7 +402,7 @@ func TestTheProblemBodyIsInTheDocumentOrder(t *testing.T) {
 			if !slices.Equal(got, row.wantKeys) {
 				t.Errorf("the body's keys are in the wrong order.\n\n got:  %v\n want: %v\n\n"+
 					"the document declares components.schemas.Problem in %v, so a body in any "+
-					"other order means something is marshalling a struct whose field order is "+
+					"other order means something is marshaling a struct whose field order is "+
 					"not the document's — which is what a GENERATED struct gives you, because "+
 					"oapi-codegen writes fields alphabetically.\n\nbody: %s",
 					got, row.wantKeys, schema.properties, recorder.Body.Bytes())

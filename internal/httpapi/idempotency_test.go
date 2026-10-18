@@ -16,7 +16,7 @@ package httpapi_test
 //
 // # WHY THE REPLAY COMPARISON IS SEMANTIC AND NOT BYTE
 //
-// `idempotency_keys.response_body` is `jsonb`, so Postgres re-serialises what was
+// `idempotency_keys.response_body` is `jsonb`, so Postgres re-serializes what was
 // stored: `{"a":1}` comes back as `{"a": 1}`, and object keys come back in jsonb's
 // own order rather than the order `json.Marshal` wrote them. `internal/service`'s
 // own ledger test found this the same way and says so at the call site. So this
@@ -262,7 +262,7 @@ func TestAKeyedUploadIsRecordedAndItsReplayReturnsTheOriginal(t *testing.T) {
 	}
 	// Byte-identical to what the LEDGER holds, which is the exact half. See the
 	// file header for why this is not a byte comparison against the first response:
-	// `response_body` is `jsonb` and Postgres re-serialises it.
+	// `response_body` is `jsonb` and Postgres re-serializes it.
 	if len(pg.rows(t)) != 1 {
 		t.Errorf("the replay added a second ledger row; a replay must not reserve again")
 	}
@@ -569,7 +569,7 @@ func TestAnOversizedBodyIsStill413ThroughTheIdempotencyLedger(t *testing.T) {
 	oversized.Header.Set("Idempotency-Key", "key-7")
 	encoded, err := json.Marshal(padded)
 	if err != nil {
-		t.Fatalf("marshalling the oversized body: %v", err)
+		t.Fatalf("marshaling the oversized body: %v", err)
 	}
 	if int64(len(encoded)) <= httpapi.MaxBodyBytes {
 		t.Fatalf("the oversized body is %d bytes, which is not over the %d limit — this test would prove nothing", len(encoded), httpapi.MaxBodyBytes)

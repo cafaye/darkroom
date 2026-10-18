@@ -92,7 +92,7 @@ func (k Key) String() string { return k.raw }
 // randomLeaf is 16 random bytes as 32 hex characters.
 //
 // crypto/rand rather than math/rand, and not negotiable: math/rand is not a
-// CSPRNG and this value is the guessability defence for a presigned PUT's target
+// CSPRNG and this value is the guessability defense for a presigned PUT's target
 // key.
 func randomLeaf() string {
 	b := make([]byte, leafBytes)

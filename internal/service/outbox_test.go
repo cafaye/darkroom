@@ -148,7 +148,7 @@ func TestAReservationIsTakenOnceAndThenReplayed(t *testing.T) {
 	//
 	// THE BODY IS COMPARED SEMANTICALLY, and the reason is worth stating because the
 	// first draft of this compared the bytes and failed: `response_body` is `jsonb`,
-	// so Postgres re-serialises `{"id":"ast_1"}` as `{"id": "ast_1"}`. Semantic
+	// so Postgres re-serializes `{"id":"ast_1"}` as `{"id": "ast_1"}`. Semantic
 	// equality is the property the replay contract actually needs — every field name
 	// and every value survive — and the normalisation is Postgres's, not this
 	// repository's.
@@ -268,7 +268,7 @@ func splitDots(s string) []string { return strings.Split(s, ".") }
 
 // sameJSON reports whether two bodies are the same JSON value, whatever the
 // whitespace. Used for the replay comparison, with the reason written at the call
-// site: `response_body` is `jsonb` and Postgres re-serialises it.
+// site: `response_body` is `jsonb` and Postgres re-serializes it.
 func sameJSON(t *testing.T, a []byte, b string) bool {
 	t.Helper()
 	var left, right any

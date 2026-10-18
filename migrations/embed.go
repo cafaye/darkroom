@@ -103,7 +103,7 @@ func All() ([]File, error) {
 
 // Execer is the one method `Apply` needs from a connection.
 //
-// Narrow on purpose, and not for testability theatre: it is what lets the harness
+// Narrow on purpose, and not for testability theater: it is what lets the harness
 // hand `Apply` a connection whose `search_path` is a per-test schema, and it is
 // what stops this package from acquiring a pool of its own and deciding the
 // search_path itself. `*pgx.Conn` and `pgx.Tx` both satisfy it, which is what lets

@@ -23,7 +23,7 @@
 // # WHY `OrderDesc` IS THE ZERO VALUE
 //
 // `ListQuery{}` must mean the document's default, so `desc` — the default the
-// document declares and the behaviour every existing caller gets — is `iota`'s
+// document declares and the behavior every existing caller gets — is `iota`'s
 // zero. A `ListQuery` built by a caller who never heard of this field is
 // therefore newest-first, which is what omitting `order` does.
 package service

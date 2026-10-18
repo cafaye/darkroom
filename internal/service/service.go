@@ -359,6 +359,8 @@ func (s *Service) CompleteUpload(ctx context.Context, caller Caller, assetID, cl
 		return asset, nil
 	case domain.StatusFailed:
 		return nil, problem.Conflict("this upload has already failed and cannot be completed")
+	case domain.StatusPending:
+		// The expected state: proceed with verification below.
 	}
 
 	// --- 1. does the object exist? ---------------------------------------
@@ -397,7 +399,6 @@ func (s *Service) CompleteUpload(ctx context.Context, caller Caller, assetID, cl
 	actual := checksum.SHA256Hex(bytes)
 	// The buffer is dead the moment it is hashed. A 1 GiB upload would otherwise
 	// sit in this process's heap until the response is written.
-	bytes = nil
 
 	if !checksum.Match(claimedChecksum, actual) {
 		// The bytes in storage are not the bytes the client said it would upload:

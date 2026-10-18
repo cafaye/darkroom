@@ -13,7 +13,7 @@ package api
 // # The document is this repository's own, and it does not change in packet 05
 //
 // `openapi/v1.yaml` is the contract `cafaye.yml`'s `exposes.api` points at, and
-// the packet's rule is that it is the contract, not an artefact of this packet.
+// the packet's rule is that it is the contract, not an artifact of this packet.
 // There is no vendored copy and no provenance file: the generated code and the
 // document sit in the same commit, so the only way they can disagree is a
 // regeneration that was not committed.
@@ -28,7 +28,7 @@ package api
 // The second `//go:generate` line below runs `internal/api/stripbaseurl`, which
 // removes the `options.BaseURL+` token from the route registrations. darkroom
 // serves at `/` and nowhere else — the document declares no `servers:` block —
-// so `options.BaseURL` is `/` and the rewrite changes no behaviour. It is here
+// so `options.BaseURL` is `/` and the rewrite changes no behavior. It is here
 // because core's `account-scope-check` requires a `/`-prefixed string literal as
 // the first term after `(` and concatenation is invisible to it: without this
 // step `route_defs` is 0 over a surface it saw none of, and 0 over nothing

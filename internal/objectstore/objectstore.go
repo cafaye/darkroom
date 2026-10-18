@@ -165,7 +165,7 @@ var (
 	ErrTooLarge = errors.New("object is larger than the presigned scope allows")
 
 	// ErrUnavailable means the backend is not answering. 503, never 500: the
-	// request is fine and retrying it later is the correct client behaviour.
+	// request is fine and retrying it later is the correct client behavior.
 	ErrUnavailable = errors.New("object storage unavailable")
 )
 
@@ -210,7 +210,7 @@ func unavailable(op string, cause error) *Error {
 }
 
 func other(op string, cause error) *Error {
-	return &Error{Op: op, Err: fmt.Errorf("%w: %v", errOther, cause), Detail: cause.Error()}
+	return &Error{Op: op, Err: fmt.Errorf("%w: %w", errOther, cause), Detail: cause.Error()}
 }
 
 // errOther is the inner sentinel for "anything else": 500 with a fixed detail,
@@ -230,7 +230,7 @@ var errOther = errors.New("object store error")
 // a Go fleet does with anything that can block on IO, and every one of these
 // can.
 type Store interface {
-	// PresignPut mints a URL that authorises a PUT of at most maxBytes to key,
+	// PresignPut mints a URL that authorizes a PUT of at most maxBytes to key,
 	// for contentType, expiring in ttl.
 	//
 	// The scope is BOTH halves of that sentence: exactly one key, and a byte

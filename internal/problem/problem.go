@@ -249,7 +249,7 @@ func (e *Error) Problem(instance, traceID string) Problem {
 //   - A unique violation is a [Error] with no status of its own: it is the
 //     DUPLICATE-UPLOAD signal the service resolves on purpose, and a generic
 //     mapping would turn it into a 500 at the one place that is written to handle
-//     it. [IsUniqueViolation] is how the service recognises it.
+//     it. [IsUniqueViolation] is how the service recognizes it.
 //   - Everything else is 500 with a FIXED detail, or 503 for the codes that mean
 //     "this connection cannot do anything right now". The cause goes to the log
 //     under the trace id and nowhere else.

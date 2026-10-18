@@ -220,7 +220,7 @@ func (v *Verifier) Authenticate(ctx context.Context, token string) (*Principal, 
 // verifySignature is the compact-JWS check for one of the two accepted algorithms.
 //
 // The algorithm is taken from the token's OWN header, which is why the accepted
-// set is a closed switch rather than a table: a verifier that honoured whatever
+// set is a closed switch rather than a table: a verifier that honored whatever
 // `alg` said is the thing this whole package exists to refuse.
 func verifySignature(key *publicKey, alg, token string) error {
 	parts := strings.Split(token, ".")
@@ -237,8 +237,8 @@ func verifySignature(key *publicKey, alg, token string) error {
 	switch {
 	case alg == algRS256 && key.rsa != nil:
 		// RFC 7518 §3.3: RS256 is `RSASSA-PKCS1-v1_5` over `SHA-256`. PKCS#1 v1.5
-		// and not PSS, because the algorithm is named in the header and honouring
-		// PSS would honour the claim this file exists to refuse.
+		// and not PSS, because the algorithm is named in the header and honoring
+		// PSS would honor the claim this file exists to refuse.
 		// `rsa.VerifyPKCS1v15` is what checks this, and `rsa.PublicKey.Size` is
 		// derived from `N` by the standard library on first use — setting it by
 		// hand would produce a verification that fails rather than one that passes.

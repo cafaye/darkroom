@@ -1,6 +1,6 @@
 package httpapi_test
 
-// The HTTP surface's behaviour: what each of the nine operations answers, and the
+// The HTTP surface's behavior: what each of the nine operations answers, and the
 // four refusals the packet names — 401, 403, cross-tenant 404, and an unrouted path.
 //
 // # EVERY TEST HERE DRIVES THE ROUTER AS A FUNCTION CALL
@@ -18,13 +18,14 @@ package httpapi_test
 // request with `auth.WithPrincipal`, which is the only exported way to do that
 // safely (its key is a package-private type). Everything up to the gate is exercised
 // for real. Past the gate the service needs a database, and a database is the
-// database tier's job: `AGENTS.md` puts `tests/query_scoping.rs`'s behavioural half
+// database tier's job: `AGENTS.md` puts `tests/query_scoping.rs`'s behavioral half
 // in the `--db` tier for the same reason. What IS asserted here is the part this
 // packet owns — the status, the code, the JSON shape, and the tenant scoping that
 // happens before any query.
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -77,13 +78,13 @@ type problem struct {
 func request(method, path string, body any) *http.Request {
 	var r *http.Request
 	if body == nil {
-		r = httptest.NewRequest(method, path, nil)
+		r = httptest.NewRequestWithContext(context.Background(), method, path, nil)
 	} else {
 		encoded, err := json.Marshal(body)
 		if err != nil {
 			panic(err)
 		}
-		r = httptest.NewRequest(method, path, bytes.NewReader(encoded))
+		r = httptest.NewRequestWithContext(context.Background(), method, path, bytes.NewReader(encoded))
 		r.Header.Set("Content-Type", "application/json")
 	}
 	return r
@@ -168,11 +169,11 @@ func (id *identity) mint(t *testing.T, overrides map[string]any) string {
 
 	header, err := json.Marshal(map[string]any{"alg": "RS256", "typ": "JWT", "kid": id.kid})
 	if err != nil {
-		t.Fatalf("marshalling a header: %v", err)
+		t.Fatalf("marshaling a header: %v", err)
 	}
 	claims, err := json.Marshal(body)
 	if err != nil {
-		t.Fatalf("marshalling claims: %v", err)
+		t.Fatalf("marshaling claims: %v", err)
 	}
 	signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(claims)
 

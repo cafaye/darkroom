@@ -44,7 +44,7 @@
 // `image.Decode` has been registered with; the standard library exposes
 // `image.RegisterFormat` and no reader for the registry.
 //
-// So the guard is behavioural rather than declarative: `TestEveryAcceptedInputFormatDecodes`
+// So the guard is behavioral rather than declarative: `TestEveryAcceptedInputFormatDecodes`
 // carries a real file of each accepted format and asserts each one decodes. Drop
 // an import and that test goes red on the one format it dropped. A variable
 // listing four format names, asserted against nothing, would have reported green
@@ -94,9 +94,10 @@ import (
 	// decodes to its first frame, which is what the Rust decoder also produced —
 	// `image::DynamicImage` holds one frame and the `image` crate's GIF decoder
 	// gives it the first — so the two agree without either being told to.
-	_ "golang.org/x/image/webp"
 	_ "image/gif"
 	_ "image/png"
+
+	_ "golang.org/x/image/webp"
 )
 
 // JPEGQuality is the quality every variant is encoded at. 82 is the point where
@@ -104,7 +105,7 @@ import (
 // source and roughly a quarter of the bytes of a PNG of the same pixels.
 //
 // Asserted in the tests against the ACTUAL OUTPUT — by re-encoding at this
-// quality and at its neighbours and requiring the pipeline's bytes to match one
+// quality and at its neighbors and requiring the pipeline's bytes to match one
 // and differ from the others — so a change to this number has to be deliberate
 // rather than a stray keystroke in a rebuild. The literal 82 appears in that
 // table as itself and NOT as `JPEGQuality`, because a table built out of the
@@ -171,12 +172,12 @@ func Encode(original []byte, kind VariantKind, declaredContentType string) (*Enc
 	// Two reasons, both about `Pix` rather than about `At`, because this file
 	// deliberately never reads a pixel through `color.Color.RGBA()`:
 	//
-	//  1. NRGBA STORES COLOUR AND ALPHA INDEPENDENTLY, which is the only space the
+	//  1. NRGBA STORES COLOR AND ALPHA INDEPENDENTLY, which is the only space the
 	//     matte below means anything in. `out = c*a + 255*(1-a)` says "how much of
-	//     this pixel's own colour survives"; against `image.RGBA`, whose Pix is
+	//     this pixel's own color survives"; against `image.RGBA`, whose Pix is
 	//     premultiplied, `c` is already `c*a` and the formula would apply alpha
 	//     twice and matte every partially transparent pixel to twice as much white.
-	//     Go's PNG decoder hands back `*image.NRGBA` for a truecolour image WITH
+	//     Go's PNG decoder hands back `*image.NRGBA` for a truecolor image WITH
 	//     alpha and `*image.RGBA` for one without, JPEG hands back `*image.YCbCr`
 	//     and GIF `*image.Paletted`, so three of the four accepted formats need
 	//     this and the fourth gets it for free.
@@ -191,7 +192,7 @@ func Encode(original []byte, kind VariantKind, declaredContentType string) (*Enc
 	img := source
 	maxEdge := kind.MaxEdge()
 	// `noMaxEdge` for `web` makes this comparison always false, so `web` never
-	// enters the branch. That is the whole of `web`'s resize behaviour and it is
+	// enters the branch. That is the whole of `web`'s resize behavior and it is
 	// expressed by the constant rather than by a special case on the kind.
 	//
 	// Compared as `uint32` because `noMaxEdge` does not fit in an `int` on a
@@ -342,9 +343,9 @@ func normalise(src image.Image) *image.NRGBA {
 // The resample happens in PREMULTIPLIED space, which is the right space for it
 // and not an accident: `x/image/draw` reads `src.At().RGBA()` and writes through
 // `color.NRGBAModel`, so an NRGBA source is premultiplied on the way in and
-// un-premultiplied on the way out. Interpolating the non-premultiplied colour
+// un-premultiplied on the way out. Interpolating the non-premultiplied color
 // across a transparent edge instead would drag the transparent pixel's hue into
-// its opaque neighbour — a halo, and a visible one at the edge of every cut-out
+// its opaque neighbor — a halo, and a visible one at the edge of every cut-out
 // logo a customer uploads.
 //
 // `draw.Src` rather than `draw.Over`. On THIS destination the two are
@@ -408,7 +409,7 @@ func matteOverWhite(channel, alpha uint8) uint8 {
 //     wanted — see the resize in `Encode`.
 //
 // `TestTheJpegEncoderReadsRawChannelsNotPremultipliedOnes` holds the measurement
-// as a test, because a standard-library behaviour this package's correctness
+// as a test, because a standard-library behavior this package's correctness
 // leans on is a thing that can change underneath it, and a comment is not a
 // canary.
 

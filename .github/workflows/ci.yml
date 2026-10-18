@@ -232,6 +232,11 @@ jobs:
           CREATE ROLE darkroom_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION
             PASSWORD 'darkroom';
           GRANT darkroom_app TO darkroom;
+          -- The owner must NOT be a superuser: superusers bypass FORCE ROW LEVEL
+          -- SECURITY, which is the property the tenancy tier exists to prove.
+          -- The service container creates POSTGRES_USER as a superuser, so
+          -- demote it here. NOSUPERUSER keeps CREATE on its own database.
+          ALTER ROLE darkroom NOSUPERUSER NOBYPASSRLS;
           SQL
           echo "roles now in darkroom_test:"
           docker exec "$pg" psql -U darkroom -d darkroom_test -Atc \

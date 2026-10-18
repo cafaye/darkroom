@@ -34,7 +34,7 @@ var ErrNotInBatch = errors.New("event is not in this batch")
 //     `select … limit n` from N replicas hands the same n rows to every one of
 //     them, and every one of them publishes. `skip locked` makes the second
 //     replica walk past rows the first has locked. A bare `for update` is worse
-//     than no lock here: the replicas SERIALISE on the head-of-queue rows
+//     than no lock here: the replicas SERIALIZE on the head-of-queue rows
 //     instead of skipping them, so correctness improves and throughput
 //     collapses.
 //   - It names ONE table. See [Store.Claim] for why that is the tenant axis and
@@ -243,7 +243,7 @@ func (b *pgBatch) Commit(ctx context.Context) error {
 
 // Release rolls the claim back so the events are available again.
 //
-// It runs against a fresh context when the caller's is already cancelled — which
+// It runs against a fresh context when the caller's is already canceled — which
 // is exactly when a publisher is shutting down — because a rollback issued on a
 // dead context would fail and leave the connection until the pool reaped it. If
 // even that fails the transaction is discarded, which is still the outcome

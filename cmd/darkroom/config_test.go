@@ -297,7 +297,7 @@ func TestTheEnvironmentIsReadAndNothingElseIsReadFromIt(t *testing.T) {
 	// manifest, so a test asserts it is inert rather than trusting the comment.
 	cfg, err = loadConfig(with("DARKROOM_DB_MAX_CONNECTIONS", "10"))
 	if err != nil {
-		t.Fatalf("an unrecognised variable was treated as a refusal: %v", err)
+		t.Fatalf("an unrecognized variable was treated as a refusal: %v", err)
 	}
 	if cfg == (Config{}) {
 		t.Error("loadConfig returned nothing at all")

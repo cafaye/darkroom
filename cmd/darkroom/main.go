@@ -21,7 +21,7 @@
 // readiness probe, which is a deployable state, rather than a crash loop."
 //
 // `darkroomdb.Open` DOES ping — `pool.Ping` before it returns — so this process
-// refuses to start against an unreachable database, which is the behaviour change
+// refuses to start against an unreachable database, which is the behavior change
 // and it is upstream's, made in packet 01 and tested there. `ping` in a comment
 // here would be a second opinion; the call is one line and it is that call.
 //
@@ -48,7 +48,7 @@
 // surface this packet did not ask for. `auth.New` is the only verifier, the dev
 // path is GONE rather than dormant, and `DARKROOM_ENV` is read only to be logged.
 // A development deployment therefore needs a real JWKS endpoint, which is a
-// behaviour change from the Rust binary and is recorded in the commit that lands
+// behavior change from the Rust binary and is recorded in the commit that lands
 // it.
 package main
 
@@ -287,7 +287,7 @@ func buildOutboxPublisher(config Config, logger *slog.Logger) (*outbox.NATSPubli
 // buildObjectStore mounts the configured store.
 //
 // The in-memory branch warns LOUDLY and names itself in the startup log, which is
-// `src/main.rs`'s behaviour and its reason: an operator who discovers the void by
+// `src/main.rs`'s behavior and its reason: an operator who discovers the void by
 // uploading into it has learned something the log already said.
 func buildObjectStore(ctx context.Context, config Config, logger *slog.Logger) (objectstore.Store, error) {
 	switch config.ObjectStore {

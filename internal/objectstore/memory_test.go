@@ -77,7 +77,7 @@ func TestAssetAsPresignedURLCannotWriteAtAssetBsKey(t *testing.T) {
 
 // THE THREE AXES OF SCOPE, and each is load-bearing, so each is its own case
 // rather than one assertion with three clauses. The first half is what a
-// presigned PUT authorises; the second half is what it must not.
+// presigned PUT authorizes; the second half is what it must not.
 func TestAPresignedPutIsScopedToOneKeyOneContentTypeAndOneLength(t *testing.T) {
 	s := objectstore.NewMemory()
 
@@ -131,7 +131,7 @@ func TestAPresignedPutIsScopedToOneKeyOneContentTypeAndOneLength(t *testing.T) {
 	})
 
 	t.Run("the wrong content type is refused", func(t *testing.T) {
-		// A URL signed for image/png must not authorise storing an HTML document
+		// A URL signed for image/png must not authorize storing an HTML document
 		// at that key. Same bytes, same length, different type.
 		err := s.ApplyPresignedPut(ctx, put.URL, bytes.Repeat([]byte{3}, 512), "text/html")
 		if err == nil {
@@ -194,10 +194,10 @@ func TestATamperedURLIsRefused(t *testing.T) {
 	})
 
 	t.Run("an unknown query parameter", func(t *testing.T) {
-		// Strict on purpose: a fake that ignores what it does not recognise would
+		// Strict on purpose: a fake that ignores what it does not recognize would
 		// accept a URL carrying a parameter it never agreed to.
 		if err := s.ApplyPresignedPut(ctx, put.URL+"&x-darkroom-anything=1", body, "image/png"); err == nil {
-			t.Fatal("a URL with an unrecognised query parameter was accepted")
+			t.Fatal("a URL with an unrecognized query parameter was accepted")
 		}
 	})
 

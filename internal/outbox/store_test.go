@@ -56,7 +56,7 @@ func TestTheClaimQueryCarriesAllFourDocumentedProperties(t *testing.T) {
 		// events for one asset can sit in created_at order differently from the
 		// order the state changed in.
 		{"the ordering", "order by created_at", "a consumer building a thumbnail and one deleting the asset must not see them reordered"},
-		// What lets N replicas run at once. A bare `for update` SERIALISES them on
+		// What lets N replicas run at once. A bare `for update` SERIALIZES them on
 		// the head of the table, which is worse than no lock.
 		{"the multi-replica lock", "for update skip locked", "a plain select hands the same rows to every replica and every one of them publishes"},
 		// The bound, or a claim would take the whole table and hold it.

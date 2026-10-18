@@ -120,7 +120,7 @@ func NewNATSPublisher(rawURL string) (*NATSPublisher, error) {
 	// client's own parser is lenient enough that some malformed inputs were
 	// accepted (and then retried forever under RetryOnFailedConnect), which
 	// made this check environment-dependent. Parsing here is deterministic and
-	// does not depend on DNS or on the client's retry behaviour.
+	// does not depend on DNS or on the client's retry behavior.
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed == nil || parsed.Scheme == "" || parsed.Host == "" {
 		return nil, fmt.Errorf("outbox: %q is not a broker URL: %w", rawURL, err)
@@ -149,11 +149,11 @@ func NewNATSPublisher(rawURL string) (*NATSPublisher, error) {
 // wait is bounded by DefaultPublishTimeout: a publish that is not acknowledged
 // within the budget is a failure, not a wait — the error is what the loop
 // records and what leaves the row claimable for the next pass, and the row is
-// never marked published on this path. A cancelled context (a shutdown) aborts
+// never marked published on this path. A canceled context (a shutdown) aborts
 // an in-flight publish the same way, because the budget is derived from the
 // caller's context.
 //
-// THE PAYLOAD IS VALIDATED BEFORE IT IS MARSHALLED, and the check is not
+// THE PAYLOAD IS VALIDATED BEFORE IT IS MARSHALED, and the check is not
 // ceremony. This is the last point at which anything darkroom owns sees the
 // bytes: after this call the envelope is on a bus every service on the platform
 // subscribes to, and a presigned URL, a bucket key or a tenant id that reached
@@ -166,7 +166,7 @@ func (p *NATSPublisher) Publish(ctx context.Context, e Envelope) error {
 
 	payload, err := json.Marshal(e)
 	if err != nil {
-		return fmt.Errorf("outbox: marshalling the envelope: %w", err)
+		return fmt.Errorf("outbox: marshaling the envelope: %w", err)
 	}
 
 	// The budget is applied here, inside Publish, so every caller is protected

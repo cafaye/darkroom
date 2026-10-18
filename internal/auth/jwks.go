@@ -62,7 +62,7 @@ const JWKSPath = "/.well-known/jwks.json"
 // only reader of that. Core: "Accepted algorithms: RS256 and ES256. `alg: none`,
 // symmetric algorithms, and any algorithm the key does not advertise are rejected
 // outright" — and `alg` on the KEY is not consulted for that, because an
-// asymmetric key is the thing that makes `alg: HS256` impossible to honour.
+// asymmetric key is the thing that makes `alg: HS256` impossible to honor.
 type jwk struct {
 	Kty string `json:"kty"`
 	Kid string `json:"kid"`
@@ -308,11 +308,11 @@ func ecKeyOf(key jwk) (*publicKey, error) {
 		return nil, errors.New("auth: the ec key has no usable y coordinate")
 	}
 
-	pub := &ecdsa.PublicKey{Curve: p256(), X: bigFromBytes(x), Y: bigFromBytes(y)}
-	// `IsOnCurve` rather than trusting the coordinates: a point off the curve makes
-	// `ecdsa.VerifyASN1` return false for reasons that are indistinguishable from a
-	// bad signature, and a key we cannot place is a key we should have refused.
-	if !pub.Curve.IsOnCurve(pub.X, pub.Y) {
+	// `ParseUncompressedPublicKey` does the on-curve check that the deprecated
+	// `IsOnCurve` did, and is the supported path on Go 1.25+.
+	point := append([]byte{0x04}, append(x, y...)...)
+	pub, err := ecdsa.ParseUncompressedPublicKey(p256(), point)
+	if err != nil {
 		return nil, errors.New("auth: the ec point is not on P-256")
 	}
 	return &publicKey{ec: pub}, nil
