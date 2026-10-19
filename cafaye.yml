@@ -92,7 +92,7 @@ env:
 repository:
   url: git@github.com:cafaye/darkroom.git
   defaultBranch: master
-  visibility: public
+  visibility: private
 
 owner:
   team: darkroom
