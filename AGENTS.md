@@ -327,7 +327,7 @@ lucky configuration.** Every `test_store()` call creates a schema named
 test's tables and cannot reach another's. `--test-threads=1` was here because the
 suites shared one set of tables, and the schemas are why it is gone — six
 parallel runs before that change went red every time, three after it went green,
-with the counts in `REPORT-darkroom-hermetic-db-01.md`.
+with the counts in `REPORT-darkroom-hermetic-db-01`.
 `pgtest_test.go` holds the property, and splits it so the half that needs no
 database runs on a bare machine: a name that can only be twelve characters from a
 fixed alphabet, and a `drop schema` that can only fire on a schema this harness

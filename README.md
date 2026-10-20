@@ -277,7 +277,7 @@ a row" predicate that `account_id = $2` satisfied because `id = $` is a substrin
 of it, and a set comparison that asserted an accident of file layout. Those three
 are why `sql_statements` was made linear and why
 `naming_a_row_is_anchored_to_a_whole_identifier` existed at all, and they are in
-`REPORT-darkroom-09-isolation.md`.)* The Go equivalents took the lesson rather
+`REPORT-darkroom-09-isolation`.)* The Go equivalents took the lesson rather
 than the code: the structural scan is `TestEveryHelperCallInAPolicyIsWrapped`,
 the predicate it uses is `isWrappedAt`, and `TestIsWrappedAt` is the table that
 had to be written before the predicate was believed — its first version trimmed
@@ -287,7 +287,7 @@ The habit to copy: **plant a divergence, watch the guard go red, and treat
 a guard that hangs or passes on broken source as a finding about the guard.**
 
 The full enumeration, the counts per operation kind, and the five tripwires proven
-able to fire are in `REPORT-darkroom-09-isolation.md`.
+able to fire are in `REPORT-darkroom-09-isolation`.
 
 Three things to know before running the database tier on a busy machine, all of
 which present as code defects and are not:
@@ -945,7 +945,7 @@ it, and split it so the half that
 needs no Postgres runs on a bare machine: the name's alphabet, the check on the
 two statements that interpolate one, and the stamp a `drop schema` is only
 allowed to act on. The counts and the proofs are in
-`REPORT-darkroom-hermetic-db-01.md`.
+`REPORT-darkroom-hermetic-db-01`.
 
 ### `openapi/v1.yaml` and the router, held to each other
 

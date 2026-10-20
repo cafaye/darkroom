@@ -168,7 +168,7 @@ and only `info.version` moves otherwise
 - **The `(select …)` wrapping has a behavioural count.**
   `packet/w41-darkroom-policyprobes-01`.
 
-  `REPORT-darkroom-stale-docs-01.md` closed with two findings it deliberately did
+  `REPORT-darkroom-stale-docs-01` closed with two findings it deliberately did
   not fix, because both needed a real test rather than a comment: "Neither is
   drift; both are absences." This is the first.
 

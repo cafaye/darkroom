@@ -33,7 +33,7 @@
 //     statement, with no table list to keep in step with migrations/.
 //
 // This is the same mechanism the Rust harness in `tests/schema_isolation.rs`
-// built and `REPORT-darkroom-hermetic-db-01.md` measured, and it is the reason
+// built and `REPORT-darkroom-hermetic-db-01` measured, and it is the reason
 // `--test-threads=1` is not in `bin/prime`: the schemas are why the suites can run
 // in parallel, and removing the flag did not make them safe, it made them provably
 // safe.
@@ -88,7 +88,7 @@ import (
 // actually does — connecting, seeding, querying, asserting, dropping — runs
 // concurrently on its own connection, and this lock is held for a few milliseconds
 // per test. Serializing the queries as well would defeat the property this harness
-// exists to provide, and `REPORT-darkroom-hermetic-db-01.md` measured the same
+// exists to provide, and `REPORT-darkroom-hermetic-db-01` measured the same
 // thing on the Rust side: "six parallel runs before that change went red every
 // time, three after it went green".
 //

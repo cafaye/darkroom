@@ -21,7 +21,7 @@
 // token left in place darkroom's only decrease-detector cannot be set above
 // zero — which is where pantry's sits, with a DECISION NEEDED attached.
 //
-// `REPORT-pantry-account-scope-01.md` §3 records the other half of this: on
+// `REPORT-pantry-account-scope-01` §3 records the other half of this: on
 // pantry, deleting the token from four lines took the run from 1 failure and 5
 // warnings to 0 and 1, because `route_defs` went from 0 to 6 and every
 // declaration in that file became matchable. This command does it for the whole
