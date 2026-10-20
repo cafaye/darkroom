@@ -1,13 +1,29 @@
+# THIS FILE IS NOT A GITHUB ACTIONS WORKFLOW ANY MORE, AND NOTHING RUNS IT.
+#
+# The fleet's CI runs in dev sandboxes: the same sandbox the work happens in,
+# on the machine the developer chose. This file is the SPECIFICATION those
+# checks read — the steps, the floors, the exemptions — kept where the
+# repository can hold it and read it.
+#
+# What executes is `ci/the pipeline` (named in this repository's `gate.yml`, under
+# `ci.workflow`), and the CI service reads that declaration and runs it.
+#
+# The GitHub Actions spelling is retired, not deleted, because the checks in
+# this repository read this file to hold the specification still: a gate that
+# checks a specification nobody executes is a gate checking a fiction, and a
+# gate that checks nothing is worse. The steps below are the specification
+# the executable CI is measured against, and the day this file stops being
+# that, the checks move with it.
 # kit — the publish path a service runs: one caller, two artifacts.
 #
-# Copy this file to .github/workflows/publish.yml in the service repository,
+# Copy this file to ci/publish.yml in the service repository,
 # verbatim. It is the whole of the service's side of the publish loop: the
 # image `config/deploy.yml` deploys and the chart the Argo CD `Application`
 # pulls, both published by kit's reusable workflows on every push to master.
 #
 # THE TWO ARTIFACTS, AND WHY ONE CALLER. The image is built and pushed by
-# `cafaye/kit/.github/workflows/image.reusable.yml`; the chart is packaged
-# and pushed by `cafaye/kit/.github/workflows/chart.reusable.yml`. Both are
+# `cafaye/kit/ci/image.reusable.yml`; the chart is packaged
+# and pushed by `cafaye/kit/ci/chart.reusable.yml`. Both are
 # called here, each opted in by the single `push` input below, so the
 # decision "what does a push publish" is made once, in kit, rather than in
 # every service repository. A service that ships a chart and no image
@@ -56,6 +72,6 @@ concurrency:
 
 jobs:
   publish:
-    uses: cafaye/kit/.github/workflows/publish.reusable.yml@master
+    uses: cafaye/kit/ci/publish.reusable.yml@master
     with:
       push: true

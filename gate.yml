@@ -69,7 +69,7 @@ gate:
     # `--db` run from a fast one.** Run the declared gate without the flag, and
     # two of them are absent — which is `gate.proof-missing`, a failure. That is
     # the drift between this repository's local gate and its CI gate, recorded in
-    # a file instead of living in a comment in `.github/workflows/ci.yml` where
+    # a file instead of living in a comment in `ci/ci.yml` where
     # nobody reads it.
     #
     # Read as one assertion: "the binary built, the tests ran, and the database
@@ -277,7 +277,29 @@ external:
       # in this file introduces one.
 
 ci:
-  workflow: .github/workflows/ci.yml
+  # THE FILE CI RUNS, AND WHY IT IS NOT A WORKFLOW ANY MORE.
+  #
+  # The paragraphs below describe the GitHub Actions workflow this repository
+  # used to have. That workflow is gone: the fleet's CI is no longer GitHub
+  # Actions. The gate runs in a dev sandbox — the same sandbox the work
+  # happens in — and what the runner executes is `ci/pipeline.sh`.
+  #
+  # The pipeline is this repository's own: its gate, its build and its ship,
+  # in one script, in the repository, where a person can run it by hand as
+  # well as a sandbox. The CI runs it with CI_DRY_RUN=1, so a CI run gates
+  # the tree and stops before the ship; the ship is a deliberate act and not
+  # a side effect of a push.
+  #
+  # WHAT FOLLOWS IS KEPT, AND WHY. The notes below were written about the
+  # workflow this repository used to have. The claims they make about the GATE
+  # — which command it is, which flag it carries, which tier is deliberately
+  # not declared here — are still true and are still the reason this block is
+  # what it is. The claims they make about the workflow's shape (its job names,
+  # its `run:` bodies, the line numbers in a file that no longer exists) are
+  # how the workflow was, and the workflow is gone. Nothing here is a
+  # declaration about a file CI runs.
+  #
+  workflow: ci/pipeline.sh
   invokes: [bin/prime, --db]
   # The `gate` job, which is the half of this repository's CI kit cannot own, and
   # the argv CI actually runs at `ci.yml:164` — the same entrypoint with the flag.

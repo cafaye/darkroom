@@ -3,10 +3,10 @@
 #
 # A backend's job is only to provide an environment and call this script; the
 # gate is darkroom's. Which backend ran is recorded in `ci/backend`, and
-# switching is one line — `github-actions` keeps `.github/workflows/ci.yml` as
+# switching is one line — `github-actions` keeps `ci/ci.yml` as
 # the runner (kit's `backends/README.md` is the contract).
 #
-# WHERE EVERY COMMAND COMES FROM: `.github/workflows/ci.yml` IN THIS
+# WHERE EVERY COMMAND COMES FROM: `ci/ci.yml` IN THIS
 # REPOSITORY. That file is the source of truth; when it changes, change this
 # file with it.
 #
@@ -25,7 +25,7 @@
 #      the same three-way proof runs below. (`actions/setup-go` in the
 #      workflow is the toolchain installer, not a helper the gate calls —
 #      read, and replaced here by the `mise install` below.)
-#   3. NO PATH ENTRIES: no step in `.github/workflows/*.yml` appends to
+#   3. NO PATH ENTRIES: no step in `ci/*.yml` appends to
 #      `$GITHUB_PATH`, so `PATHS` below is empty. If a workflow ever gains one,
 #      copy it there in the same order.
 #
@@ -64,7 +64,7 @@ log "pipeline: $REPO_NAME at $REPO_DIR"
 # The gate CI names, with the flag that makes it a gate. See the header.
 GATE=(./bin/prime --db)
 
-# No `echo … >> $GITHUB_PATH` line in `.github/workflows/*.yml` — verified, so
+# No `echo … >> $GITHUB_PATH` line in `ci/*.yml` — verified, so
 # this stays empty rather than carrying a guess.
 PATHS=()
 

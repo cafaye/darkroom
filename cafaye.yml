@@ -31,7 +31,7 @@
 # no licence property, so a `licence:` or a `license:` key in this file is
 # rejected by the tool CI runs against it — measured rather than assumed: both
 # spellings were added to a copy of this manifest and both failed with
-# `declares unknown key` (`.github/workflows/ci.yml` runs
+# `declares unknown key` (`ci/ci.yml` runs
 # `caf contract lint ../cafaye.yml`). A key that makes the manifest schema
 # fail is not a manifest that agrees with the grant; it is a red build.
 #

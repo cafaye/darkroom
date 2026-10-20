@@ -117,7 +117,7 @@
 # `HTTPAPI_TESTS` below said 34, because three packets each raised the constant in
 # the same commit that added a test — which is the rule this file exists to
 # enforce — and none of them came back to the table. The same drift hit
-# `.github/workflows/ci.yml`, which restates all four numbers for the same
+# `ci/ci.yml`, which restates all four numbers for the same
 # reason. Two hand-kept copies of a number nothing re-derives, both stale, and the
 # constants they were describing were right the whole time.
 #

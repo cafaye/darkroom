@@ -480,14 +480,14 @@ expect_red 'a mise task named in a repository that has no mise config' \
 
 breakages=$((breakages + 1))
 eight="$(fresh_copy ci-missing)"
-edit "$eight/gate.yml" 'workflow: .github/workflows/ci.yml' \
+edit "$eight/gate.yml" 'workflow: ci/ci.yml' \
   'workflow: .github/workflows/gate.yml'
 expect_red 'a declaration naming a CI workflow that is not in this repository' \
   'gate.ci-missing' "$eight"
 
 breakages=$((breakages + 1))
 nine="$(fresh_copy ci-disagrees)"
-edit "$nine/.github/workflows/ci.yml" './bin/prime --db' 'echo "this job runs no gate"'
+edit "$nine/ci/ci.yml" './bin/prime --db' 'echo "this job runs no gate"'
 expect_red 'a CI workflow that exists but never runs the gate' 'gate.ci-disagrees' "$nine"
 
 breakages=$((breakages + 1))
@@ -544,7 +544,7 @@ expect_warn 'a repository with mise tasks and a declaration that names none of t
 breakages=$((breakages + 1))
 w3="$(fresh_copy ci-undeclared)"
 edit "$w3/gate.yml" 'ci:
-  workflow: .github/workflows/ci.yml
+  workflow: ci/ci.yml
   invokes: [bin/prime, --db]
 ' ''
 expect_warn 'a declaration that says nothing about CI' 'gate.ci-undeclared' "$w3"
