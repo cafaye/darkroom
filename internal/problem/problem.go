@@ -1,7 +1,7 @@
 // Package problem is darkroom's error envelope: RFC 9457 `application/problem+json`
 // plus cafaye's `code` and `trace_id` extensions.
 //
-// Copied from `moon/cafaye/core/docs/openapi-conventions.md#error-envelope`, which
+// Copied from `cafaye/core/docs/openapi-conventions.md#error-envelope`, which
 // is normative: "no service invents its own error body". The Rust tree carries the
 // same shape in `src/error.rs` and the two are the same contract, not two designs.
 //

@@ -2,7 +2,7 @@
 #
 # Checked by cafaye/core's contract harness:
 #
-#     /Users/kaka/Code/any/moon/cafaye/core/harness/bin/tenancy-check .
+#     /Users/kaka/Code/any/cafaye/core/harness/bin/tenancy-check .
 #
 # READ THE `rls` BLOCK FIRST. It is the half that does the work: Postgres holds
 # this boundary, not Go. `migrations/0004_account_isolation.sql` is kit's

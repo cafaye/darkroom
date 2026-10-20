@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Conventions for `darkroom`, the cafaye media service. Read this before changing
-anything; the house rules in `moon/PLAN.md` §1 and §3 apply on top of it.
+anything; the house rules apply on top of it — SSH remotes for the repositories cafaye owns, and tests first: write the test, watch it fail, then implement.
 
 ## What this repository is
 

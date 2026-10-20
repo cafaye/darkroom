@@ -13,7 +13,7 @@ database-per-service) and never queries identity's or billing's.
   [`cafaye.yml`](cafaye.yml) points at
 - **Events**: `darkroom.asset.ready`, `darkroom.asset.deleted`,
   `darkroom.variant.created`
-- **Conventions**: [`moon/cafaye/core/docs`](../core/docs) is normative. Where
+- **Conventions**: [`cafaye/core/docs`](../core/docs) is normative. Where
   this repository and core disagree, core is right and this is the bug.
 
 ## Why the tenant boundary is the database's
