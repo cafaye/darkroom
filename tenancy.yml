@@ -1,16 +1,16 @@
 # tenancy.yml — what darkroom declares about its own account boundary.
 #
-# Checked by cafaye/core's contract harness:
+# Checked by anywaye/core's contract harness:
 #
-#     /Users/kaka/Code/any/cafaye/core/harness/bin/tenancy-check .
+#     /Users/kaka/Code/any/anywaye/core/harness/bin/tenancy-check .
 #
 # READ THE `rls` BLOCK FIRST. It is the half that does the work: Postgres holds
 # this boundary, not Go. `migrations/0004_account_isolation.sql` is kit's
-# tenancy substrate copied verbatim, and its two `cafaye.protect_table` calls
+# tenancy substrate copied verbatim, and its two `anywaye.protect_table` calls
 # (lines 999 and 1000) put `assets` and `asset_variants` under ENABLE and FORCE
 # row level security with four account-scoped policies each. Every statement in
 # `internal/service/store.go` runs inside a transaction that
-# `darkroomdb.InAccountTx` opened with `select cafaye.begin_account($1::uuid)`
+# `darkroomdb.InAccountTx` opened with `select anywaye.begin_account($1::uuid)`
 # (internal/darkroomdb/darkroomdb.go:193), and the policies do the filtering.
 #
 # # WHY THERE IS NO `and account_id = $N` IN ANY ENFORCED LINE
@@ -49,7 +49,7 @@
 # # THERE IS NO CREDENTIAL CALL
 #
 # `migrations/0004_account_isolation.sql:387` shows
-# `select cafaye.protect_credential_table('api_keys', 'token_digest')` in a
+# `select anywaye.protect_credential_table('api_keys', 'token_digest')` in a
 # COMMENT. It is never executed. darkroom has no `api_keys` table and no
 # `resolve` policy, and declaring either would be `tenancy.rls-policy-absent`.
 #
@@ -111,7 +111,7 @@ entryPoints:
       asserts: absent
       cases:
         # ARM ONE, no identity: a transaction that never called
-        # `cafaye.begin_account` reads zero rows. Go's spelling of nothing for
+        # `anywaye.begin_account` reads zero rows. Go's spelling of nothing for
         # a row is `nil`.
         - id: no-identity
           asserts: absent
@@ -346,7 +346,7 @@ entryPoints:
           line: 526
 
 # What the DATABASE does about the boundary — which is everything. The two
-# `select cafaye.protect_table(...)` calls in `migrations/0004_account_isolation.sql`
+# `select anywaye.protect_table(...)` calls in `migrations/0004_account_isolation.sql`
 # are the enable bit, the FORCE bit and the four policies each, resolved by the
 # checker through kit's template. `idempotency_keys` and `outbox_events` are
 # deliberately absent: no policy, no account column, by design (see the header).
@@ -354,11 +354,11 @@ rls:
   databaseEnforced: true
   # The template's own function, and not `app.current_account()`:
   # `protect_table` writes every predicate as
-  # `account_id = (select cafaye.current_account_id())`, so naming anything else
+  # `account_id = (select anywaye.current_account_id())`, so naming anything else
   # here would make `tenancy.rls-permissive` correct. The `(select …)` wrap is
   # the per-row rule passing for the right reason: one evaluation per
   # statement, not one per row.
-  identity: cafaye.current_account_id()
+  identity: anywaye.current_account_id()
   # The DDL tree, and a separate list from `scope.sources` because the two checks
   # read different things: this one reads `create policy` and
   # `alter table … row level security`, the other reads statements.
@@ -379,28 +379,28 @@ rls:
     - table: assets
       forced: true
       policies:
-        - name: assets_cafaye_select
+        - name: assets_anywaye_select
           command: select
           clause: using
           roles: [darkroom, darkroom_app]
           constrained:
             file: migrations/0004_account_isolation.sql
             line: 999
-        - name: assets_cafaye_insert
+        - name: assets_anywaye_insert
           command: insert
           clause: with check
           roles: [darkroom, darkroom_app]
           constrained:
             file: migrations/0004_account_isolation.sql
             line: 999
-        - name: assets_cafaye_update
+        - name: assets_anywaye_update
           command: update
           clause: using
           roles: [darkroom, darkroom_app]
           constrained:
             file: migrations/0004_account_isolation.sql
             line: 999
-        - name: assets_cafaye_delete
+        - name: assets_anywaye_delete
           command: delete
           clause: using
           roles: [darkroom, darkroom_app]
@@ -410,28 +410,28 @@ rls:
     - table: asset_variants
       forced: true
       policies:
-        - name: asset_variants_cafaye_select
+        - name: asset_variants_anywaye_select
           command: select
           clause: using
           roles: [darkroom, darkroom_app]
           constrained:
             file: migrations/0004_account_isolation.sql
             line: 1000
-        - name: asset_variants_cafaye_insert
+        - name: asset_variants_anywaye_insert
           command: insert
           clause: with check
           roles: [darkroom, darkroom_app]
           constrained:
             file: migrations/0004_account_isolation.sql
             line: 1000
-        - name: asset_variants_cafaye_update
+        - name: asset_variants_anywaye_update
           command: update
           clause: using
           roles: [darkroom, darkroom_app]
           constrained:
             file: migrations/0004_account_isolation.sql
             line: 1000
-        - name: asset_variants_cafaye_delete
+        - name: asset_variants_anywaye_delete
           command: delete
           clause: using
           roles: [darkroom, darkroom_app]

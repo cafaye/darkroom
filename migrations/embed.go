@@ -126,7 +126,7 @@ type Execer interface {
 // the other: Postgres refuses `CREATE INDEX CONCURRENTLY` and `VACUUM` inside a
 // transaction block, so a future migration that needs one could not be applied by
 // this function at all; and a rollback that undid half the set would leave
-// `cafaye.protect_table` defined with two of darkroom's tables protected, which is
+// `anywaye.protect_table` defined with two of darkroom's tables protected, which is
 // a state no `psql -f` of the same files can produce and therefore a state
 // nothing knows how to recover from.
 //

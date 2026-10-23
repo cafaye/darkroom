@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cafaye/darkroom/internal/checksum"
+	"github.com/anywaye/darkroom/internal/checksum"
 )
 
 // The published FIPS 180-4 vectors. Hard-coded rather than computed, because a

@@ -9,4 +9,4 @@ name: darkroom
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
-description: The cafaye media service — signed uploads, tenant-scoped asset registry, and derived variants.
+description: The anywaye media service — signed uploads, tenant-scoped asset registry, and derived variants.

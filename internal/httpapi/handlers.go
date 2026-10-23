@@ -24,12 +24,12 @@ import (
 
 	uuidlib "github.com/google/uuid"
 
-	"github.com/cafaye/darkroom/internal/api"
-	"github.com/cafaye/darkroom/internal/auth"
-	"github.com/cafaye/darkroom/internal/domain"
-	"github.com/cafaye/darkroom/internal/problem"
-	"github.com/cafaye/darkroom/internal/service"
-	"github.com/cafaye/darkroom/internal/variants"
+	"github.com/anywaye/darkroom/internal/api"
+	"github.com/anywaye/darkroom/internal/auth"
+	"github.com/anywaye/darkroom/internal/domain"
+	"github.com/anywaye/darkroom/internal/problem"
+	"github.com/anywaye/darkroom/internal/service"
+	"github.com/anywaye/darkroom/internal/variants"
 )
 
 // ----------------------------------------------------------------------------

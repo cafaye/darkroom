@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cafaye/darkroom/internal/problem"
+	"github.com/anywaye/darkroom/internal/problem"
 )
 
 // TestTheDocumentedOrdersAreTheOnlyTwo is the document's `enum: [asc, desc]`,

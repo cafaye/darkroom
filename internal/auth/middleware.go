@@ -23,7 +23,7 @@
 //     panic and not a nil.
 //
 // A package-level `currentPrincipal` would be the alternative and it is refused by
-// the same comment `../cafaye/gateway/internal/auth/middleware.go` writes: it is
+// the same comment `../anywaye/gateway/internal/auth/middleware.go` writes: it is
 // one answer shared by every in-flight request, and the bug it produces is a
 // tenant seeing another tenant's identity — silent, and only reproducible under
 // concurrency.

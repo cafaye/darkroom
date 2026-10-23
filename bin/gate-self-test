@@ -74,8 +74,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # sibling beside the PRIMARY worktree through git.
 core_candidates() {
   # 1. The explicit seam — a person naming a directory.
-  if [ -n "${CAFAYE_CORE:-}" ]; then
-    printf '%s\n' "$CAFAYE_CORE"
+  if [ -n "${ANYWAYE_CORE:-}" ]; then
+    printf '%s\n' "$ANYWAYE_CORE"
   fi
   # 2. Beside the repository root. The main checkout's answer, first among the
   #    implicit ones because it is what every document describes.
@@ -99,8 +99,8 @@ core_candidates() {
   #    `kit.ref` pins. Here, nothing local names "where you looked".
 }
 
-# What makes a directory core rather than another cafaye checkout: the checker
-# this script needs. A `cafaye.yml` or a `go.mod` would identify nothing —
+# What makes a directory core rather than another anywaye checkout: the checker
+# this script needs. A `anywaye.yml` or a `go.mod` would identify nothing —
 # every repository in the fleet has both.
 CORE="$(core_candidates 2>/dev/null | while IFS= read -r candidate; do
   if [ -x "$candidate/harness/bin/gate-check" ]; then
@@ -110,10 +110,10 @@ CORE="$(core_candidates 2>/dev/null | while IFS= read -r candidate; do
 done)"
 
 if [ -z "$CORE" ]; then
-  printf 'gate-self-test: no cafaye/core checkout resolved for %s\n' "$ROOT" >&2
+  printf 'gate-self-test: no anywaye/core checkout resolved for %s\n' "$ROOT" >&2
   printf 'gate-self-test: darkroom declares the gate; it does not implement the check.\n' >&2
-  printf 'gate-self-test: looked at CAFAYE_CORE, %s/../core, and core beside the primary\n' "$ROOT" >&2
-  printf 'gate-self-test: worktree. Set CAFAYE_CORE to a cafaye/core checkout.\n' >&2
+  printf 'gate-self-test: looked at ANYWAYE_CORE, %s/../core, and core beside the primary\n' "$ROOT" >&2
+  printf 'gate-self-test: worktree. Set ANYWAYE_CORE to a anywaye/core checkout.\n' >&2
   exit 1
 fi
 CHECK="$CORE/harness/bin/gate-check"
@@ -132,15 +132,15 @@ CHECK="$CORE/harness/bin/gate-check"
 if [ ! -x "$CHECK" ]; then
   printf 'gate-self-test: core'"'"'s gate checker is not at %s\n' "$CHECK" >&2
   printf 'gate-self-test: darkroom declares the gate; it does not implement the check.\n' >&2
-  printf 'gate-self-test: set CAFAYE_CORE to a cafaye/core checkout.\n' >&2
+  printf 'gate-self-test: set ANYWAYE_CORE to a anywaye/core checkout.\n' >&2
   exit 1
 fi
 
 # core's wrapper resolves its own interpreter and refuses one older than 3.11
-# with exit 2. `CAFAYE_GATE_PYTHON` is forwarded so this script and core's CI
+# with exit 2. `ANYWAYE_GATE_PYTHON` is forwarded so this script and core's CI
 # would use the same interpreter if they ever ran together.
-if [ -n "${CAFAYE_GATE_PYTHON:-}" ]; then
-  export CAFAYE_GATE_PYTHON
+if [ -n "${ANYWAYE_GATE_PYTHON:-}" ]; then
+  export ANYWAYE_GATE_PYTHON
 fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/darkroom-gate-self-test.XXXXXX")"
@@ -221,7 +221,7 @@ fresh_copy() {
 # anything is worse than no self-test, so an unmatched edit is an error here and
 # not a pass.
 edit() {
-  if ! "${CAFAYE_GATE_PYTHON:-python3}" - "$1" "$2" "$3" <<'PYEOF'
+  if ! "${ANYWAYE_GATE_PYTHON:-python3}" - "$1" "$2" "$3" <<'PYEOF'
 import sys
 
 path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -300,8 +300,8 @@ for _ in \$(seq 1 "${count}"); do printf '%s\n' '--- PASS: TestSomething (0.00s)
 # gate.proof-invalid: the honest-sounding report about the wrong problem, caused
 # by a self-test that was broken while testing the checker. Quote the phrase
 # instead.
-printf 'ok  \tgithub.com/cafaye/darkroom/internal/service\t${count}.000s\n'
-printf 'ok  \tgithub.com/cafaye/darkroom/internal/variants\t${count}.000s\n'
+printf 'ok  \tgithub.com/anywaye/darkroom/internal/service\t${count}.000s\n'
+printf 'ok  \tgithub.com/anywaye/darkroom/internal/variants\t${count}.000s\n'
 printf '\n==> ok\n'
 SH
   chmod +x "$path"

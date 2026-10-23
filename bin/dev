@@ -239,13 +239,13 @@ KIT_DEV_PROFILES="${KIT_DEV_PROFILES-}"
 # naming a mirror was silently ignored and the fetch went to github anyway — from
 # a service that had written down somewhere else. Ignoring a value a developer
 # typed is worse than not having read the variable at all.
-stack_url() { stack_setting KIT_STACK_URL "https://github.com/cafaye/kit.git"; }
+stack_url() { stack_setting KIT_STACK_URL "https://github.com/anywaye/kit.git"; }
 
 # The cache. Outside the repository on purpose: a cache inside a working tree is
 # a copy, and this whole packet is about the copies. One directory per ref, so
 # two services on two refs cannot fight over one checkout, and an upgrade is a
 # new directory rather than a mutation of the old one.
-stack_home() { stack_setting KIT_STACK_HOME "${XDG_CACHE_HOME:-$HOME/.cache}/cafaye/kit"; }
+stack_home() { stack_setting KIT_STACK_HOME "${XDG_CACHE_HOME:-$HOME/.cache}/anywaye/kit"; }
 
 # The vendored copy, for a machine with no network. See `resolve_stack` for why
 # it has to DECLARE its ref rather than merely exist.
@@ -536,7 +536,7 @@ stack_is_usable() {
 # repository that is almost entirely YAML.
 
 # Where retired generations live. A SUBDIRECTORY of the cache home rather than
-# siblings of the ref directory, so `ls ~/.cache/cafaye/kit` still reads as "one
+# siblings of the ref directory, so `ls ~/.cache/anywaye/kit` still reads as "one
 # directory per ref" and nothing else has to learn a second naming scheme.
 generation_home() { printf '%s/.retired\n' "$(stack_home)"; }
 
@@ -1354,7 +1354,7 @@ up() {
 
 migrate() {
   # Each language migrates differently; the repo's own command is the only one
-  # that is correct, and every cafaye service has one under a bin/ or script/
+  # that is correct, and every anywaye service has one under a bin/ or script/
   # entry. Probed in a fixed order and the first match wins, so this works
   # without kit having to know six migration systems.
   if [ -x bin/migrate ]; then
@@ -1434,9 +1434,9 @@ db_grant() {
   # shellcheck disable=SC1091
   [ -f .env ] && { set -a && . ./.env && set +a; }
   local port="${KIT_POSTGRES_PORT:-15500}"
-  local user="${KIT_POSTGRES_USER:-cafaye}"
-  local pass="${KIT_POSTGRES_PASSWORD:-cafaye}"
-  local admin_db="${KIT_POSTGRES_DB:-cafaye_platform}"
+  local user="${KIT_POSTGRES_USER:-anywaye}"
+  local pass="${KIT_POSTGRES_PASSWORD:-anywaye}"
+  local admin_db="${KIT_POSTGRES_DB:-anywaye_platform}"
 
   cat <<SQL
 bin/dev db grant $svc — add one service to a cluster that is already running.
@@ -1520,9 +1520,9 @@ print_urls() {
   local pg_port="${KIT_POSTGRES_PORT:-15500}"
   local nats_port="${KIT_NATS_CLIENT_PORT:-15600}"
   local redis_port="${KIT_REDIS_PORT:-15800}"
-  local pg_user="${KIT_POSTGRES_USER:-cafaye}"
-  local pg_pass="${KIT_POSTGRES_PASSWORD:-cafaye}"
-  local pg_db="${KIT_POSTGRES_DB:-cafaye_platform}"
+  local pg_user="${KIT_POSTGRES_USER:-anywaye}"
+  local pg_pass="${KIT_POSTGRES_PASSWORD:-anywaye}"
+  local pg_db="${KIT_POSTGRES_DB:-anywaye_platform}"
 
   step "ready"
   cat <<URLS

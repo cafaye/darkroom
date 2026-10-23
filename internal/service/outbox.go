@@ -109,7 +109,7 @@ import (
 )
 
 // Source is the service name, which is also the envelope `source` and the first
-// segment of every event type. `cafaye.yml` `exposes.events` names it; a test asserts
+// segment of every event type. `anywaye.yml` `exposes.events` names it; a test asserts
 // the two agree rather than trusting this constant.
 const Source = "darkroom"
 

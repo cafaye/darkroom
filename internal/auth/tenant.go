@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/cafaye/darkroom/internal/service"
+	"github.com/anywaye/darkroom/internal/service"
 )
 
 // Tenant is the account a request acts on. The ONLY way to scope a query.
@@ -39,7 +39,7 @@ import (
 // The three alternatives and why each is worse:
 //
 //   - **A nil pointer returned by the accessor.** This is what
-//     `../cafaye/gateway` does and its own comment is honest about the cost: "a
+//     `../anywaye/gateway` does and its own comment is honest about the cost: "a
 //     handler which forgets to read the principal gets a nil pointer", which is why
 //     `gateway/internal/httpapi/principal.go` hand-writes a nil check for a state
 //     "that can't happen". A nil that a handler forgets to check IS the nil-deref

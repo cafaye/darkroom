@@ -40,7 +40,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cafaye/darkroom/internal/auth"
+	"github.com/anywaye/darkroom/internal/auth"
 )
 
 const (

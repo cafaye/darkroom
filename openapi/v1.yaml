@@ -1,12 +1,12 @@
 # openapi/v1.yaml — the HTTP contract for darkroom's v1 surface.
 #
-# This file is what `exposes.api` in cafaye.yml points at, and it is written to
-# cafaye/core's docs/openapi-conventions.md. Where core and this file disagree,
+# This file is what `exposes.api` in anywaye.yml points at, and it is written to
+# anywaye/core's docs/openapi-conventions.md. Where core and this file disagree,
 # core is right and this file is the bug.
 openapi: 3.1.0
 
 info:
-  title: cafaye darkroom
+  title: anywaye darkroom
   version: 1.0.0
   summary: Media service — signed uploads, a tenant-scoped asset registry, and derived variants.
   description: |
@@ -79,8 +79,8 @@ info:
     there would be a free asset-id oracle.
   contact:
     name: darkroom
-    url: https://github.com/cafaye/darkroom
-    email: darkroom@cafaye.com
+    url: https://github.com/anywaye/darkroom
+    email: darkroom@anywaye.com
   license:
     # BSL-1.1, and it was MIT until 2026-10-10. `name` and `identifier` carry
     # the SPDX identifier and `url` the SPDX page; the grant itself, with its
@@ -92,7 +92,7 @@ info:
     url: https://spdx.org/licenses/BUSL-1.1.html
 
 servers:
-  - url: https://api.cafaye.com
+  - url: https://api.anywaye.com
     description: production
   - url: http://localhost:8080
     description: local development
@@ -670,14 +670,14 @@ components:
     Problem:
       type: object
       description: |
-        The cafaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
+        The anywaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
         Every non-2xx response from this service is this shape.
       required: [type, title, status, detail, instance, code, trace_id]
       properties:
         type:
           type: string
           format: uri
-          example: https://docs.cafaye.com/errors/validation_failed
+          example: https://docs.anywaye.com/errors/validation_failed
         title:
           type: string
           description: A fixed summary for the code. May be reworded without a version bump.

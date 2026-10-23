@@ -35,7 +35,7 @@
 #      --porcelain`. A worktree resolves the same kit the main checkout does,
 #      because kit lives beside the main checkout and not beside the worktree.
 #   4. A FETCH at the ref `kit.ref` pins, into kit's own cache
-#      (`${XDG_CACHE_HOME:-$HOME/.cache}/cafaye/kit/<ref>`). This is the one
+#      (`${XDG_CACHE_HOME:-$HOME/.cache}/anywaye/kit/<ref>`). This is the one
 #      step that touches the network, and it exists for the case the first
 #      three cannot answer: a CI runner with no sibling checkout. It is
 #      explicit rather than silent — it runs only when 1-3 all miss, it names
@@ -79,7 +79,7 @@ primary_worktree() {
     sed -n 's/^worktree[[:space:]][[:space:]]*//p'
 }
 
-kit_home() { printf '%s/cafaye/kit' "${XDG_CACHE_HOME:-$HOME/.cache}"; }
+kit_home() { printf '%s/anywaye/kit' "${XDG_CACHE_HOME:-$HOME/.cache}"; }
 
 is_kit() {
   [ -f "$1/templates/compose/docker-compose.yml" ]
@@ -145,7 +145,7 @@ if [ -z "$kit" ]; then
     kit="$cached"
     echo "bin/stack-up: using the cached kit@$REF at $kit"
   else
-    echo "bin/stack-up: no local kit; fetching kit@$REF from git@github.com:cafaye/kit.git" >&2
+    echo "bin/stack-up: no local kit; fetching kit@$REF from git@github.com:anywaye/kit.git" >&2
     echo "bin/stack-up: this is the CI-runner path — a machine with a sibling" >&2
     echo "  checkout never reaches it. The ref is the one kit.ref pins, so what" >&2
     echo "  comes up is what this repository says it runs." >&2
@@ -156,12 +156,12 @@ if [ -z "$kit" ]; then
     # a directory keyed by the ref is disposable — delete it and the next run
     # rebuilds it. (kit's own bin/dev does the same, into the same cache.)
     if ! git -C "$tmp" init -q ||
-       ! git -C "$tmp" remote add origin git@github.com:cafaye/kit.git ||
+       ! git -C "$tmp" remote add origin git@github.com:anywaye/kit.git ||
        ! git -C "$tmp" fetch --quiet --depth 1 origin "$REF" ||
        ! git -C "$tmp" -c advice.detachedHead=false checkout --quiet --detach FETCH_HEAD; then
       rm -rf "$tmp"
       echo "bin/stack-up: could not fetch kit@$REF. Check the pin:" >&2
-      echo "  git ls-remote git@github.com:cafaye/kit.git '$REF'" >&2
+      echo "  git ls-remote git@github.com:anywaye/kit.git '$REF'" >&2
       exit 5
     fi
     printf '%s\n' "$REF" >"$tmp/.kit-stack-ref"

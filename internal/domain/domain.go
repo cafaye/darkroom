@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cafaye/darkroom/internal/variants"
+	"github.com/anywaye/darkroom/internal/variants"
 )
 
 // AssetKind is what an asset IS. The values are the four names in

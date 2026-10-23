@@ -19,7 +19,7 @@
 //	--------------------------------  ------------------------------------------
 //	auth::Tenant                      uuid.UUID, from the verified token
 //	&mut Transaction                  the *sql.Tx InAccountTx hands the callback
-//	`where account_id = $1`           cafaye.begin_account($1) — the predicate is
+//	`where account_id = $1`           anywaye.begin_account($1) — the predicate is
 //	                                  a POLICY now, and still in the query
 //
 // The point of the Rust rule was that a repository method which did not take a
@@ -29,7 +29,7 @@
 //
 // # THE IDENTITY IS SET TRANSACTION-LOCAL, AND THAT IS NOT AN OPTION
 //
-// `cafaye.begin_account/1` is `set_config(..., true)` — the `true` is
+// `anywaye.begin_account/1` is `set_config(..., true)` — the `true` is
 // transaction-local. A connection that set it at session scope would carry one
 // request's account into the next request to be handed that connection from the
 // pool, and that is a cross-tenant read with no query wrong anywhere. So the call
@@ -191,7 +191,7 @@ func (s *Store) InAccountTx(ctx context.Context, account string, fn func(tx pgx.
 		return errors.New("darkroomdb.InAccountTx: the account is empty; a nil account reads zero rows rather than failing, so this is the only place it can be caught")
 	}
 	return s.InTx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `select cafaye.begin_account($1::uuid)`, account); err != nil {
+		if _, err := tx.Exec(ctx, `select anywaye.begin_account($1::uuid)`, account); err != nil {
 			return fmt.Errorf("darkroomdb.InAccountTx: setting the account identity: %w", err)
 		}
 		return fn(tx)
@@ -217,7 +217,7 @@ func (s *Store) InAccountTx(ctx context.Context, account string, fn func(tx pgx.
 //
 // So the publisher needs a transaction handed to it, and this is the one way to
 // get one. It is deliberately the same transaction `InTx` opens — no identity
-// set, no `cafaye.begin_account` call — so nothing about the tenancy surface
+// set, no `anywaye.begin_account` call — so nothing about the tenancy surface
 // changes by using it.
 //
 // # AND WHY IT SETS NO IDENTITY

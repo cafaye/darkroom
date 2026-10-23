@@ -25,10 +25,10 @@
 //
 //   - every `create table` in migrations/ lands in the test's schema, because the
 //     harness puts that schema on the connection's `search_path`;
-//   - `cafaye.protect_table('assets', 'darkroom_app')` takes a `regclass`, and
+//   - `anywaye.protect_table('assets', 'darkroom_app')` takes a `regclass`, and
 //     `regclass` resolution follows `search_path` — so the substrate protects the
 //     TEST's tables rather than `public`'s;
-//   - `drop schema ... cascade` at the end takes the test's `cafaye` schema, its
+//   - `drop schema ... cascade` at the end takes the test's `anywaye` schema, its
 //     four tables, its eight policies and its three indexes with it, in one
 //     statement, with no table list to keep in step with migrations/.
 //
@@ -64,8 +64,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/cafaye/darkroom/internal/darkroomdb"
-	"github.com/cafaye/darkroom/migrations"
+	"github.com/anywaye/darkroom/internal/darkroomdb"
+	"github.com/anywaye/darkroom/migrations"
 )
 
 // migrateMu serializes the migration step across the tests in one binary.
@@ -77,7 +77,7 @@ import (
 //	                                                             (SQLSTATE XX000)
 //
 // The cause is in `migrations/0004_account_isolation.sql`, not in the schema
-// names: `cafaye.protect_table` GRANTS DML to `darkroom_app`, and two transactions
+// names: `anywaye.protect_table` GRANTS DML to `darkroom_app`, and two transactions
 // granting to the SAME role at the same time contend on that role's row. The
 // schemas are genuinely independent — `protect_table` takes a `regclass` and
 // `regclass` resolution follows `search_path`, so each test really does protect
@@ -270,7 +270,7 @@ func newIn(t *testing.T, base string) *Test {
 	// `go test` binary. It does not serialize `go test ./...`, which builds and
 	// runs several packages as separate processes: `internal/service` and
 	// `internal/httpapi` each open their own schemas and apply 0004 at the same
-	// time, and 0004 is full of `create or replace function cafaye.*`. Those are
+	// time, and 0004 is full of `create or replace function anywaye.*`. Those are
 	// unqualified names resolved through each connection's `search_path`, so
 	// every schema gets its own copy and no two tests write the same row — but
 	// inserting into `pg_proc`/`pg_namespace` still contends on catalog pages, and
@@ -297,7 +297,7 @@ func newIn(t *testing.T, base string) *Test {
 	// deploy, and the difference is in `migrations.Apply`'s comment. Safe here: this
 	// schema is dropped either way, so a rollback loses nothing a caller wanted.
 	// Unsafe in a deploy: a half-applied substrate leaves
-	// `cafaye.protect_table` defined with two of darkroom's tables protected, which
+	// `anywaye.protect_table` defined with two of darkroom's tables protected, which
 	// is a state no `psql -f` of the same files can produce. `Apply` does not open
 	// one, and this is the one caller that legitimately wants one.
 	if err := migrations.Apply(ctx, tx); err != nil {

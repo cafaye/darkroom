@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cafaye/darkroom/internal/checksum"
-	"github.com/cafaye/darkroom/internal/darkroomdb"
-	"github.com/cafaye/darkroom/internal/darkroomdb/pgtest"
-	"github.com/cafaye/darkroom/internal/domain"
-	"github.com/cafaye/darkroom/internal/objectstore"
-	"github.com/cafaye/darkroom/internal/problem"
-	"github.com/cafaye/darkroom/internal/variants"
+	"github.com/anywaye/darkroom/internal/checksum"
+	"github.com/anywaye/darkroom/internal/darkroomdb"
+	"github.com/anywaye/darkroom/internal/darkroomdb/pgtest"
+	"github.com/anywaye/darkroom/internal/domain"
+	"github.com/anywaye/darkroom/internal/objectstore"
+	"github.com/anywaye/darkroom/internal/problem"
+	"github.com/anywaye/darkroom/internal/variants"
 )
 
 // The tests below run against a real PostgreSQL, one private schema per test.

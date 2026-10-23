@@ -22,7 +22,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/cafaye/darkroom/internal/checksum"
+	"github.com/anywaye/darkroom/internal/checksum"
 )
 
 // seedAssets creates n distinct assets for one caller and returns their ids in
@@ -288,7 +288,7 @@ func TestACursorFromTheOtherDirectionIsRefused(t *testing.T) {
 //
 // A placeholder on the right-hand side is what makes this narrow enough to be
 // trustworthy. `insertAsset`'s SQL contains `account_id` too — it writes
-// `(select cafaye.current_account_id())`, reading the identity off the transaction —
+// `(select anywaye.current_account_id())`, reading the identity off the transaction —
 // and a guard that flagged every `account_id` would be red on the one insert that
 // deliberately does not take one as a parameter.
 var tenantPredicate = regexp.MustCompile(`account_id\s*(?:=|<>|!=|like|in)\s*\(?\s*\$\d`)
@@ -317,7 +317,7 @@ func TestATenantPredicateIsRecognized(t *testing.T) {
 		{`where account_id like $1`, true},
 		// `account_id` used the two ways this package legitimately does, which a
 		// guard written as "any literal mentioning account_id" would have flagged.
-		{`insert into assets (id, account_id, …) values ($1, (select cafaye.current_account_id()), …)`, false},
+		{`insert into assets (id, account_id, …) values ($1, (select anywaye.current_account_id()), …)`, false},
 		{`select ` + assetColumns + ` from assets`, false},
 		{`where (created_at, id) > ($1, $2::uuid)`, false},
 		{`where id = $1`, false},

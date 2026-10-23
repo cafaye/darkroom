@@ -1,8 +1,8 @@
 # darkroom
 
-**Current direction (2026-10-19):** Ship is the product. The cafaye stack is internal infrastructure; we are not selling or supporting it as a standalone product as of this date. We continue to develop and improve it, treating the founder as the primary customer and keeping "build once, run everywhere" true, with the expectation that it may be offered again later.
+**Current direction (2026-10-19):** Ship is the product. The anywaye stack is internal infrastructure; we are not selling or supporting it as a standalone product as of this date. We continue to develop and improve it, treating the founder as the primary customer and keeping "build once, run everywhere" true, with the expectation that it may be offered again later.
 
-The cafaye media service. Signed uploads, a tenant-scoped asset registry, and
+The anywaye media service. Signed uploads, a tenant-scoped asset registry, and
 derived variants — the foundation anychat's voice clips and anymark's
 attachments both sit on.
 
@@ -10,10 +10,10 @@ One static Go binary. It owns its own database (PLAN.md §7,
 database-per-service) and never queries identity's or billing's.
 
 - **Contract**: [`openapi/v1.yaml`](openapi/v1.yaml) — what `exposes.api` in
-  [`cafaye.yml`](cafaye.yml) points at
+  [`anywaye.yml`](anywaye.yml) points at
 - **Events**: `darkroom.asset.ready`, `darkroom.asset.deleted`,
   `darkroom.variant.created`
-- **Conventions**: [`cafaye/core/docs`](../core/docs) is normative. Where
+- **Conventions**: [`anywaye/core/docs`](../core/docs) is normative. Where
   this repository and core disagree, core is right and this is the bug.
 
 ## Why the tenant boundary is the database's
@@ -30,7 +30,7 @@ the reason. `migrations/0004_account_isolation.sql` gives `assets` and
     ------------------------------   ------------------------------------
     auth::Tenant                     uuid.UUID, from the verified token
     &mut Transaction                 the pgx.Tx InAccountTx hands the callback
-    `where account_id = $1`          cafaye.begin_account($1)
+    `where account_id = $1`          anywaye.begin_account($1)
 
 `InAccountTx` is the only way to start a transaction through that package and it
 makes naming the account part of starting the transaction, which is the Rust
@@ -787,7 +787,7 @@ one, because two replicas racing to deploy would deadlock on `CREATE TABLE`.
 darkroom ships a Helm chart (`chart/`), a publish workflow
 (`.github/workflows/publish.yml`) and a `bin/dev` wrapper, so it deploys the
 same way the rest of the fleet does: an image plus a chart, pulled by Argo CD
-from `oci://ghcr.io/cafaye/charts/darkroom`.
+from `oci://ghcr.io/anywaye/charts/darkroom`.
 
 ### What you need on the box
 
@@ -1021,7 +1021,7 @@ cannot hide behind a stale carve-out.
 
 This check needs neither a database nor a socket, so it is in the default tier
 and runs on a bare machine. It reaches the document through a hardcoded
-`../../openapi/v1.yaml` rather than through `exposes.api` in `cafaye.yml` — the
+`../../openapi/v1.yaml` rather than through `exposes.api` in `anywaye.yml` — the
 Rust tree read the service's own pointer and this one does not, which is a real
 difference and a small gap: the two files could be pointed at different
 documents without this test noticing.
@@ -1149,7 +1149,7 @@ would be a flake waiting for a loaded CI box.
 ## License
 
 **The grant is the Business Source Licence 1.1.** See [LICENSE](LICENSE), which
-carries the parameters that make it this repository's: Licensor `Cafaye`,
+carries the parameters that make it this repository's: Licensor `Anywaye`,
 Licensed Work `darkroom`, Additional Use Grant `None`, Change Date
 `2030-10-10`, Change Licence `Apache-2.0` (`LICENSE:3-9`). Free to run, free to
 self-host, never to offer a competing service — and on the Change Date it
@@ -1176,14 +1176,14 @@ on. That is the whole of the obligation owed to existing holders, and it is a
 matter of the grant they accepted rather than a courtesy.
 
 **Where the machine-readable declaration lives, and where it does not.**
-`info.license` in `openapi/v1.yaml:84-92` — the document `cafaye.yml`'s
+`info.license` in `openapi/v1.yaml:84-92` — the document `anywaye.yml`'s
 `exposes.api` points at — carries `BUSL-1.1` with the SPDX identifier and page.
-`cafaye.yml` itself carries no licence field and cannot: core's manifest schema
+`anywaye.yml` itself carries no licence field and cannot: core's manifest schema
 sets `additionalProperties: false` with no licence property, so a `licence:` or
 a `license:` key there is rejected by `cafe contract lint`, which CI runs against
 this exact file (`.github/workflows/ci.yml:303-307`). Both spellings were added
 to a copy of the manifest and both failed with `declares unknown key`, so the
-manifest states the grant and the reason in a comment (`cafaye.yml:25-43`)
+manifest states the grant and the reason in a comment (`anywaye.yml:25-43`)
 rather than breaking the schema to make a field agree. Adding the field is
 core's packet: the schema and cafe's vendored pin of it
 (`cafe/internal/contract/schemas/manifest-0.2.json`, pinned to core `3340e0f`)

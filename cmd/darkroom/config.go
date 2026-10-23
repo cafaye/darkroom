@@ -54,7 +54,7 @@ type Lookup func(key string) (string, bool)
 func OSLookup(key string) (string, bool) { return os.LookupEnv(key) }
 
 // Defaults, and each is the value a service with no configuration at all would
-// have to pick anyway. 8080 is every other cafaye service, because a service that
+// have to pick anyway. 8080 is every other anywaye service, because a service that
 // listens somewhere else is one more thing to configure.
 const (
 	defaultBindAddr  = "0.0.0.0"

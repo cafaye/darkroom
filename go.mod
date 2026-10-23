@@ -1,4 +1,4 @@
-module github.com/cafaye/darkroom
+module github.com/anywaye/darkroom
 
 go 1.26.1
 

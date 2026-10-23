@@ -69,8 +69,8 @@ type Event struct {
 	Data    json.RawMessage
 }
 
-// Envelope is the cafaye event envelope, reproducing
-// cafaye/core/schemas/event-envelope.schema.json.
+// Envelope is the anywaye event envelope, reproducing
+// anywaye/core/schemas/event-envelope.schema.json.
 //
 // The JSON tags are the wire contract. core sets `additionalProperties: false`,
 // so these seven attributes and nothing else are ever emitted: an undeclared one

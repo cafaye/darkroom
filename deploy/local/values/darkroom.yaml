@@ -1,6 +1,6 @@
-# Local (`cafaye-local`) values for the darkroom chart.
+# Local (`anywaye-local`) values for the darkroom chart.
 image:
-  repository: cafaye/darkroom
+  repository: anywaye/darkroom
   tag: k8s-local
   pullPolicy: Never
 
@@ -12,6 +12,6 @@ namespace: darkroom
 
 env:
   DARKROOM_OBJECT_STORE: "memory"
-  DARKROOM_ISSUER: "https://auth.cafaye.com"
+  DARKROOM_ISSUER: "https://auth.anywaye.com"
   DARKROOM_AUDIENCE: "darkroom"
   DARKROOM_LOG_FORMAT: "json"

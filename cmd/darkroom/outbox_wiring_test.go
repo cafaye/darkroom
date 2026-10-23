@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cafaye/darkroom/internal/outbox"
+	"github.com/anywaye/darkroom/internal/outbox"
 )
 
 // discardLogger is a logger that goes nowhere. `internal/outbox` defaults to one
@@ -75,7 +75,7 @@ func TestLoadConfigReadsNATSURLByItsBareName(t *testing.T) {
 		case "DARKROOM_DATABASE_URL":
 			return "postgres://darkroom_app:x@localhost:15500/darkroom?sslmode=disable", true
 		case "DARKROOM_ISSUER":
-			return "https://identity.cafaye.com", true
+			return "https://identity.anywaye.com", true
 		case "DARKROOM_AUDIENCE":
 			return "darkroom", true
 		}
@@ -97,7 +97,7 @@ func TestLoadConfigReadsNATSURLByItsBareName(t *testing.T) {
 		case "DARKROOM_DATABASE_URL":
 			return "postgres://darkroom_app:x@localhost:15500/darkroom?sslmode=disable", true
 		case "DARKROOM_ISSUER":
-			return "https://identity.cafaye.com", true
+			return "https://identity.anywaye.com", true
 		case "DARKROOM_AUDIENCE":
 			return "darkroom", true
 		case "DARKROOM_NATS_URL":

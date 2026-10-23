@@ -3,22 +3,22 @@
 -- WHY THIS FILE EXISTS. `0004_account_isolation.sql` is kit's
 -- `templates/database/tenancy/substrate.sql` copied verbatim, and it was copied
 -- while the template held EIGHT functions. kit added four more the next day —
--- `cafaye.current_user_id`, `cafaye.begin_user`, `cafaye.protect_membership_table`
--- and `cafaye.membership_tables` (kit commit 537441e, 2026-10-05 13:04, "a CALLER
+-- `anywaye.current_user_id`, `anywaye.begin_user`, `anywaye.protect_membership_table`
+-- and `anywaye.membership_tables` (kit commit 537441e, 2026-10-05 13:04, "a CALLER
 -- scope, so 'which accounts am I in' is expressible") — and darkroom's copy was
 -- never compared against the template again. It stayed at eight, and nothing in
 -- this repository said so. kit's `tests/substrate_copy_check.py` is what says so,
 -- in four lines:
 --
---   FAIL  MISSING function: cafaye.begin_user
---   FAIL  MISSING function: cafaye.current_user_id
---   FAIL  MISSING function: cafaye.membership_tables
---   FAIL  MISSING function: cafaye.protect_membership_table
+--   FAIL  MISSING function: anywaye.begin_user
+--   FAIL  MISSING function: anywaye.current_user_id
+--   FAIL  MISSING function: anywaye.membership_tables
+--   FAIL  MISSING function: anywaye.protect_membership_table
 --
 -- WHAT IT CHANGES, MEASURED: nothing that runs. darkroom has no membership table
 -- (the string `account_users` occurs in this tree once, inside a comment in 0004),
--- no Go code calls `cafaye.begin_user/1`, and no Go code calls
--- `cafaye.current_user_id/0`. The four functions are installed as definitions and
+-- no Go code calls `anywaye.begin_user/1`, and no Go code calls
+-- `anywaye.current_user_id/0`. The four functions are installed as definitions and
 -- nothing is wired to them. That is the repair's whole value, and it is worth
 -- being plain about its size: it makes the copy equal kit's template so that the
 -- NEXT drift is a red checker rather than silence, and it means a packet that adds
@@ -46,13 +46,13 @@
 -- since 537441e — copied with their commentary and not re-derived.
 --
 -- ORDER, AND THE ONE DEPENDENCY. The four blocks are in kit's order and no reorder
--- was needed: `protect_membership_table` calls `cafaye.protect_table`, which 0004
+-- was needed: `protect_membership_table` calls `anywaye.protect_table`, which 0004
 -- defines, and 0005 runs after 0004 because these filenames are the apply order.
 -- Nothing else in the four references a function that is not a builtin or part of
 -- 0004.
 --
 -- NO CALLS AT THE BOTTOM, AND WHY. 0004 ends with darkroom's two
--- `cafaye.protect_table(...)` calls; this file ends with definitions only.
+-- `anywaye.protect_table(...)` calls; this file ends with definitions only.
 -- `protect_membership_table` is called by the migration of a service that HAS a
 -- membership table, and darkroom does not: there is no `account_users` table here,
 -- and a call naming a table that does not exist would abort the migration. The
@@ -96,7 +96,7 @@
 -- database a caller's identity chosen by the caller — which is why the value is
 -- the same `users.id` the service resolved the session to, and why this file's
 -- twin for accounts warns at the same length.
-create or replace function cafaye.current_user_id()
+create or replace function anywaye.current_user_id()
 returns uuid
 language plpgsql
 stable
@@ -107,16 +107,16 @@ begin
   -- `missing_ok = true` and the empty check are the two cases `begin_account`'s
   -- reader handles, copied rather than re-derived: an unset dotted GUC reads as
   -- set-to-empty, and a caller with no identity is a legitimate state.
-  raw := current_setting('cafaye.user_id', true);
+  raw := current_setting('anywaye.user_id', true);
   if raw is null or raw = '' then
     return null;
   end if;
   return raw::uuid;
 exception
   when invalid_text_representation then
-    raise exception 'cafaye.user_id is set to % which is not a uuid', raw
+    raise exception 'anywaye.user_id is set to % which is not a uuid', raw
       using errcode = '22023',
-            hint = 'cafaye.begin_user/1 takes a uuid. A request that reaches the '
+            hint = 'anywaye.begin_user/1 takes a uuid. A request that reaches the '
                    'database with a malformed user has a bug in whatever '
                    'authenticated it, and this is the cheapest place to find it.';
 end
@@ -128,16 +128,16 @@ $caf$;
 -- an explicit transaction the setting expires at the end of the statement that
 -- set it — so a caller that forgets the transaction reads zero rows rather than
 -- somebody else's.
-create or replace function cafaye.begin_user(p_user uuid)
+create or replace function anywaye.begin_user(p_user uuid)
 returns void
 language plpgsql
 as $caf$
 begin
   if p_user is null then
-    perform set_config('cafaye.user_id', '', true);
+    perform set_config('anywaye.user_id', '', true);
     return;
   end if;
-  perform set_config('cafaye.user_id', p_user::text, true);
+  perform set_config('anywaye.user_id', p_user::text, true);
 end
 $caf$;
 
@@ -159,7 +159,7 @@ $caf$;
 -- account read, ENABLE, FORCE, the `account_id` index and the role check all
 -- come from there, not from a copy — and then adds ONE policy:
 --
---   select cafaye.protect_membership_table('account_users', 'user_id');
+--   select anywaye.protect_membership_table('account_users', 'user_id');
 --
 -- `for select` only, for the same reason the credential policy is: a caller with
 -- no account identity still meets the ordinary account policies on insert,
@@ -167,13 +167,13 @@ $caf$;
 -- see that you are a member of an account is not the ability to change it,
 -- invite to it, or read a row in it.
 --
--- The predicate is `<user_column> = (select cafaye.current_user_id())`, wrapped
+-- The predicate is `<user_column> = (select anywaye.current_user_id())`, wrapped
 -- in a scalar subquery for the InitPlan reason every other policy in this file
 -- is, and it is NULL rather than true when the caller has no user identity — so
 -- a worker that forgot `begin_user` reads zero memberships instead of all of
 -- them. That is the whole safety property, and it is the same property the
 -- account boundary has: absent an identity, nothing.
-create or replace function cafaye.protect_membership_table(
+create or replace function anywaye.protect_membership_table(
   p_table regclass,
   p_user_column text,
   p_login_role text default null
@@ -192,7 +192,7 @@ begin
   --    nothing instead of a migration that stops.
   if p_user_column is null
      or p_user_column !~ '^[A-Za-z_][A-Za-z0-9_$]*$' then
-    raise exception 'cafaye.protect_membership_table(%, %): the user column must be one bare column name, and % is not one.', p_table, coalesce(p_user_column, '<null>'), coalesce(p_user_column, 'null')
+    raise exception 'anywaye.protect_membership_table(%, %): the user column must be one bare column name, and % is not one.', p_table, coalesce(p_user_column, '<null>'), coalesce(p_user_column, 'null')
       using errcode = 'undefined_column',
             hint = 'The second argument is the column on this table holding the member''s `users.id` — `user_id` in every service kit has shipped. It is a column of this table and nothing else.';
   end if;
@@ -209,7 +209,7 @@ begin
     select 1 from pg_attribute
     where attrelid = p_table and attname = p_user_column and not attisdropped
   ) then
-    raise exception 'cafaye.protect_membership_table(%, %): the table has no % column.', p_table, p_user_column, p_user_column
+    raise exception 'anywaye.protect_membership_table(%, %): the table has no % column.', p_table, p_user_column, p_user_column
       using errcode = 'undefined_column',
             hint = 'A membership table is read by the column that names the member. Name the one this table has; if it has none, this table is not a membership table and does not want this mechanism.';
   end if;
@@ -219,7 +219,7 @@ begin
   --    also raises if the table has no `account_id`, which a membership table
   --    must have: it is the edge of the account graph, not a user-scoped
   --    resource that happens to mention accounts.
-  perform cafaye.protect_table(p_table, p_login_role);
+  perform anywaye.protect_table(p_table, p_login_role);
 
   base := (select c.relname from pg_class c where c.oid = p_table::regclass::oid);
 
@@ -229,24 +229,24 @@ begin
   --    caller's memberships. Without the index that scan is sequential however
   --    few rows it returns.
   execute format('create index if not exists %I on %s (%I)',
-                 base || '_cafaye_' || p_user_column || '_idx', p_table, p_user_column);
+                 base || '_anywaye_' || p_user_column || '_idx', p_table, p_user_column);
 
   -- 4. ONE POLICY, FOR ONE COMMAND, FOR THE TWO NAMED ROLES, PREDICATED ON THE
   --    CALLER rather than on an account.
-  qual := format('%I = (select cafaye.current_user_id())', p_user_column);
+  qual := format('%I = (select anywaye.current_user_id())', p_user_column);
 
   --    DROP before CREATE, so a re-run converges and a corrected qualifier cannot
   --    survive one.
-  execute format('drop policy if exists %I on %s', base || '_cafaye_members', p_table);
+  execute format('drop policy if exists %I on %s', base || '_anywaye_members', p_table);
   execute format('create policy %I on %s for select to %I, %I using (%s)',
-                 base || '_cafaye_members', p_table, current_user, login_role, qual);
+                 base || '_anywaye_members', p_table, current_user, login_role, qual);
 
-  -- 5. USAGE on `cafaye`, for the reason the other two functions grant it:
-  --    without it the login role cannot call `cafaye.begin_user/1` and every
-  --    membership read fails with `permission denied for schema cafaye` — which
+  -- 5. USAGE on `anywaye`, for the reason the other two functions grant it:
+  --    without it the login role cannot call `anywaye.begin_user/1` and every
+  --    membership read fails with `permission denied for schema anywaye` — which
   --    reads as a permissions bug rather than as the missing GRANT that it is.
-  if to_regnamespace('cafaye') is not null then
-    execute format('grant usage on schema cafaye to %I', login_role);
+  if to_regnamespace('anywaye') is not null then
+    execute format('grant usage on schema anywaye to %I', login_role);
   end if;
 end
 $caf$;
@@ -268,7 +268,7 @@ $caf$;
 -- conflating them would be the same error this file keeps refusing: a membership
 -- table resolved by a caller is not a table that can be resolved by anybody who
 -- guesses a digest, and a credential table is not a table whose rows a signed-in
--- person may enumerate. So this reads the `_cafaye_members` policy and calls
+-- person may enumerate. So this reads the `_anywaye_members` policy and calls
 -- `current_user_id`, and reports the USER column, which is the column whose value
 -- the caller must already hold.
 --
@@ -279,7 +279,7 @@ $caf$;
 -- that spells a function name returns NOTHING as the cluster's own admin role and
 -- the whole answer in every other session, so the same query and the same
 -- substring rules are what make the two functions agree with each other.
-create or replace function cafaye.membership_tables()
+create or replace function anywaye.membership_tables()
 returns table (table_schema text, table_name text, user_column text)
 language sql
 stable
@@ -289,7 +289,7 @@ as $caf$
     select fn.oid
       from pg_proc fn
       join pg_namespace fns on fns.oid = fn.pronamespace
-     where fns.nspname = 'cafaye'
+     where fns.nspname = 'anywaye'
        and fn.proname = 'current_user_id'
        and fn.pronargs = 0
   ),
@@ -318,7 +318,7 @@ as $caf$
         on att.attrelid = pol.polrelid
        and att.attnum = ud.refobjsubid
        and not att.attisdropped
-     where pol.polname like '%!_cafaye!_members' escape '!'
+     where pol.polname like '%!_anywaye!_members' escape '!'
        and pol.polcmd = 'r'
   )
 
@@ -348,10 +348,10 @@ $caf$;
 -- moved. There are no up/down markers in this directory and this file adds none.
 --
 -- The down is REVERSIBLE, and its limit is stated so nobody has to find it: no
--- table in darkroom carries a `_cafaye_members` policy — there is no membership
+-- table in darkroom carries a `_anywaye_members` policy — there is no membership
 -- table at all — so dropping these four functions cannot strand a policy. A
--- database that HAD called `cafaye.protect_membership_table` would have to drop
--- each `_cafaye_members` policy before the function, and this comment is where that
+-- database that HAD called `anywaye.protect_membership_table` would have to drop
+-- each `_anywaye_members` policy before the function, and this comment is where that
 -- reader should learn it. The order below is reverse-of-definition and is a reading
 -- aid only: the cross-references among the four live inside string bodies
 -- (`$caf$ ... $caf$`), which Postgres does not record as dependencies, so any drop
@@ -361,7 +361,7 @@ $caf$;
 -- Down
 -- ----------------------------------------------------------------------------
 
--- drop function if exists cafaye.membership_tables();
--- drop function if exists cafaye.protect_membership_table(regclass, text, text);
--- drop function if exists cafaye.begin_user(uuid);
--- drop function if exists cafaye.current_user_id();
+-- drop function if exists anywaye.membership_tables();
+-- drop function if exists anywaye.protect_membership_table(regclass, text, text);
+-- drop function if exists anywaye.begin_user(uuid);
+-- drop function if exists anywaye.current_user_id();

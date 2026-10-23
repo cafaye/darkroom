@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/cafaye/darkroom/internal/checksum"
+	"github.com/anywaye/darkroom/internal/checksum"
 )
 
 // TestIntegrationRoundTrip exercises a real S3-compatible bucket end to end:

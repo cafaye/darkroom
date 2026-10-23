@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
-	"github.com/cafaye/darkroom/internal/objectstore"
+	"github.com/anywaye/darkroom/internal/objectstore"
 )
 
 // The object-store behavior table: AWS S3, an S3-compatible service, and

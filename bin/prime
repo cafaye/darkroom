@@ -61,7 +61,7 @@ step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 # mistake. Nothing in this repository's prime run does `bash -n`, so the words are
 # kept out of the strings on purpose.
 if [[ "${1:-}" == "--db" ]]; then
-  : "${TEST_DATABASE_URL:?--db needs TEST_DATABASE_URL, e.g. postgres://darkroom:cafaye@localhost:15500/darkroom?sslmode=disable -- that URL is the HOST side of the shared cluster kit ships, so the port is KIT_POSTGRES_PORT (15500), not 5432. See .env.example}"
+  : "${TEST_DATABASE_URL:?--db needs TEST_DATABASE_URL, e.g. postgres://darkroom:anywaye@localhost:15500/darkroom?sslmode=disable -- that URL is the HOST side of the shared cluster kit ships, so the port is KIT_POSTGRES_PORT (15500), not 5432. See .env.example}"
   # AND THE APPLICATION ROLE, BECAUSE ONE TEST IN THE DATABASE TIER IS ABOUT THE
   # APPLICATION ROLE and no other URL can stand in for it.
   #
@@ -77,7 +77,7 @@ if [[ "${1:-}" == "--db" ]]; then
   # honest-skip contract hides a permanent gap, and the floor of 15 in two files is a
   # number nothing can ever satisfy. Required, the gate names what it needs in the
   # first second, and `bin/tier-counts` counts 15 for the first time.
-  : "${DARKROOM_DATABASE_URL:?--db also needs DARKROOM_DATABASE_URL, e.g. postgres://darkroom_app:cafaye@localhost:15500/darkroom?sslmode=disable -- that is the LOGIN ROLE, deliberately not TEST_DATABASE_URL, and one test in the pgtest tier is only meaningful with it. Both are in .env.example}"
+  : "${DARKROOM_DATABASE_URL:?--db also needs DARKROOM_DATABASE_URL, e.g. postgres://darkroom_app:anywaye@localhost:15500/darkroom?sslmode=disable -- that is the LOGIN ROLE, deliberately not TEST_DATABASE_URL, and one test in the pgtest tier is only meaningful with it. Both are in .env.example}"
   # Exported rather than merely SET: `${VAR:?}` is satisfied by a shell variable that
   # is not in the environment, and a non-exported one is invisible to every `go test`
   # below — which would turn this guard into a check that passes and a suite that

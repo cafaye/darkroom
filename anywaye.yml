@@ -1,6 +1,6 @@
-# cafaye.yml — darkroom: a service that serves an HTTP API and publishes events.
-# Validated by `caf contract lint` against cafaye/core's
-# schemas/cafaye.manifest.schema.json.
+# anywaye.yml — darkroom: a service that serves an HTTP API and publishes events.
+# Validated by `caf contract lint` against anywaye/core's
+# schemas/anywaye.manifest.schema.json.
 #
 # `language: go`, changed from `rust` when the Go module built and `go vet ./...`
 # went clean. Nothing else in this file moved, and that is deliberate in both
@@ -32,7 +32,7 @@
 # rejected by the tool CI runs against it — measured rather than assumed: both
 # spellings were added to a copy of this manifest and both failed with
 # `declares unknown key` (`ci/ci.yml` runs
-# `caf contract lint ../cafaye.yml`). A key that makes the manifest schema
+# `caf contract lint ../anywaye.yml`). A key that makes the manifest schema
 # fail is not a manifest that agrees with the grant; it is a red build.
 #
 # The machine-readable licence surface this tree DOES own is `info.license` in
@@ -56,7 +56,7 @@ exposes:
     # segment to be the PUBLISHING SERVICE's own name, and `caf contract lint`
     # enforces it ("must start with this service's own name"). core is the
     # contract and core is right, so the prefix is `darkroom`. `media` is the
-    # DOMAIN, not a cafaye service; identity publishes `identity.user.created`,
+    # DOMAIN, not a anywaye service; identity publishes `identity.user.created`,
     # not `auth.user.created`. A rename is a new `type`, never a repurpose, so
     # these are the names from the start.
     #
@@ -73,7 +73,7 @@ exposes:
 #
 # dependencies is omitted for the same reason. identity is a hard runtime
 # requirement (a token cannot be verified without it), and the `dependencies`
-# field is documented as "other cafaye services this service builds on" with a
+# field is documented as "other anywaye services this service builds on" with a
 # `required: false` soft-dependency flag — a field that models "the service runs
 # without it, degraded" has no honest value for a service that cannot verify a
 # single request without it.
@@ -90,10 +90,10 @@ env:
     description: "Postgres DSN."
 
 repository:
-  url: git@github.com:cafaye/darkroom.git
+  url: git@github.com:anywaye/darkroom.git
   defaultBranch: master
   visibility: private
 
 owner:
   team: darkroom
-  contact: darkroom@cafaye.com
+  contact: darkroom@anywaye.com

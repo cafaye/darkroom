@@ -1,13 +1,13 @@
 # AGENTS.md
 
-Conventions for `darkroom`, the cafaye media service. Read this before changing
-anything; the house rules apply on top of it — SSH remotes for the repositories cafaye owns, and tests first: write the test, watch it fail, then implement.
+Conventions for `darkroom`, the anywaye media service. Read this before changing
+anything; the house rules apply on top of it — SSH remotes for the repositories anywaye owns, and tests first: write the test, watch it fail, then implement.
 
 ## What this repository is
 
-`github.com/cafaye/darkroom`, one static binary. It owns uploaded media: signed
+`github.com/anywaye/darkroom`, one static binary. It owns uploaded media: signed
 uploads, a tenant-scoped asset registry, derived variants. The contracts are
-owned by `cafaye/core`; CI and lint config come from `cafaye/kit`. Neither lives
+owned by `anywaye/core`; CI and lint config come from `anywaye/kit`. Neither lives
 here.
 
 **ONE LANGUAGE. The Go rewrite is the whole tree.** `src/` and `tests/` were
@@ -296,7 +296,7 @@ attributes kit's `templates/compose/postgres/initdb/10-cluster.sh` uses.
 **THE GO HARNESS DOES THE SAME THING AND NEEDS ONE EXTRA THING.** `pgtest` gives
 each test a schema named `t_<12 hex>`, applies `migrations/` into it with that
 schema on the connection's `search_path`, and drops it with `cascade`. Because
-`cafaye.protect_table` takes a `regclass` and `regclass` resolution follows
+`anywaye.protect_table` takes a `regclass` and `regclass` resolution follows
 `search_path`, each test protects its OWN `assets` — the isolation is real rather
 than a naming convention.
 
@@ -597,7 +597,7 @@ than `InAccountTx`, is doing the thing the Rust `Tenant` typecheck prevented.
 
 1. A variant on `service.EventType`, and the test asserting three segments and
    the publisher prefix.
-2. `cafaye.yml` `exposes.events` — and the test that counts both directions.
+2. `anywaye.yml` `exposes.events` — and the test that counts both directions.
 3. The catalog row in `core/docs/event-naming.md` **and** a payload schema in
    `core/schemas/events/`, which is a core change, not this repository's.
 4. Enqueue it in the same transaction as the domain write.

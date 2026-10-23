@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cafaye/darkroom/internal/objectstore"
+	"github.com/anywaye/darkroom/internal/objectstore"
 )
 
 // env builds a Lookup from a map, which is the whole of the seam.
@@ -29,8 +29,8 @@ func env(pairs map[string]string) Lookup {
 // is testing the absence of exactly one thing.
 func valid() map[string]string {
 	return map[string]string{
-		"DARKROOM_DATABASE_URL": "postgres://darkroom_app:cafaye@localhost:15500/darkroom?sslmode=disable",
-		"DARKROOM_ISSUER":       "https://identity.cafaye.com",
+		"DARKROOM_DATABASE_URL": "postgres://darkroom_app:anywaye@localhost:15500/darkroom?sslmode=disable",
+		"DARKROOM_ISSUER":       "https://identity.anywaye.com",
 		"DARKROOM_AUDIENCE":     "darkroom",
 	}
 }
@@ -98,7 +98,7 @@ func TestDATABASEURLIsNotAFallbackForTheLoginRole(t *testing.T) {
 	// this row is about is one where somebody set the variable this repository
 	// does not read and never set the one it does.
 	only := merge(valid(), map[string]string{
-		"DATABASE_URL": "postgres://darkroom:cafaye@localhost:15500/darkroom?sslmode=disable",
+		"DATABASE_URL": "postgres://darkroom:anywaye@localhost:15500/darkroom?sslmode=disable",
 	})
 	delete(only, "DARKROOM_DATABASE_URL")
 

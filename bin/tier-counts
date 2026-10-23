@@ -271,7 +271,7 @@ done
 # repository, and twenty-four tests reporting zero is what it looks like from
 # outside.
 expect "default  variant-pipeline checks" \
-  "$(count_go 'go test -v ./internal/variants/ (no database)' 'github.com/cafaye/darkroom/internal/variants')" \
+  "$(count_go 'go test -v ./internal/variants/ (no database)' 'github.com/anywaye/darkroom/internal/variants')" \
   "$VARIANT_TESTS"
 
 # The outbox publisher, pinned in the tier that runs it and counted for the reason
@@ -281,7 +281,7 @@ expect "default  variant-pipeline checks" \
 # that reported zero tests would look exactly like a drain loop with nothing to
 # prove.
 expect "default  outbox-publisher checks" \
-  "$(count_go 'go test -v ./internal/outbox/ (no database)' 'github.com/cafaye/darkroom/internal/outbox')" \
+  "$(count_go 'go test -v ./internal/outbox/ (no database)' 'github.com/anywaye/darkroom/internal/outbox')" \
   "$OUTBOX_TESTS"
 
 # --- the database tiers ------------------------------------------------------
@@ -290,10 +290,10 @@ expect "default  outbox-publisher checks" \
 # floors in `bin/prime`'s `-list` step are what hold on a bare machine; these are
 # what prove the tests RAN.
 expect "database  harness and role checks" \
-  "$(count_go 'go test -v ./internal/darkroomdb/... (against TEST_DATABASE_URL)' 'github.com/cafaye/darkroom/internal/darkroomdb/pgtest')" \
+  "$(count_go 'go test -v ./internal/darkroomdb/... (against TEST_DATABASE_URL)' 'github.com/anywaye/darkroom/internal/darkroomdb/pgtest')" \
   "$PGTEST_DB_TESTS"
 expect "database  service checks" \
-  "$(count_go 'go test -v ./internal/service/... (against TEST_DATABASE_URL)' 'github.com/cafaye/darkroom/internal/service')" \
+  "$(count_go 'go test -v ./internal/service/... (against TEST_DATABASE_URL)' 'github.com/anywaye/darkroom/internal/service')" \
   "$SERVICE_DB_TESTS"
 # `internal/httpapi` was counted here with no database tests in it, which was a
 # FINDING packet 05 recorded rather than an accident: it was counted anyway, because
@@ -302,16 +302,16 @@ expect "database  service checks" \
 # router and only against a real schema — so this is a database tier now, and the
 # SKIP check below covers it.
 expect "database  httpapi checks" \
-  "$(count_go 'go test -v ./internal/httpapi/ (against TEST_DATABASE_URL; the Idempotency-Key ledger)' 'github.com/cafaye/darkroom/internal/httpapi')" \
+  "$(count_go 'go test -v ./internal/httpapi/ (against TEST_DATABASE_URL; the Idempotency-Key ledger)' 'github.com/anywaye/darkroom/internal/httpapi')" \
   "$HTTPAPI_TESTS"
 
 # A tier that reported a SKIP where a pass was expected is the failure this whole
 # script is for, and `--- SKIP:` is the shape it takes: a package whose tests all
 # skipped because no database answered, with a green `ok` underneath it.
 for pair in \
-  "go test -v ./internal/darkroomdb/... (against TEST_DATABASE_URL):github.com/cafaye/darkroom/internal/darkroomdb/pgtest" \
-  "go test -v ./internal/service/... (against TEST_DATABASE_URL):github.com/cafaye/darkroom/internal/service" \
-  "go test -v ./internal/httpapi/ (against TEST_DATABASE_URL; the Idempotency-Key ledger):github.com/cafaye/darkroom/internal/httpapi"
+  "go test -v ./internal/darkroomdb/... (against TEST_DATABASE_URL):github.com/anywaye/darkroom/internal/darkroomdb/pgtest" \
+  "go test -v ./internal/service/... (against TEST_DATABASE_URL):github.com/anywaye/darkroom/internal/service" \
+  "go test -v ./internal/httpapi/ (against TEST_DATABASE_URL; the Idempotency-Key ledger):github.com/anywaye/darkroom/internal/httpapi"
 do
   step="${pair%%:*}"; pkg="${pair##*:}"
   skipped="$(awk -v scope="$step" '
@@ -345,9 +345,9 @@ done
 #                         database tier runs, which means the two files disagree
 #                         about the same package.
 for pair in \
-  "./internal/darkroomdb/pgtest:$PGTEST_DB_TESTS:github.com/cafaye/darkroom/internal/darkroomdb/pgtest" \
-  "./internal/service:$SERVICE_DB_TESTS:github.com/cafaye/darkroom/internal/service" \
-  "./internal/httpapi:$HTTPAPI_TESTS:github.com/cafaye/darkroom/internal/httpapi"
+  "./internal/darkroomdb/pgtest:$PGTEST_DB_TESTS:github.com/anywaye/darkroom/internal/darkroomdb/pgtest" \
+  "./internal/service:$SERVICE_DB_TESTS:github.com/anywaye/darkroom/internal/service" \
+  "./internal/httpapi:$HTTPAPI_TESTS:github.com/anywaye/darkroom/internal/httpapi"
 do
   pkg="${pair%%:*}"; rest="${pair#*:}"; want="${rest%%:*}"; import="${rest##*:}"
   got="$(listed "$pkg")"

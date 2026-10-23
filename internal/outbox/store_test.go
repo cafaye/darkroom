@@ -73,7 +73,7 @@ func TestTheClaimQueryCarriesAllFourDocumentedProperties(t *testing.T) {
 // proved rather than asserted in a comment.
 //
 // `darkroomdb.BeginTx` is the only transaction starter in this repository that
-// does not call `cafaye.begin_account`, and it is the one [Store.Claim] uses. If
+// does not call `anywaye.begin_account`, and it is the one [Store.Claim] uses. If
 // the claim ever moved to `InAccountTx` it would put an identity on a
 // transaction that reads a table no policy guards — a claim that the rows belong
 // to an account, which nothing in the database agrees with, and which would make

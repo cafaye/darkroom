@@ -39,7 +39,7 @@
 // # TENANT SCOPE IS SET ON THE TRANSACTION, NOT IN THE QUERY
 //
 // Every method below opens its transaction with `darkroomdb.InAccountTx`, which sets
-// `cafaye.begin_account` INSIDE it, and the policies in
+// `anywaye.begin_account` INSIDE it, and the policies in
 // `migrations/0004_account_isolation.sql` do the filtering. There is no
 // `and account_id = $N` anywhere in this package, and that is the point of the Go
 // rewrite rather than an omission: the Rust tree needed 1,609 lines of
@@ -60,13 +60,13 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/cafaye/darkroom/internal/checksum"
-	"github.com/cafaye/darkroom/internal/darkroomdb"
-	"github.com/cafaye/darkroom/internal/domain"
-	"github.com/cafaye/darkroom/internal/objectstore"
-	"github.com/cafaye/darkroom/internal/problem"
-	"github.com/cafaye/darkroom/internal/storagekey"
-	"github.com/cafaye/darkroom/internal/variants"
+	"github.com/anywaye/darkroom/internal/checksum"
+	"github.com/anywaye/darkroom/internal/darkroomdb"
+	"github.com/anywaye/darkroom/internal/domain"
+	"github.com/anywaye/darkroom/internal/objectstore"
+	"github.com/anywaye/darkroom/internal/problem"
+	"github.com/anywaye/darkroom/internal/storagekey"
+	"github.com/anywaye/darkroom/internal/variants"
 )
 
 // PendingSweepAfter is how long a `pending` asset may live before a sweeper would

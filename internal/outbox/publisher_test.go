@@ -376,7 +376,7 @@ func TestTheCarriedEnvelopeIsCoreShapeAndNothingElse(t *testing.T) {
 		t.Errorf("source = %q, want the package's own %q", e.Source, Source)
 	}
 	if e.Source != "darkroom" {
-		t.Errorf("source = %q, want darkroom — it must equal `name` in cafaye.yml, which core's event-naming.md requires", e.Source)
+		t.Errorf("source = %q, want darkroom — it must equal `name` in anywaye.yml, which core's event-naming.md requires", e.Source)
 	}
 	if e.Subject == "" {
 		t.Error("subject is empty: core REQUIRES it, and it is the entity the event is about")

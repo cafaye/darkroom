@@ -343,7 +343,7 @@ type Probe struct {
 // ProbeStatus defines model for Probe.Status.
 type ProbeStatus string
 
-// Problem The cafaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
+// Problem The anywaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
 // Every non-2xx response from this service is this shape.
 type Problem struct {
 	Code ProblemCode `json:"code"`
@@ -385,27 +385,27 @@ type AssetID = openapi_types.UUID
 // IdempotencyKey defines model for IdempotencyKey.
 type IdempotencyKey = string
 
-// BadRequest The cafaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
+// BadRequest The anywaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
 // Every non-2xx response from this service is this shape.
 type BadRequest = Problem
 
-// Forbidden The cafaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
+// Forbidden The anywaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
 // Every non-2xx response from this service is this shape.
 type Forbidden = Problem
 
-// NotFound The cafaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
+// NotFound The anywaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
 // Every non-2xx response from this service is this shape.
 type NotFound = Problem
 
-// Unauthorized The cafaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
+// Unauthorized The anywaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
 // Every non-2xx response from this service is this shape.
 type Unauthorized = Problem
 
-// Unavailable The cafaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
+// Unavailable The anywaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
 // Every non-2xx response from this service is this shape.
 type Unavailable = Problem
 
-// ValidationFailed The cafaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
+// ValidationFailed The anywaye error envelope: RFC 9457 plus core's `code` and `trace_id`.
 // Every non-2xx response from this service is this shape.
 type ValidationFailed = Problem
 

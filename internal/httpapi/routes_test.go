@@ -2,14 +2,14 @@ package httpapi_test
 
 // The router, to the document, in BOTH directions — and the check reads the YAML.
 //
-// `openapi/v1.yaml` is the contract (`cafaye.yml`'s `exposes.api` points at it, and
+// `openapi/v1.yaml` is the contract (`anywaye.yml`'s `exposes.api` points at it, and
 // this packet's rule is that it does not change). So the comparison below is against
 // that file, not against a list, not against the generated Go, and not against what a
 // reader believes the routes are.
 //
 // # WHY THIS FILE READS THE YAML AND THE GATEWAY'S DOES NOT
 //
-// `../cafaye/gateway/internal/httpapi/routes_test.go` compares the served routes
+// `../anywaye/gateway/internal/httpapi/routes_test.go` compares the served routes
 // against the route registrations in `api.gen.go`, and its own header is honest that
 // "nothing here reads the YAML. What closes the gap is `bin/prime-go`'s
 // regenerate-and-diff, which fails when `api.gen.go` and the document disagree".
@@ -49,9 +49,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
 
-	"github.com/cafaye/darkroom/internal/auth"
-	"github.com/cafaye/darkroom/internal/httpapi"
-	"github.com/cafaye/darkroom/internal/service"
+	"github.com/anywaye/darkroom/internal/auth"
+	"github.com/anywaye/darkroom/internal/httpapi"
+	"github.com/anywaye/darkroom/internal/service"
 )
 
 // documentPath is relative to this package's directory. Measured, not assumed: the

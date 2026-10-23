@@ -33,7 +33,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/cafaye/darkroom/internal/darkroomdb/pgtest"
+	"github.com/anywaye/darkroom/internal/darkroomdb/pgtest"
 )
 
 // accountA and accountB are two tenants. Any boundary that cannot tell them apart
@@ -93,7 +93,7 @@ func checksumFor(id string) string {
 // account can then see.
 //
 // `begin_account` is transaction-local and is called through the SAME seam the
-// service uses — `InAccountTx` — rather than by a bare `select cafaye.begin_account`
+// service uses — `InAccountTx` — rather than by a bare `select anywaye.begin_account`
 // in the test. A test that set the identity its own way would prove the identity
 // can be set, which is not the claim; the claim is that the service's one door
 // sets it and the policies obey it.
@@ -233,7 +233,7 @@ func TestTheLoginRoleCannotAlterItsOwnPolicies(t *testing.T) {
 		},
 		{
 			name:    "drop a policy",
-			stmt:    `drop policy assets_cafaye_select on assets`,
+			stmt:    `drop policy assets_anywaye_select on assets`,
 			wantErr: true,
 		},
 		{
@@ -389,17 +389,17 @@ func TestTheLoginRoleCanDoTheWork(t *testing.T) {
 	}
 	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
 
-	// The cafaye substrate schema must exist for this test to mean anything.
+	// The anywaye substrate schema must exist for this test to mean anything.
 	// It is created by migrations/0004_account_isolation.sql, which runs in every
 	// pgtest schema. If it is absent, the environment did not apply the
 	// migrations (a provisioning issue, not a code issue) and running the test
 	// would only produce a misleading failure.
 	var exists bool
-	if err := conn.QueryRow(ctx, `select exists (select 1 from pg_namespace where nspname = 'cafaye')`).Scan(&exists); err != nil {
-		t.Fatalf("checking for the cafaye schema: %v", err)
+	if err := conn.QueryRow(ctx, `select exists (select 1 from pg_namespace where nspname = 'anywaye')`).Scan(&exists); err != nil {
+		t.Fatalf("checking for the anywaye schema: %v", err)
 	}
 	if !exists {
-		t.Skip("the cafaye substrate schema is absent: migrations were not applied to this database. This is an environment/provisioning issue, not a code failure.")
+		t.Skip("the anywaye substrate schema is absent: migrations were not applied to this database. This is an environment/provisioning issue, not a code failure.")
 	}
 
 	// Prove which role this actually is, because a URL pointed at `darkroom` would
@@ -420,7 +420,7 @@ func TestTheLoginRoleCanDoTheWork(t *testing.T) {
 
 	// The identity the request path sets, then the two writes. One transaction:
 	// the domain row and the event describing it, which is the whole outbox rule.
-	if _, err := tx.Exec(ctx, `select cafaye.begin_account($1::uuid)`, accountA); err != nil {
+	if _, err := tx.Exec(ctx, `select anywaye.begin_account($1::uuid)`, accountA); err != nil {
 		t.Fatalf("setting the account identity: %v", err)
 	}
 	// A fresh id per run, and the rows are REMOVED at the end. This test writes to
@@ -477,7 +477,7 @@ func TestTheLoginRoleCanDoTheWork(t *testing.T) {
 			t.Fatalf("beginning a read as %s: %v", account, err)
 		}
 		defer func() { _ = rx.Rollback(context.WithoutCancel(ctx)) }()
-		if _, err := rx.Exec(ctx, `select cafaye.begin_account($1::uuid)`, account); err != nil {
+		if _, err := rx.Exec(ctx, `select anywaye.begin_account($1::uuid)`, account); err != nil {
 			t.Fatalf("setting the identity as %s: %v", account, err)
 		}
 		var n int
@@ -508,8 +508,8 @@ func TestTheLoginRoleCanDoTheWork(t *testing.T) {
 	// matched zero rows and reported success.
 	//
 	// This is RLS working exactly as designed and it is the nastiest failure in the
-	// substrate: `assets_cafaye_delete` is `using (account_id = (select
-	// cafaye.current_account_id()))`, and with no identity set the helper returns
+	// substrate: `assets_anywaye_delete` is `using (account_id = (select
+	// anywaye.current_account_id()))`, and with no identity set the helper returns
 	// NULL, so the predicate is NULL rather than false, so the statement deletes
 	// NOTHING and exits 0. A cleanup that reports success and does nothing is
 	// worse than one that fails, because the run is green and the developer's
@@ -520,7 +520,7 @@ func TestTheLoginRoleCanDoTheWork(t *testing.T) {
 	// looked correct throughout. `AGENTS.md` calls the design "the rule is absence,
 	// not refusal", and this is the same rule seen from the other side: a statement
 	// that touches nothing is indistinguishable from one that did its job.
-	if _, err := cleanup.Exec(ctx, `select cafaye.begin_account($1::uuid)`, accountA); err != nil {
+	if _, err := cleanup.Exec(ctx, `select anywaye.begin_account($1::uuid)`, accountA); err != nil {
 		t.Fatalf("setting the identity for the cleanup: %v", err)
 	}
 
@@ -546,7 +546,7 @@ func TestTheLoginRoleCanDoTheWork(t *testing.T) {
 // migrations/0004's header auditable.
 //
 // The header claims two of darkroom's four tables carry an `account_id` and that
-// both are protected. `cafaye.unprotected_tables()` is kit's own sweep for exactly
+// both are protected. `anywaye.unprotected_tables()` is kit's own sweep for exactly
 // this: every table with an `account_id` column that no `protect_table` call named.
 // Zero rows is the answer the migration intends, and this is what stops that claim
 // from being only prose — an `assets` table protected by hand in a later migration,
@@ -554,9 +554,9 @@ func TestTheLoginRoleCanDoTheWork(t *testing.T) {
 func TestTheMigrationsProtectedExactlyTheAccountScopedTables(t *testing.T) {
 	tt := pgtest.New(t)
 	rows, err := tt.Conn.Query(context.Background(),
-		`select table_schema, table_name from cafaye.unprotected_tables() order by 1, 2`)
+		`select table_schema, table_name from anywaye.unprotected_tables() order by 1, 2`)
 	if err != nil {
-		t.Fatalf("reading cafaye.unprotected_tables(): %v", err)
+		t.Fatalf("reading anywaye.unprotected_tables(): %v", err)
 	}
 	defer rows.Close()
 
@@ -589,12 +589,12 @@ func TestTheMigrationsProtectedExactlyTheAccountScopedTables(t *testing.T) {
 // TestCredentialTablesAnswersEveryRoleTheSame is the cross-role comparison the
 // migration header says nothing replaces.
 //
-// `cafaye.credential_tables()` is the audit for "which tables in this database
+// `anywaye.credential_tables()` is the audit for "which tables in this database
 // can be read with no account". It used to be written against `pg_get_expr`
 // output, and `pg_get_expr` drops the schema from any name the READER's
 // search_path resolves — so the same policy deparsed as the whole answer in one
 // session and as nothing in another, and an auditor running as the one role whose
-// "$user" schema was `cafaye` was told "no table here can be resolved without an
+// "$user" schema was `anywaye` was told "no table here can be resolved without an
 // account", which is the most expensive reading in the file to believe. The
 // query now reads `pg_depend` OIDs, so there is no spelling for a search_path
 // to change and equal answers are a property of the mechanism.
@@ -617,9 +617,9 @@ func TestTheMigrationsProtectedExactlyTheAccountScopedTables(t *testing.T) {
 // # THE FOUR CALLS
 //
 // owner and login, each under the harness's default search_path and under
-// `cafaye` put on the path explicitly. The last two are the old bug's condition
-// reproduced: with `cafaye` resolvable, `pg_get_expr` drops the schema from
-// `cafaye.current_credential_digest()` and a deparse-matching audit finds nothing.
+// `anywaye` put on the path explicitly. The last two are the old bug's condition
+// reproduced: with `anywaye` resolvable, `pg_get_expr` drops the schema from
+// `anywaye.current_credential_digest()` and a deparse-matching audit finds nothing.
 // The current query reads OIDs and is indifferent.
 //
 // # THE NEGATIVE CONTROL
@@ -641,7 +641,7 @@ func TestCredentialTablesAnswersEveryRoleTheSame(t *testing.T) {
 		t.Fatalf("creating the credential fixture: %v", err)
 	}
 	if _, err := tt.Conn.Exec(ctx,
-		`select cafaye.protect_credential_table('api_keys', 'token_digest')`); err != nil {
+		`select anywaye.protect_credential_table('api_keys', 'token_digest')`); err != nil {
 		t.Fatalf("protecting the credential fixture: %v", err)
 	}
 
@@ -667,11 +667,11 @@ func TestCredentialTablesAnswersEveryRoleTheSame(t *testing.T) {
 		}
 		rows, err := tx.Query(ctx,
 			`select table_schema, table_name, digest_column
-			   from cafaye.credential_tables()
+			   from anywaye.credential_tables()
 			  where table_schema = $1
 			  order by 1, 2, 3`, tt.Schema)
 		if err != nil {
-			t.Fatalf("reading cafaye.credential_tables() as %q under %q: %v", role, searchPath, err)
+			t.Fatalf("reading anywaye.credential_tables() as %q under %q: %v", role, searchPath, err)
 		}
 		defer rows.Close()
 		var out []string
@@ -688,20 +688,20 @@ func TestCredentialTablesAnswersEveryRoleTheSame(t *testing.T) {
 		return out
 	}
 
-	// The four calls. The two with `cafaye` on the path are the old bug's
+	// The four calls. The two with `anywaye` on the path are the old bug's
 	// condition; the two with the default path are the harness's own.
 	calls := []struct{ role, path string }{
 		{"", ""},
 		{"darkroom_app", ""},
-		{"", "cafaye, public"},
-		{"darkroom_app", "cafaye, public"},
+		{"", "anywaye, public"},
+		{"darkroom_app", "anywaye, public"},
 	}
 
 	want := tt.Schema + ".api_keys (token_digest)"
 	for _, c := range calls {
 		got := audit(c.role, c.path)
 		if len(got) != 1 || got[0] != want {
-			t.Errorf("cafaye.credential_tables() as %q under search_path %q returned %v, want [%s]. The audit must answer every role identically: the old deparse-based query returned nothing for a role whose search_path resolved the function name, and the app role is the one that has been wrong before.", c.role, c.path, got, want)
+			t.Errorf("anywaye.credential_tables() as %q under search_path %q returned %v, want [%s]. The audit must answer every role identically: the old deparse-based query returned nothing for a role whose search_path resolved the function name, and the app role is the one that has been wrong before.", c.role, c.path, got, want)
 		}
 	}
 }
@@ -812,7 +812,7 @@ func TestEveryHelperCallInAPolicyIsWrapped(t *testing.T) {
 	// The call itself, wherever it appears. `isWrappedAt` decides per occurrence,
 	// so a policy that wrapped one call and left another bare is caught rather than
 	// being cleared by the presence of the good one.
-	bare := regexp.MustCompile(`(?i)cafaye\.current_account_id\(\)`)
+	bare := regexp.MustCompile(`(?i)anywaye\.current_account_id\(\)`)
 
 	checked := 0
 	for rows.Next() {
@@ -826,7 +826,7 @@ func TestEveryHelperCallInAPolicyIsWrapped(t *testing.T) {
 			if !e.Valid || e.String == "" {
 				continue
 			}
-			if !strings.Contains(e.String, "cafaye.current_account_id()") {
+			if !strings.Contains(e.String, "anywaye.current_account_id()") {
 				continue
 			}
 			// EVERY occurrence is checked, not one per policy, and that is the
@@ -837,7 +837,7 @@ func TestEveryHelperCallInAPolicyIsWrapped(t *testing.T) {
 				if isWrappedAt(e.String, at[0]) {
 					continue
 				}
-				t.Errorf("policy %s calls cafaye.current_account_id() bare: %s. Postgres evaluates a bare call once per candidate row; the wrapped form is hoisted into an InitPlan and runs once per statement.", name, e.String)
+				t.Errorf("policy %s calls anywaye.current_account_id() bare: %s. Postgres evaluates a bare call once per candidate row; the wrapped form is hoisted into an InitPlan and runs once per statement.", name, e.String)
 				break
 			}
 		}
@@ -1035,7 +1035,7 @@ func TestTheOwnerCannotReadAnotherAccountWithoutSettingAnIdentity(t *testing.T) 
 // TestTheDatabaseURLIsNeverPrintedWhole guards the one place a credential could
 // escape: a failure message.
 //
-// darkroom's URL is `postgres://darkroom:cafaye@localhost:15500/darkroom` — the
+// darkroom's URL is `postgres://darkroom:anywaye@localhost:15500/darkroom` — the
 // CLUSTER's password, shared by every role on it, which `AGENTS.md` is explicit
 // about ("it is the credential of EVERY role `10-cluster.sh` creates"). A
 // developer who points `TEST_DATABASE_URL` at a deployment's would otherwise have
@@ -1072,9 +1072,9 @@ func TestTheDatabaseURLIsNeverPrintedWhole(t *testing.T) {
 //
 // The cost of that choice is that the deparse is not the text `protect_table`
 // wrote. `templates/database/tenancy/substrate.sql` writes
-// `account_id = (select cafaye.current_account_id())` and Postgres gives back:
+// `account_id = (select anywaye.current_account_id())` and Postgres gives back:
 //
-//	(account_id = ( SELECT cafaye.current_account_id() AS current_account_id))
+//	(account_id = ( SELECT anywaye.current_account_id() AS current_account_id))
 //
 // The subquery is intact and the shape the rule is about is preserved — but the
 // alias and the uppercased keyword are not, and a test that matched the written
@@ -1086,7 +1086,7 @@ func TestTheDatabaseURLIsNeverPrintedWhole(t *testing.T) {
 // # THE PREDICATE, and why it looks backwards
 //
 // A call is wrapped iff, reading backwards from it, the text is `(` then
-// `SELECT`, with only whitespace between. Bare is `= cafaye.…`, whose preceding
+// `SELECT`, with only whitespace between. Bare is `= anywaye.…`, whose preceding
 // token is an operator. Backwards rather than forwards because the interesting
 // question is what ENCLOSES the call, and the enclosure is behind it.
 func isWrappedAt(expr string, at int) bool {
@@ -1141,12 +1141,12 @@ func isWrappedAt(expr string, at int) bool {
 func TestIsWrappedAt(t *testing.T) {
 	// The deparse of `protect_table`'s own qualifier, measured from pg_get_expr on
 	// this cluster.
-	const wrapped = `(account_id = ( SELECT cafaye.current_account_id() AS current_account_id))`
-	const bare = `(account_id = cafaye.current_account_id())`
-	const bareInsideFunc = `(account_id = coalesce(cafaye.current_account_id(), 'x'))`
+	const wrapped = `(account_id = ( SELECT anywaye.current_account_id() AS current_account_id))`
+	const bare = `(account_id = anywaye.current_account_id())`
+	const bareInsideFunc = `(account_id = coalesce(anywaye.current_account_id(), 'x'))`
 
 	at := func(expr string) int {
-		i := strings.Index(expr, "cafaye.current_account_id()")
+		i := strings.Index(expr, "anywaye.current_account_id()")
 		if i < 0 {
 			t.Fatalf("no helper call in %q", expr)
 		}
@@ -1163,7 +1163,7 @@ func TestIsWrappedAt(t *testing.T) {
 		{"bare inside another call", bareInsideFunc, false},
 		// A function whose name merely ENDS in "select". A substring test for
 		// "select" would clear this one; a last-word test does not.
-		{"a function whose name ends in select", `(account_id = my_select(cafaye.current_account_id()))`, false},
+		{"a function whose name ends in select", `(account_id = my_select(anywaye.current_account_id()))`, false},
 
 		// MEASURED from pg_get_expr on this cluster, and the shape the first
 		// version of this test wrongly failed.

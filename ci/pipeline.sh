@@ -33,8 +33,8 @@
 # owns a schema — so unlike the Ruby services this pipeline needs no
 # concurrency note for the supervisor.
 #
-# The `contract` job (cafaye-manifest lint via another repository's CLI) stays
-# in the workflow: it checks out a second cafaye repository, which is
+# The `contract` job (anywaye-manifest lint via another repository's CLI) stays
+# in the workflow: it checks out a second anywaye repository, which is
 # explicitly out of kit's scope and out of this pipeline's.
 #
 # WHAT THE BACKEND PROVIDES (kit `backends/README.md`): WORKSPACE, GH_TOKEN,

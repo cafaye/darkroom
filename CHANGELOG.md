@@ -47,20 +47,20 @@ and only `info.version` moves otherwise
   not whether that reasoning was sound.
 
   Parameters, so a reader can diff two repositories' `LICENSE` files and see
-  only the Licensed Work differ: Licensor `Cafaye`, Licensed Work `darkroom`,
+  only the Licensed Work differ: Licensor `Anywaye`, Licensed Work `darkroom`,
   Additional Use Grant `None`, Change Date `2030-10-10`, Change Licence
   `Apache-2.0`. The Change Date is four years from the day this landed
   (2026-10-10), and the flip is inside the licence text rather than a promise
   made outside it.
 
-  **What could not be done, and why.** `cafaye.yml` carries no licence field,
+  **What could not be done, and why.** `anywaye.yml` carries no licence field,
   because it cannot: core's manifest schema sets `additionalProperties: false`
   with no licence property, so a `licence:` or a `license:` key there is
   rejected by `cafe contract lint`, which CI runs against this exact file
   (`.github/workflows/ci.yml:303-307`). Both spellings were added to a copy of
   the manifest and both failed with `declares unknown key` — measured, not
   assumed. The manifest states the grant and the reason in a comment instead
-  (`cafaye.yml:25-43`), and the one machine-readable licence declaration this
+  (`anywaye.yml:25-43`), and the one machine-readable licence declaration this
   tree owns is `info.license` in `openapi/v1.yaml:84-92`, which `exposes.api`
   points at. Adding the field to the schema is core's packet: the schema and
   cafe's vendored pin of it (`cafe/internal/contract/schemas/manifest-0.2.json`,
@@ -221,14 +221,14 @@ and only `info.version` moves otherwise
 
   `TestCredentialTablesAnswersEveryRoleTheSame` asks the audit as the owner and
   as `darkroom_app` — the login role a request holds, and the one that has been
-  wrong before — under the default `search_path` and under `cafaye` put on the
+  wrong before — under the default `search_path` and under `anywaye` put on the
   path explicitly, the old bug's condition. All four answers must be identical
   and non-empty, and the assertion is exactly one row, so `assets` (protected, no
   resolve policy) cannot appear.
 
   The test was run red before being believed, planted with the old bug's
   mechanism — a deparse-matching query — and went red on exactly the two
-  `cafaye`-on-path calls, which is the specific failure it exists to catch. The
+  `anywaye`-on-path calls, which is the specific failure it exists to catch. The
   plant was reverted and the migration is byte-identical to its pre-packet state.
 
   The pgtest floor moves 16 → 17 in `bin/prime`, `bin/tier-counts` and
@@ -245,7 +245,7 @@ and only `info.version` moves otherwise
   copyleft would not.
 
   The copyright line matches the three repositories that already shipped a
-  licence exactly: `Copyright (c) 2026 cafaye`.
+  licence exactly: `Copyright (c) 2026 anywaye`.
 
   **Superseded** by the `Changed` entry at the top of `[Unreleased]`: the grant
   is now the Business Source Licence 1.1. This entry stands as the record of
@@ -454,7 +454,7 @@ a prefix match, and two tests hold it: one fails if a first omission appears, on
 fails if an omission stops naming something the router serves.
 
 Needs neither a database nor a socket, so it is in the default tier and runs on
-a bare machine. It reads its subject out of `exposes.api` in `cafaye.yml` rather
+a bare machine. It reads its subject out of `exposes.api` in `anywaye.yml` rather
 than hardcoding a filename.
 
 **`bin/tier-counts` — the gate's own accounting.** `bin/prime --db` exits zero
@@ -510,13 +510,13 @@ behind a dev-dependency would be the same decision wearing a smaller hat.
 a UTF-8 file this repository wrote. No runtime dependency was added, so no
 README dependency-table entry is owed.
 
-**CI calls `cafaye/kit/.github/workflows/ci.reusable.yml@master`** for the
+**CI calls `anywaye/kit/.github/workflows/ci.reusable.yml@master`** for the
 shared half (`language: rust`, coverage floor 50 against 53.73% measured line
 coverage), and keeps two jobs that kit cannot own. `gate` runs `bin/prime --db`
 against a `postgres:17-alpine` service — the database tier is the reason this
 packet exists, and it cannot run without an environment kit's rust job has no
-way to provide. `contract` checks out `cafaye/cafe` and runs their tool, which is
-a step that reaches into another cafaye repository and is out of kit's scope by
+way to provide. `contract` checks out `anywaye/cafe` and runs their tool, which is
+a step that reaches into another anywaye repository and is out of kit's scope by
 name.
 
 The `build` job is gone. `gate` is a strict superset of it: `bin/prime` already
@@ -647,7 +647,7 @@ database. Both are exempt from authentication.
 `--features s3`. The default build cannot construct a real object-storage
 client, so "tests never hit the network" is a property of the dependency graph.
 
-**Contract.** `cafaye.yml` (validates against core's manifest schema),
+**Contract.** `anywaye.yml` (validates against core's manifest schema),
 `openapi/v1.yaml`, three plain-SQL migrations, and `AGENTS.md`.
 
 ### Notes for the reviewer
@@ -666,5 +666,5 @@ client, so "tests never hit the network" is a property of the dependency graph.
 - **Toolchain is 1.95, not kit's placeholder 1.84.** kit's template says its
   numbers are placeholders and that a service pins what it deploys on.
 
-[Unreleased]: https://github.com/cafaye/darkroom/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/cafaye/darkroom/releases/tag/v0.1.0
+[Unreleased]: https://github.com/anywaye/darkroom/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/anywaye/darkroom/releases/tag/v0.1.0

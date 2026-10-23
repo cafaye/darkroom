@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cafaye/darkroom/internal/objectstore"
-	"github.com/cafaye/darkroom/internal/storagekey"
+	"github.com/anywaye/darkroom/internal/objectstore"
+	"github.com/anywaye/darkroom/internal/storagekey"
 )
 
 var ctx = context.Background()

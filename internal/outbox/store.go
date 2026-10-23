@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/cafaye/darkroom/internal/darkroomdb"
+	"github.com/anywaye/darkroom/internal/darkroomdb"
 )
 
 // ErrNotInBatch means a caller tried to mark an event the batch it holds does
@@ -72,7 +72,7 @@ func NewStore(db *darkroomdb.Store) *Store { return &Store{db: db} }
 //
 // `outbox_events` carries NO `account_id` column and NO policy. It is the one
 // table `migrations/0004_account_isolation.sql` grants DML on outside
-// `cafaye.protect_table`, and `tenancy.yml` records it alongside
+// `anywaye.protect_table`, and `tenancy.yml` records it alongside
 // `idempotency_keys` as deliberately unscoped: "outbox_events is drained by
 // darkroom's own code, never by a query that reaches a customer's rows."
 //

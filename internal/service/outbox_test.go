@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cafaye/darkroom/internal/darkroomdb/pgtest"
-	"github.com/cafaye/darkroom/internal/objectstore"
-	"github.com/cafaye/darkroom/internal/problem"
+	"github.com/anywaye/darkroom/internal/darkroomdb/pgtest"
+	"github.com/anywaye/darkroom/internal/objectstore"
+	"github.com/anywaye/darkroom/internal/problem"
 )
 
 func TestEveryEventTypeHasThreeSegmentsAndThePublisherPrefix(t *testing.T) {

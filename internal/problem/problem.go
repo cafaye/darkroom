@@ -1,7 +1,7 @@
 // Package problem is darkroom's error envelope: RFC 9457 `application/problem+json`
-// plus cafaye's `code` and `trace_id` extensions.
+// plus anywaye's `code` and `trace_id` extensions.
 //
-// Copied from `cafaye/core/docs/openapi-conventions.md#error-envelope`, which
+// Copied from `anywaye/core/docs/openapi-conventions.md#error-envelope`, which
 // is normative: "no service invents its own error body". The Rust tree carries the
 // same shape in `src/error.rs` and the two are the same contract, not two designs.
 //
@@ -43,12 +43,12 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/cafaye/darkroom/internal/objectstore"
+	"github.com/anywaye/darkroom/internal/objectstore"
 )
 
 // ErrorBase is the base URI for every `type`. core owns this list; the codes below
 // are all in it, and each is the last segment of its own `type`.
-const ErrorBase = "https://docs.cafaye.com/errors"
+const ErrorBase = "https://docs.anywaye.com/errors"
 
 // Code is the machine-readable slug a client switches on. core: "`code` is the same
 // slug as the last segment of `type`."

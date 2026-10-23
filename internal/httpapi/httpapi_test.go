@@ -40,9 +40,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cafaye/darkroom/internal/auth"
-	"github.com/cafaye/darkroom/internal/httpapi"
-	"github.com/cafaye/darkroom/internal/service"
+	"github.com/anywaye/darkroom/internal/auth"
+	"github.com/anywaye/darkroom/internal/httpapi"
+	"github.com/anywaye/darkroom/internal/service"
 )
 
 // recorder captures a response without a socket.

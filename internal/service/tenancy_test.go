@@ -25,7 +25,7 @@ package service
 // identity set, and the policies in `migrations/0004_account_isolation.sql` do the
 // filtering. So the three actors are three transactions:
 //
-//	no-identity    `InTx` — a transaction that never called `cafaye.begin_account`.
+//	no-identity    `InTx` — a transaction that never called `anywaye.begin_account`.
 //	               `current_account_id()` reads NULL, which matches no row under
 //	               FORCE RLS. This is the state a deploy step, or a code path that
 //	               reached for `InTx` instead of `InAccountTx`, would produce.
@@ -58,9 +58,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/cafaye/darkroom/internal/checksum"
-	"github.com/cafaye/darkroom/internal/domain"
-	"github.com/cafaye/darkroom/internal/variants"
+	"github.com/anywaye/darkroom/internal/checksum"
+	"github.com/anywaye/darkroom/internal/domain"
+	"github.com/anywaye/darkroom/internal/variants"
 )
 
 // withAccount runs fn inside a transaction scoped to the given account — the
@@ -72,7 +72,7 @@ func (h *harness) withAccount(account string, fn func(tx pgx.Tx) error) error {
 
 // withNoIdentity runs fn inside a transaction with NO identity set — the no-identity
 // arm's actor. `InTx` is the transaction that deliberately does not call
-// `cafaye.begin_account`, so `current_account_id()` reads NULL and every policy
+// `anywaye.begin_account`, so `current_account_id()` reads NULL and every policy
 // filters every row out.
 func (h *harness) withNoIdentity(fn func(tx pgx.Tx) error) error {
 	h.t.Helper()

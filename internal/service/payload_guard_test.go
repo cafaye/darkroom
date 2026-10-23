@@ -120,7 +120,7 @@ func readEnqueuePayloads(t *testing.T) map[string][]string {
 
 // The whole guard: three payloads, none of them carrying a tenant id, a storage
 // key or a capability — and the set of payloads is THREE, because a fourth event
-// type is a `cafaye.yml` change and a core catalog row, not a code edit.
+// type is a `anywaye.yml` change and a core catalog row, not a code edit.
 func TestNoPayloadCarriesATenantIDABucketKeyOrACapability(t *testing.T) {
 	payloads := readEnqueuePayloads(t)
 	if len(payloads) == 0 {

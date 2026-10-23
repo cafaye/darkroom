@@ -23,7 +23,7 @@
 #   $ docker compose --project-directory . -f <kit>/… -f ./docker-compose.yml config
 #       source: /Users/…/courier-27/postgres/initdb        <- courier's tree
 #   $ KIT_COMPOSE_DIR=<kit>/templates/compose docker compose … config
-#       source: /Users/kaka/.cache/cafaye/kit/…/templates/compose/postgres/initdb
+#       source: /Users/kaka/.cache/anywaye/kit/…/templates/compose/postgres/initdb
 #
 # The cluster comes up healthy either way, holding none of the fleet's
 # databases: initdb ran nothing, no role was created, and no
@@ -284,14 +284,14 @@ services:
       # The password is INTERPOLATED, and it used to be the literal `darkroom` to
       # match a `POSTGRES_PASSWORD: darkroom` this file no longer sets. Every
       # role `10-cluster.sh` creates takes the cluster's `POSTGRES_PASSWORD`, so
-      # that role's password is now kit's `${KIT_POSTGRES_PASSWORD:-cafaye}` and
+      # that role's password is now kit's `${KIT_POSTGRES_PASSWORD:-anywaye}` and
       # the pair in this URL would be a credential no role holds. A cluster
       # password changed in `.env` cannot leave this file authenticating as a
       # password that no longer exists. (A password containing `@` or `/` will
       # not survive URL interpolation unescaped; that is the cost of a URL
       # string, and it is not worth a percent-encoder to keep a development
       # default out of a comment.)
-      DATABASE_URL: postgres://darkroom:${KIT_POSTGRES_PASSWORD:-cafaye}@postgres:5432/darkroom?sslmode=disable
+      DATABASE_URL: postgres://darkroom:${KIT_POSTGRES_PASSWORD:-anywaye}@postgres:5432/darkroom?sslmode=disable
 
       # THE URL THE APPLICATION LOGS IN WITH, and it is `darkroom_app` rather than
       # `darkroom`. `10-cluster.sh` provisions two roles per service from ONE
@@ -318,7 +318,7 @@ services:
       # network. `10-cluster.sh` gives every role it creates `$POSTGRES_PASSWORD`,
       # so there is no second credential to rotate and no second place for a
       # password to be wrong.
-      DARKROOM_DATABASE_URL: postgres://darkroom_app:${KIT_POSTGRES_PASSWORD:-cafaye}@postgres:5432/darkroom?sslmode=disable
+      DARKROOM_DATABASE_URL: postgres://darkroom_app:${KIT_POSTGRES_PASSWORD:-anywaye}@postgres:5432/darkroom?sslmode=disable
       PORT: "8080"
       # The in-memory object store by default, and it stays that way: a local
       # stack that needs a bucket credential is a local stack nobody starts, and
@@ -326,8 +326,8 @@ services:
       # DARKROOM_OBJECT_STORE=s3 switches to the real thing.
       DARKROOM_OBJECT_STORE: memory
       DARKROOM_LOG_FORMAT: human
-      DARKROOM_JWKS_URL: https://identity.cafaye.com/.well-known/jwks.json
-      DARKROOM_ISSUER: https://identity.cafaye.com
+      DARKROOM_JWKS_URL: https://identity.anywaye.com/.well-known/jwks.json
+      DARKROOM_ISSUER: https://identity.anywaye.com
       DARKROOM_AUDIENCE: darkroom
       # READ AND LOGGED, AND IT GATES NOTHING. The Rust tree used
       # `DARKROOM_ENV=development` to select an HMAC verifier behind a

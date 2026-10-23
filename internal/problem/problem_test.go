@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/cafaye/darkroom/internal/objectstore"
+	"github.com/anywaye/darkroom/internal/objectstore"
 )
 
 func TestCodeIsTheLastSegmentOfType(t *testing.T) {
@@ -80,7 +80,7 @@ func TestErrorsArrayAppearsOnlyOn422(t *testing.T) {
 
 	// Everything else must not serialize the key AT ALL. The check is on the
 	// decoded object's keys rather than on the raw string: `type` is a
-	// `https://docs.cafaye.com/errors/...` URI, so a substring test would match every
+	// `https://docs.anywaye.com/errors/...` URI, so a substring test would match every
 	// response and prove nothing.
 	for _, err := range []*Error{NotFound("x"), Conflict("x"), Internal("x"), Unauthorized("x"), Unavailable("x")} {
 		raw, err2 := json.Marshal(err.Problem("/v1/x", "trace"))

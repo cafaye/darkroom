@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cafaye/darkroom/internal/variants"
+	"github.com/anywaye/darkroom/internal/variants"
 )
 
 func TestEverySupportedContentTypeMapsToItsKind(t *testing.T) {

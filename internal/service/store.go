@@ -50,9 +50,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/cafaye/darkroom/internal/domain"
-	"github.com/cafaye/darkroom/internal/objectstore"
-	"github.com/cafaye/darkroom/internal/variants"
+	"github.com/anywaye/darkroom/internal/domain"
+	"github.com/anywaye/darkroom/internal/objectstore"
+	"github.com/anywaye/darkroom/internal/variants"
 )
 
 // assetColumns is the one list of columns every asset read returns.
@@ -93,7 +93,7 @@ func findAssetByChecksum(ctx context.Context, tx pgx.Tx, checksum string) (*doma
 // insertAsset writes the `pending` row.
 //
 // `account_id` IS NOT A PARAMETER. It is read from the transaction's own identity:
-// `select cafaye.current_account_id()`. That is stronger than passing it, because a
+// `select anywaye.current_account_id()`. That is stronger than passing it, because a
 // row's tenant is then the identity the policies governed the insert with, and
 // there is no argument for the two to disagree — the `with check` on the insert
 // policy would refuse a mismatch anyway, which would turn a plumbing bug into a 42501
@@ -107,7 +107,7 @@ func insertAsset(ctx context.Context, tx pgx.Tx, a domain.Asset) (*domain.Asset,
 			id, account_id, owner_user_id, kind, original_filename,
 			content_type, byte_size, checksum, storage_key, status, metadata,
 			created_at, updated_at)
-		values ($1, (select cafaye.current_account_id()), $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)
+		values ($1, (select anywaye.current_account_id()), $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)
 		returning `+assetColumns,
 		a.ID, a.OwnerUserID, string(a.Kind), a.OriginalFilename, a.ContentType,
 		a.ByteSize, a.Checksum, a.StorageKey(), string(a.Status), metadata,
@@ -280,7 +280,7 @@ func upsertVariant(ctx context.Context, tx pgx.Tx, v domain.AssetVariant) (*doma
 	row := tx.QueryRow(ctx, `insert into asset_variants (
 			id, asset_id, account_id, kind, content_type, byte_size,
 			storage_key, width, height, metadata, created_at, updated_at)
-		values ($1, $2, (select cafaye.current_account_id()), $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)
+		values ($1, $2, (select anywaye.current_account_id()), $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)
 		on conflict (asset_id, kind) do update
 		   set content_type = excluded.content_type,
 		       byte_size    = excluded.byte_size,

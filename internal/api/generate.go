@@ -12,7 +12,7 @@ package api
 //
 // # The document is this repository's own, and it does not change in packet 05
 //
-// `openapi/v1.yaml` is the contract `cafaye.yml`'s `exposes.api` points at, and
+// `openapi/v1.yaml` is the contract `anywaye.yml`'s `exposes.api` points at, and
 // the packet's rule is that it is the contract, not an artifact of this packet.
 // There is no vendored copy and no provenance file: the generated code and the
 // document sit in the same commit, so the only way they can disagree is a
